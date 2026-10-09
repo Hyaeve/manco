@@ -88,16 +88,16 @@ async function signOut() {
           <User :size="15" />
           <span>{{ auth.user?.username || '未登录' }}</span>
         </div>
-        <button class="btn secondary small" type="button" @click="signOut">
-          <LogOut :size="15" />
-          退出登录
-        </button>
         <nav class="nav sidebar-settings">
           <RouterLink :to="systemItem.to">
             <component :is="systemItem.icon" :size="17" />
             <span>{{ systemItem.label }}</span>
           </RouterLink>
         </nav>
+        <button class="btn secondary small" type="button" @click="signOut">
+          <LogOut :size="15" />
+          退出登录
+        </button>
       </div>
     </aside>
     <div v-if="menuOpen" class="scrim" @click="menuOpen = false" />

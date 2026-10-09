@@ -90,6 +90,11 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Assets:    assets,
 	})
 	_ = repository.CleanupSessions(ctx, time.Now())
+	// A process restart invalidates all browser sessions, so every client has
+	// to authenticate again after the service comes back up.
+	if err := repository.DeleteAllSessions(ctx); err != nil {
+		return err
+	}
 	if err := repository.RequeueRunningJobs(ctx); err != nil {
 		return err
 	}

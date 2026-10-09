@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hyaeve/manco/internal/model"
 )
@@ -127,5 +128,30 @@ func TestCreateDownloadJobKeepsCompletedStatus(t *testing.T) {
 	}
 	if again.FilePath == "" {
 		t.Fatal("completed job lost its file path")
+	}
+}
+
+func TestDeleteAllSessionsInvalidatesLogins(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	if err := repository.CreateUser(ctx, "alice", "hash-a"); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	user, err := repository.UserByUsername(ctx, "alice")
+	if err != nil {
+		t.Fatalf("load alice: %v", err)
+	}
+	if err := repository.CreateSession(ctx, "token-hash-a", user.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := repository.UserBySession(ctx, "token-hash-a", time.Now()); err != nil {
+		t.Fatalf("session before restart: %v", err)
+	}
+
+	if err := repository.DeleteAllSessions(ctx); err != nil {
+		t.Fatalf("delete all sessions: %v", err)
+	}
+	if _, err := repository.UserBySession(ctx, "token-hash-a", time.Now()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("session after restart error = %v, want ErrNotFound", err)
 	}
 }

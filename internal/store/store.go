@@ -166,6 +166,13 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+// DeleteAllSessions invalidates every persisted login. It is called once on
+// startup so a restart always requires users to sign in again.
+func (s *Store) DeleteAllSessions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions`)
+	return err
+}
+
 func (s *Store) CleanupSessions(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, now.UTC())
 	return err

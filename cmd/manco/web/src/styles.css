@@ -519,45 +519,73 @@ code {
   gap: 16px;
 }
 
-.discover-board {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-  align-items: start;
+.discover-tabs-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.source-column {
+.discover-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  width: fit-content;
+}
+
+.discover-tabs button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.discover-tabs button:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
+.discover-tabs button.active {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.source-page {
   min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
-  scroll-margin-top: 20px;
 }
 
-.source-column-head {
+.source-page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 16px 13px;
+  padding: 16px 18px 13px;
   border-bottom: 1px solid var(--border);
 }
 
-.source-column-head h2 {
-  font-size: 16px;
+.source-page-head h2 {
+  font-size: 17px;
 }
 
-.source-column-head p {
+.source-page-head p {
   margin: 3px 0 0;
   color: var(--text-muted);
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-
 .source-column-tools {
   display: flex;
   flex-direction: column;
@@ -589,9 +617,9 @@ code {
 
 .source-comic-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 14px 16px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 16px;
+  padding: 16px 18px 18px;
 }
 
 .source-comic-card {
@@ -616,6 +644,100 @@ code {
   justify-content: center;
   gap: 10px;
   padding: 0 16px 16px;
+}
+
+.subscription-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.subscription-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+
+.subscription-card:hover {
+  box-shadow: var(--shadow);
+  transform: translateY(-2px);
+}
+
+.subscription-main {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+}
+
+.subscription-cover {
+  width: 78px;
+  flex: 0 0 78px;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-muted);
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.subscription-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.subscription-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subscription-title {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.subscription-sub {
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.subscription-toggles {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.subscription-toggles label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.subscription-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.subscription-actions .spacer {
+  flex: 1;
 }
 
 .comic-card {
@@ -908,18 +1030,6 @@ tbody tr:hover {
 
 .mobile-only {
   display: none;
-}
-
-@media (max-width: 1500px) {
-  .discover-board {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1100px) {
-  .discover-board {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 960px) {
