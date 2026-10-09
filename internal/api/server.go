@@ -25,6 +25,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/hyaeve/manco/internal/config"
+	"github.com/hyaeve/manco/internal/cronutil"
 	"github.com/hyaeve/manco/internal/downloader"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
@@ -40,6 +41,8 @@ const (
 	sessionTTL    = 30 * 24 * time.Hour
 )
 
+var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh"}
+
 type Server struct {
 	cfg       config.Config
 	store     *store.Store
@@ -52,14 +55,22 @@ type Server struct {
 	assets    fs.FS
 }
 
-// settings mirrors the persisted values in the settings table.
-type settings struct {
+// Settings mirrors the persisted values in the settings table.
+type Settings struct {
 	RepoURL               string
 	ScanInterval          time.Duration
 	MaxChapterConcurrency int
 	MaxPageConcurrency    int
 	Proxy                 string
+	ProxyUsername         string
+	ProxyPassword         string
 	CookieSecure          bool
+	SessionTTLDays        int
+	SourceConcurrency     map[string]int
+	BatchSize             int
+	BatchIntervalMinutes  int
+	ConvertToSimplified   bool
+	StaleDays             map[string]int
 }
 
 type Options struct {
@@ -92,14 +103,29 @@ func New(options Options) *Server {
 	}
 }
 
-func (s *Server) loadSettings(ctx context.Context) settings {
-	current := settings{
+// Settings loads the persisted runtime settings with defaults applied.
+func (s *Server) Settings(ctx context.Context) (Settings, error) {
+	return s.loadSettings(ctx), nil
+}
+
+func (s *Server) loadSettings(ctx context.Context) Settings {
+	current := Settings{
 		RepoURL:               s.cfg.SourceRepo,
 		ScanInterval:          s.cfg.ScanInterval,
 		MaxChapterConcurrency: s.cfg.MaxChapterConcurrency,
 		MaxPageConcurrency:    s.cfg.MaxPageConcurrency,
-		Proxy:                 "",
 		CookieSecure:          s.cfg.CookieSecure,
+		SessionTTLDays:        30,
+		SourceConcurrency: map[string]int{
+			"picacg":  s.cfg.MaxChapterConcurrency,
+			"jmcomic": s.cfg.MaxChapterConcurrency,
+			"baozimh": s.cfg.MaxChapterConcurrency,
+		},
+		StaleDays: map[string]int{
+			"picacg":  0,
+			"jmcomic": 0,
+			"baozimh": 0,
+		},
 	}
 	if value, err := s.store.Setting(ctx, "source_repo"); err == nil && strings.TrimSpace(value) != "" {
 		current.RepoURL = strings.TrimSpace(value)
@@ -122,8 +148,52 @@ func (s *Server) loadSettings(ctx context.Context) settings {
 	if value, err := s.store.Setting(ctx, "proxy"); err == nil {
 		current.Proxy = strings.TrimSpace(value)
 	}
+	if value, err := s.store.Setting(ctx, "proxy_username"); err == nil {
+		current.ProxyUsername = strings.TrimSpace(value)
+	}
+	if value, err := s.store.Setting(ctx, "proxy_password"); err == nil {
+		current.ProxyPassword = value
+	}
 	if value, err := s.store.Setting(ctx, "cookie_secure"); err == nil && value != "" {
 		current.CookieSecure = value == "true"
+	}
+	if value, err := s.store.Setting(ctx, "session_ttl_days"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1 && parsed <= 3650 {
+			current.SessionTTLDays = parsed
+		}
+	}
+	if value, err := s.store.Setting(ctx, "source_concurrency"); err == nil && strings.TrimSpace(value) != "" {
+		parsed := map[string]int{}
+		if json.Unmarshal([]byte(value), &parsed) == nil {
+			for sourceID, limit := range parsed {
+				if limit >= 1 && limit <= 8 {
+					current.SourceConcurrency[sourceID] = limit
+				}
+			}
+		}
+	}
+	if value, err := s.store.Setting(ctx, "batch_size"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			current.BatchSize = parsed
+		}
+	}
+	if value, err := s.store.Setting(ctx, "batch_interval_minutes"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			current.BatchIntervalMinutes = parsed
+		}
+	}
+	if value, err := s.store.Setting(ctx, "convert_to_simplified"); err == nil && value != "" {
+		current.ConvertToSimplified = value == "true"
+	}
+	if value, err := s.store.Setting(ctx, "stale_days"); err == nil && strings.TrimSpace(value) != "" {
+		parsed := map[string]int{}
+		if json.Unmarshal([]byte(value), &parsed) == nil {
+			for sourceID, days := range parsed {
+				if days >= 0 {
+					current.StaleDays[sourceID] = days
+				}
+			}
+		}
 	}
 	return current
 }
@@ -138,6 +208,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
+	mux.HandleFunc("PATCH /api/sources/{id}", s.requireAuth(s.handleUpdateSource))
 	mux.HandleFunc("PUT /api/sources/{id}/account", s.requireAuth(s.handleSaveAccount))
 	mux.HandleFunc("DELETE /api/sources/{id}/account", s.requireAuth(s.handleDeleteAccount))
 	mux.HandleFunc("GET /api/sources/{id}/search", s.requireAuth(s.handleSearch))
@@ -150,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/subscriptions/{id}", s.requireAuth(s.handleUpdateSubscription))
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.requireAuth(s.handleDeleteSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/check", s.requireAuth(s.handleCheckSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/download", s.requireAuth(s.handleDownloadSubscription))
 
 	mux.HandleFunc("GET /api/downloads", s.requireAuth(s.handleListDownloads))
 	mux.HandleFunc("POST /api/downloads", s.requireAuth(s.handleCreateDownload))
@@ -234,6 +306,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "无法创建会话")
 		return
 	}
+	sessionTTL := s.sessionTTL(r.Context())
 	expires := time.Now().Add(sessionTTL)
 	if err := s.store.CreateSession(r.Context(), hashToken(token), user.ID, expires); err != nil {
 		writeError(w, http.StatusInternalServerError, "无法保存会话")
@@ -247,6 +320,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Secure:   s.cfg.CookieSecure,
 		Expires:  expires,
+		MaxAge:   int(sessionTTL / time.Second),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"user": map[string]any{"id": user.ID, "username": user.Username}})
 }
@@ -265,6 +339,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
+	hidden := s.hiddenSources(r.Context())
 	type accountView struct {
 		SourceID  string    `json:"sourceId"`
 		Username  string    `json:"username,omitempty"`
@@ -288,10 +363,59 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    s.registry.List(),
+		"items":    s.filteredSourceList(hidden),
 		"accounts": accounts,
 		"repoUrl":  s.sourceRepo(r.Context()),
 	})
+}
+
+func (s *Server) filteredSourceList(hidden map[string]bool) []model.SourceInfo {
+	items := s.registry.List()
+	for index := range items {
+		items[index].Hidden = hidden[items[index].ID]
+	}
+	return items
+}
+
+func (s *Server) hiddenSources(ctx context.Context) map[string]bool {
+	hidden := map[string]bool{}
+	value, err := s.store.Setting(ctx, "hidden_sources")
+	if err != nil || strings.TrimSpace(value) == "" {
+		return hidden
+	}
+	_ = json.Unmarshal([]byte(value), &hidden)
+	return hidden
+}
+
+func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := s.registry.Get(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var payload struct {
+		Hidden bool `json:"hidden"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	hidden := s.hiddenSources(r.Context())
+	if payload.Hidden {
+		hidden[id] = true
+	} else {
+		delete(hidden, id)
+	}
+	payloadJSON, err := json.Marshal(hidden)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.SetSetting(r.Context(), "hidden_sources", string(payloadJSON)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hidden": payload.Hidden})
 }
 
 func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
@@ -482,6 +606,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		Author       string  `json:"author"`
 		AutoDownload *bool   `json:"autoDownload"`
 		Enabled      *bool   `json:"enabled"`
+		CronExpr     string  `json:"cronExpr"`
 		Baseline     string  `json:"baseline"`
 		LastOrder    float64 `json:"lastChapterOrder"`
 	}
@@ -491,6 +616,14 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	if strings.TrimSpace(payload.SourceID) == "" || strings.TrimSpace(payload.ComicID) == "" {
 		writeError(w, http.StatusBadRequest, "缺少漫画源或作品 ID")
+		return
+	}
+	cronExpr := strings.TrimSpace(payload.CronExpr)
+	if cronExpr == "" {
+		cronExpr = cronutil.Default(time.Now())
+	}
+	if err := cronutil.Validate(cronExpr); err != nil {
+		writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
 		return
 	}
 	item, err := s.registry.Get(payload.SourceID)
@@ -514,6 +647,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		Author:           payload.Author,
 		Enabled:          payload.Enabled == nil || *payload.Enabled,
 		AutoDownload:     payload.AutoDownload == nil || *payload.AutoDownload,
+		CronExpr:         cronExpr,
 		LastChapterID:    strings.TrimSpace(payload.Baseline),
 		LastChapterOrder: payload.LastOrder,
 		LastChapterTitle: "",
@@ -538,8 +672,9 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	payload := struct {
-		Enabled      *bool `json:"enabled"`
-		AutoDownload *bool `json:"autoDownload"`
+		Enabled      *bool   `json:"enabled"`
+		AutoDownload *bool   `json:"autoDownload"`
+		CronExpr     *string `json:"cronExpr"`
 	}{}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -547,13 +682,24 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	enabled := existing.Enabled
 	auto := existing.AutoDownload
+	cronExpr := existing.CronExpr
 	if payload.Enabled != nil {
 		enabled = *payload.Enabled
 	}
 	if payload.AutoDownload != nil {
 		auto = *payload.AutoDownload
 	}
-	if err := s.store.UpdateSubscription(r.Context(), id, enabled, auto); err != nil {
+	if payload.CronExpr != nil {
+		cronExpr = strings.TrimSpace(*payload.CronExpr)
+		if cronExpr == "" {
+			cronExpr = existing.CronExpr
+		}
+		if err := cronutil.Validate(cronExpr); err != nil {
+			writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
+			return
+		}
+	}
+	if err := s.store.UpdateSubscription(r.Context(), id, enabled, auto, cronExpr); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -584,7 +730,11 @@ func (s *Server) handleCheckSubscription(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	go s.scheduler.RunOnce(context.Background())
+	go func() {
+		if err := s.scheduler.CheckOne(context.Background(), id); err != nil {
+			s.logger.Printf("api: check subscription %d: %v", id, err)
+		}
+	}()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -598,6 +748,29 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 		items = []model.DownloadJob{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleDownloadSubscription(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	subscription, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	job, err := s.scheduler.QueueLatest(r.Context(), subscription)
+	if err != nil {
+		if errors.Is(err, scheduler.ErrNoChapters) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": job})
 }
 
 func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
@@ -627,6 +800,8 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		title = payload.ComicID
 	}
 	created := make([]model.DownloadJob, 0, len(chapters))
+	queuedCount := 0
+	skippedCount := 0
 	for _, chapter := range chapters {
 		if strings.TrimSpace(chapter.ID) == "" {
 			continue
@@ -644,6 +819,11 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if saved.Status == "completed" {
+			skippedCount++
+		} else {
+			queuedCount++
+		}
 		created = append(created, saved)
 	}
 	if payload.AutoDownload && len(created) > 0 {
@@ -654,6 +834,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			Cover:            payload.ComicCover,
 			Enabled:          true,
 			AutoDownload:     true,
+			CronExpr:         cronutil.Default(time.Now()),
 			LastChapterID:    created[len(created)-1].ChapterID,
 			LastChapterTitle: created[len(created)-1].ChapterTitle,
 			LastChapterOrder: created[len(created)-1].ChapterOrder,
@@ -662,7 +843,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.engine.Notify()
-	writeJSON(w, http.StatusOK, map[string]any{"items": created})
+	writeJSON(w, http.StatusOK, map[string]any{"items": created, "queued": queuedCount, "skipped": skippedCount})
 }
 
 func (s *Server) handleRetryDownload(w http.ResponseWriter, r *http.Request) {
@@ -750,13 +931,9 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": comics, "downloadDir": s.cfg.DownloadDir})
 }
 
-func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	current := s.loadSettings(r.Context())
-	username := ""
-	if user, ok := userFromContext(r.Context()); ok {
-		username = user.Username
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
+func (s *Server) settingsResponse(ctx context.Context, username string) map[string]any {
+	current := s.loadSettings(ctx)
+	return map[string]any{
 		"username":              username,
 		"repoUrl":               current.RepoURL,
 		"downloadDir":           s.cfg.DownloadDir,
@@ -765,21 +942,45 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"maxChapterConcurrency": current.MaxChapterConcurrency,
 		"maxPageConcurrency":    current.MaxPageConcurrency,
 		"proxy":                 current.Proxy,
+		"proxyUsername":         current.ProxyUsername,
+		"proxyPassword":         current.ProxyPassword,
 		"cookieSecure":          current.CookieSecure,
-	})
+		"sessionTtlDays":        current.SessionTTLDays,
+		"sourceConcurrency":     current.SourceConcurrency,
+		"batchSize":             current.BatchSize,
+		"batchIntervalMinutes":  current.BatchIntervalMinutes,
+		"convertToSimplified":   current.ConvertToSimplified,
+		"staleDays":             current.StaleDays,
+	}
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	username := ""
+	if user, ok := userFromContext(r.Context()); ok {
+		username = user.Username
+	}
+	writeJSON(w, http.StatusOK, s.settingsResponse(r.Context(), username))
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		RepoURL               string  `json:"repoUrl"`
-		ScanInterval          string  `json:"scanInterval"`
-		MaxChapterConcurrency int     `json:"maxChapterConcurrency"`
-		MaxPageConcurrency    int     `json:"maxPageConcurrency"`
-		Proxy                 *string `json:"proxy"`
-		CookieSecure          bool    `json:"cookieSecure"`
-		Username              string  `json:"username"`
-		CurrentPassword       string  `json:"currentPassword"`
-		NewPassword           string  `json:"newPassword"`
+		RepoURL               string         `json:"repoUrl"`
+		ScanInterval          string         `json:"scanInterval"`
+		MaxChapterConcurrency int            `json:"maxChapterConcurrency"`
+		MaxPageConcurrency    int            `json:"maxPageConcurrency"`
+		ProxyUsername         *string        `json:"proxyUsername"`
+		ProxyPassword         *string        `json:"proxyPassword"`
+		SessionTTLDays        *int           `json:"sessionTtlDays"`
+		SourceConcurrency     map[string]int `json:"sourceConcurrency"`
+		BatchSize             *int           `json:"batchSize"`
+		BatchIntervalMinutes  *int           `json:"batchIntervalMinutes"`
+		ConvertToSimplified   *bool          `json:"convertToSimplified"`
+		StaleDays             map[string]int `json:"staleDays"`
+		Proxy                 *string        `json:"proxy"`
+		CookieSecure          bool           `json:"cookieSecure"`
+		Username              string         `json:"username"`
+		CurrentPassword       string         `json:"currentPassword"`
+		NewPassword           string         `json:"newPassword"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -874,8 +1075,9 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if payload.Proxy != nil {
+		current := s.loadSettings(r.Context())
 		rawProxy := strings.TrimSpace(*payload.Proxy)
-		if err := s.setProxy(rawProxy); err != nil {
+		if err := source.SetHTTPClientProxyCredentials(s.registry.Client(), rawProxy, current.ProxyUsername, current.ProxyPassword); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -907,19 +1109,117 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if payload.SessionTTLDays != nil {
+		if *payload.SessionTTLDays < 1 || *payload.SessionTTLDays > 3650 {
+			writeError(w, http.StatusBadRequest, "会话存活期必须在 1 到 3650 天之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "session_ttl_days", strconv.Itoa(*payload.SessionTTLDays)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.SourceConcurrency != nil {
+		normalized := map[string]int{}
+		total := 0
+		for sourceID, limit := range payload.SourceConcurrency {
+			if !isManagedSource(sourceID) {
+				continue
+			}
+			if limit < 1 || limit > 8 {
+				writeError(w, http.StatusBadRequest, "单个漫画源下载线程必须在 1 到 8 之间")
+				return
+			}
+			normalized[sourceID] = limit
+			total += limit
+		}
+		if total < 1 || total > 24 {
+			writeError(w, http.StatusBadRequest, "三个漫画源的总下载线程必须在 1 到 24 之间")
+			return
+		}
+		raw, _ := json.Marshal(normalized)
+		if err := s.store.SetSetting(r.Context(), "source_concurrency", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.BatchSize != nil {
+		if *payload.BatchSize < 0 || *payload.BatchSize > 1000 {
+			writeError(w, http.StatusBadRequest, "批量下载文件数必须在 0 到 1000 之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "batch_size", strconv.Itoa(*payload.BatchSize)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.BatchIntervalMinutes != nil {
+		if *payload.BatchIntervalMinutes < 0 || *payload.BatchIntervalMinutes > 10080 {
+			writeError(w, http.StatusBadRequest, "下载间隔分钟数必须在 0 到 10080 之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "batch_interval_minutes", strconv.Itoa(*payload.BatchIntervalMinutes)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.ConvertToSimplified != nil {
+		if err := s.store.SetSetting(r.Context(), "convert_to_simplified", strconv.FormatBool(*payload.ConvertToSimplified)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.StaleDays != nil {
+		normalized := map[string]int{}
+		for sourceID, days := range payload.StaleDays {
+			if !isManagedSource(sourceID) {
+				continue
+			}
+			if days < 0 || days > 3650 {
+				writeError(w, http.StatusBadRequest, "未更新天数必须在 0 到 3650 之间")
+				return
+			}
+			normalized[sourceID] = days
+		}
+		raw, _ := json.Marshal(normalized)
+		if err := s.store.SetSetting(r.Context(), "stale_days", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.ProxyUsername != nil || payload.ProxyPassword != nil {
+		current := s.loadSettings(r.Context())
+		proxyUsername, proxyPassword := current.ProxyUsername, current.ProxyPassword
+		if payload.ProxyUsername != nil {
+			proxyUsername = strings.TrimSpace(*payload.ProxyUsername)
+		}
+		if payload.ProxyPassword != nil {
+			proxyPassword = *payload.ProxyPassword
+		}
+		if err := source.SetHTTPClientProxyCredentials(s.registry.Client(), current.Proxy, proxyUsername, proxyPassword); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "proxy_username", proxyUsername); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "proxy_password", proxyPassword); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := s.setProxyCredentials(r.Context(), payload.Proxy, payload.ProxyUsername, payload.ProxyPassword); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	current := s.loadSettings(r.Context())
-	s.engine.SetConcurrency(current.MaxChapterConcurrency, current.MaxPageConcurrency)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                    true,
-		"username":              responseUsername,
-		"repoUrl":               current.RepoURL,
-		"scanInterval":          current.ScanInterval.String(),
-		"maxChapterConcurrency": current.MaxChapterConcurrency,
-		"maxPageConcurrency":    current.MaxPageConcurrency,
-		"proxy":                 current.Proxy,
-		"cookieSecure":          current.CookieSecure,
-	})
+	s.engine.SetSourceConcurrency(current.SourceConcurrency)
+	s.engine.SetDownloadPolicy(current.BatchSize, current.BatchIntervalMinutes, current.ConvertToSimplified)
+	response := s.settingsResponse(r.Context(), responseUsername)
+	response["ok"] = true
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -942,7 +1242,34 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if s.logs != nil {
 		lines = s.logs.Lines(limit)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+	items := make([]logEntry, 0, len(lines))
+	for _, line := range lines {
+		items = append(items, parseLogEntry(line))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "items": items})
+}
+
+type logEntry struct {
+	Time    string `json:"time,omitempty"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Raw     string `json:"raw"`
+}
+
+func parseLogEntry(line string) logEntry {
+	entry := logEntry{Level: "info", Message: line, Raw: line}
+	parts := strings.SplitN(strings.TrimSpace(line), " ", 3)
+	if len(parts) == 3 && len(parts[0]) == 10 && strings.Count(parts[0], "/") == 2 {
+		entry.Time = parts[0] + " " + parts[1]
+		entry.Message = parts[2]
+	}
+	lower := strings.ToLower(entry.Message)
+	if strings.Contains(lower, "failed") || strings.Contains(lower, "error") || strings.Contains(lower, "失败") || strings.Contains(lower, "无法") {
+		entry.Level = "error"
+	} else if strings.Contains(lower, "warn") || strings.Contains(lower, "retry") || strings.Contains(lower, "重试") {
+		entry.Level = "warning"
+	}
+	return entry
 }
 
 func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
@@ -1063,6 +1390,75 @@ func (s *Server) cookieSecure(ctx context.Context) bool {
 
 func (s *Server) setProxy(raw string) error {
 	return source.SetHTTPClientProxy(s.registry.Client(), raw)
+}
+
+// setProxyCredentials applies proxy URL, username and password in one step.
+func (s *Server) setProxyCredentials(ctx context.Context, raw, username *string, password *string) error {
+	if raw == nil && username == nil && password == nil {
+		return nil
+	}
+	current := s.loadSettings(ctx)
+	proxyURL, proxyUsername, proxyPassword := current.Proxy, current.ProxyUsername, current.ProxyPassword
+	if raw != nil {
+		proxyURL = strings.TrimSpace(*raw)
+	}
+	if username != nil {
+		proxyUsername = strings.TrimSpace(*username)
+	}
+	if password != nil {
+		proxyPassword = *password
+	}
+	if err := source.SetHTTPClientProxyCredentials(s.registry.Client(), proxyURL, proxyUsername, proxyPassword); err != nil {
+		return err
+	}
+	for key, value := range map[string]string{"proxy": proxyURL, "proxy_username": proxyUsername, "proxy_password": proxyPassword} {
+		if err := s.store.SetSetting(ctx, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) sessionTTL(ctx context.Context) time.Duration {
+	current := s.loadSettings(ctx)
+	if current.SessionTTLDays < 1 {
+		return sessionTTL
+	}
+	return time.Duration(current.SessionTTLDays) * 24 * time.Hour
+}
+
+// RunSubscriptionMaintenance applies stale/completed/disabled subscription
+// rules on a schedule in the background.
+func (s *Server) RunSubscriptionMaintenance(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 30 * time.Minute
+	}
+	run := func() {
+		current := s.loadSettings(ctx)
+		if err := s.store.MaintainSubscriptions(ctx, current.StaleDays, time.Now()); err != nil {
+			s.logger.Printf("maintenance: subscriptions: %v", err)
+		}
+	}
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
+func isManagedSource(sourceID string) bool {
+	for _, managed := range managedSourceIDs {
+		if managed == sourceID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {

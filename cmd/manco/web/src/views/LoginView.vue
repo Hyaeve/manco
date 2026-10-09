@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Loader2, LogIn, UserPlus } from 'lucide-vue-next'
 import { api } from '../api'
+import MancoLogo from '../components/MancoLogo.vue'
 import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
 
@@ -54,30 +55,32 @@ async function submit() {
 <template>
   <div class="login-page">
     <div class="login-card">
-      <div class="brand" style="padding: 0; margin-bottom: 18px">
-        <span class="brand-mark">M</span>
-        <span class="brand-text">
-          <strong>Manco</strong>
-          <span>漫画订阅下载</span>
-        </span>
+      <MancoLogo class="login-logo" :size="54" />
+      <div class="login-title">
+        <h1>{{ setupRequired ? '创建账号' : '登录' }}</h1>
+        <span v-if="setupRequired">首次使用</span>
       </div>
-      <h1>{{ setupRequired ? '创建账号' : '登录' }}</h1>
-      <p>{{ setupRequired ? '首次使用，请创建登录账号。' : '请输入你的账号密码。' }}</p>
       <form class="login-form" @submit.prevent="submit">
-        <label class="field">
-          <span>用户名</span>
-          <input v-model="username" class="input" autocomplete="username" />
-        </label>
-        <label class="field">
-          <span>密码</span>
-          <PasswordInput v-model="password" autocomplete="current-password" />
-        </label>
-        <label v-if="setupRequired" class="field">
-          <span>确认密码</span>
-          <PasswordInput v-model="confirm" autocomplete="new-password" />
-        </label>
+        <input
+          v-model="username"
+          class="input"
+          autocomplete="username"
+          aria-label="用户名"
+          placeholder="用户名"
+        />
+        <PasswordInput
+          v-model="password"
+          :autocomplete="setupRequired ? 'new-password' : 'current-password'"
+          placeholder="密码"
+        />
+        <PasswordInput
+          v-if="setupRequired"
+          v-model="confirm"
+          autocomplete="new-password"
+          placeholder="确认密码"
+        />
         <div v-if="error" class="alert error" style="margin: 0">{{ error }}</div>
-        <button class="btn" type="submit" :disabled="loading">
+        <button class="btn login-submit" type="submit" :disabled="loading">
           <Loader2 v-if="loading" :size="16" class="spin" />
           <UserPlus v-else-if="setupRequired" :size="16" />
           <LogIn v-else :size="16" />

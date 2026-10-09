@@ -2,9 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"testing"
+	"time"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
@@ -20,7 +22,16 @@ func (s *stubSubscriptions) ListSubscriptions(context.Context) ([]model.Subscrip
 	return s.items, nil
 }
 
-func (s *stubSubscriptions) UpdateSubscriptionCheck(_ context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64) error {
+func (s *stubSubscriptions) Subscription(_ context.Context, id int64) (model.Subscription, error) {
+	for _, item := range s.items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return model.Subscription{}, errors.New("not found")
+}
+
+func (s *stubSubscriptions) UpdateSubscriptionCheck(_ context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
 	for _, item := range s.items {
 		if item.ID != id {
 			continue
@@ -137,6 +148,66 @@ func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
 	}
 	if got := subscriptions.updates[len(subscriptions.updates)-1].LastChapterID; got != "3" {
 		t.Fatalf("baseline after check = %q, want 3", got)
+	}
+}
+
+func TestQueueLatestDownloadsNewestEvenWhenAutoDownloadDisabled(t *testing.T) {
+	subscription := model.Subscription{
+		ID:           1,
+		SourceID:     "stub",
+		ComicID:      "1",
+		Title:        "测试作品",
+		Cover:        "cover.jpg",
+		Enabled:      true,
+		AutoDownload: false,
+	}
+	subscriptions := &stubSubscriptions{items: []model.Subscription{subscription}}
+	downloads := &stubDownloads{}
+	job, err := newTestScheduler(testChapters(), subscriptions, downloads).QueueLatest(context.Background(), subscription)
+	if err != nil {
+		t.Fatalf("QueueLatest returned error: %v", err)
+	}
+	if job.ChapterID != "3" || len(downloads.jobs) != 1 {
+		t.Fatalf("queued jobs = %#v, want only chapter 3", downloads.jobs)
+	}
+	if downloads.notified == 0 {
+		t.Fatal("downloader was not notified after manual download")
+	}
+	if got := subscriptions.updates[len(subscriptions.updates)-1].LastChapterID; got != "3" {
+		t.Fatalf("baseline after manual download = %q, want 3", got)
+	}
+}
+
+func TestQueueLatestRejectsComicWithoutChapters(t *testing.T) {
+	subscription := model.Subscription{ID: 1, SourceID: "stub", ComicID: "1", Title: "测试作品", Enabled: true}
+	subscriptions := &stubSubscriptions{}
+	downloads := &stubDownloads{}
+	_, err := newTestScheduler(nil, subscriptions, downloads).QueueLatest(context.Background(), subscription)
+	if !errors.Is(err, ErrNoChapters) {
+		t.Fatalf("QueueLatest error = %v, want ErrNoChapters", err)
+	}
+	if len(downloads.jobs) != 0 || len(subscriptions.updates) != 0 {
+		t.Fatalf("empty comic produced jobs=%d updates=%d", len(downloads.jobs), len(subscriptions.updates))
+	}
+}
+
+func TestCronDueUsesCreationAndLastCheckBase(t *testing.T) {
+	scheduler := newTestScheduler(nil, &stubSubscriptions{}, &stubDownloads{})
+	created := time.Date(2026, time.October, 9, 10, 0, 0, 0, time.Local)
+	subscription := model.Subscription{
+		CronExpr:  "0 12 * * 5",
+		CreatedAt: created,
+	}
+	if scheduler.due(subscription, time.Date(2026, time.October, 9, 11, 59, 59, 0, time.Local)) {
+		t.Fatal("subscription ran before its cron time")
+	}
+	if !scheduler.due(subscription, time.Date(2026, time.October, 9, 12, 0, 1, 0, time.Local)) {
+		t.Fatal("subscription did not run at its cron time")
+	}
+	checked := time.Date(2026, time.October, 9, 12, 0, 30, 0, time.Local)
+	subscription.LastCheckedAt = &checked
+	if scheduler.due(subscription, time.Date(2026, time.October, 9, 12, 1, 0, 0, time.Local)) {
+		t.Fatal("weekly subscription ran twice in the same cron window")
 	}
 }
 

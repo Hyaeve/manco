@@ -4,18 +4,41 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { BookOpen, ChevronLeft, ChevronRight, ImageOff, Loader2, Search } from 'lucide-vue-next'
 import { api } from '../api'
 
+const FILTER_STORAGE_KEY = 'manco.discover.filters.v1'
+
 const route = useRoute()
 const router = useRouter()
-const sources = ref([])
+const allSources = ref([])
 const activeId = ref('')
 const panels = ref({})
 const loadingSources = ref(true)
 const sourcesError = ref('')
+const savedFilters = ref(readSavedFilters())
+
+const sources = computed(() => allSources.value.filter((source) => !source.hidden))
+
+function readSavedFilters() {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(FILTER_STORAGE_KEY) || '{}')
+    return value && typeof value === 'object' ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+function persistFilters() {
+  window.localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(savedFilters.value))
+}
 
 function sourceFilters(source) {
+  const stored = savedFilters.value?.[source.id] || {}
   const values = {}
   for (const group of source.filters || []) {
-    values[group.key] = group.default ?? group.options?.[0]?.value ?? ''
+    const candidate = stored[group.key]
+    const available = (group.options || []).some((option) => String(option.value) === String(candidate))
+    values[group.key] = available
+      ? String(candidate)
+      : String(group.default ?? group.options?.[0]?.value ?? '')
   }
   return values
 }
@@ -43,10 +66,10 @@ const activePanel = computed(() => (activeSource.value ? panelFor(activeSource.v
 async function loadSources() {
   try {
     const payload = await api.sources()
-    sources.value = payload.items || []
+    allSources.value = payload.items || []
     const requested = typeof route.query.source === 'string' ? route.query.source : ''
     const found = sources.value.find((source) => source.id === requested)
-    activeId.value = found ? found.id : sources.value[0]?.id || ''
+    activeId.value = found?.id || sources.value[0]?.id || ''
     if (activeId.value) {
       await load(activeSource.value, activePanel.value)
     }
@@ -112,6 +135,8 @@ async function submitSearch() {
 async function changeFilter() {
   const panel = activePanel.value
   if (!panel) return
+  savedFilters.value[activeSource.value.id] = { ...panel.filters }
+  persistFilters()
   panel.query = ''
   panel.mode = 'browse'
   panel.page = 1
@@ -134,22 +159,48 @@ function cover(item) {
 
 <template>
   <div class="discover-tabs-wrap">
-    <nav class="discover-tabs" aria-label="漫画源">
-      <button
-        v-for="source in sources"
-        :key="source.id"
-        type="button"
-        :class="{ active: source.id === activeId }"
-        @click="selectSource(source.id)"
-      >
-        {{ source.name }}
-      </button>
-    </nav>
+    <div v-if="sources.length && !loadingSources" class="discover-head">
+      <nav class="discover-tabs" aria-label="漫画源">
+        <button
+          v-for="source in sources"
+          :key="source.id"
+          type="button"
+          :class="{ active: source.id === activeId }"
+          @click="selectSource(source.id)"
+        >
+          {{ source.name }}
+        </button>
+      </nav>
+
+      <div v-if="activeSource" class="source-search discover-search">
+        <input
+          v-model="activePanel.query"
+          class="input"
+          :disabled="!activeSource.canSearch || activePanel.loading"
+          placeholder="搜索作品"
+          @keyup.enter="submitSearch"
+        />
+        <button
+          class="btn small"
+          type="button"
+          :disabled="!activeSource.canSearch || activePanel.loading"
+          :aria-label="`搜索 ${activeSource.name}`"
+          @click="submitSearch"
+        >
+          <Loader2 v-if="activePanel.loading" :size="15" class="spin" />
+          <Search v-else :size="15" />
+        </button>
+      </div>
+    </div>
 
     <div v-if="sourcesError" class="alert error">{{ sourcesError }}</div>
     <div v-else-if="loadingSources" class="source-loading">
       <Loader2 :size="22" class="spin" />
       <span>正在加载漫画源</span>
+    </div>
+    <div v-else-if="!sources.length" class="card empty">
+      <ImageOff :size="26" />
+      <span>所有漫画源均已在系统设置中隐藏</span>
     </div>
 
     <section v-else-if="activeSource && activePanel" class="source-page">
@@ -161,28 +212,8 @@ function cover(item) {
         <span class="badge primary">{{ activePanel.items.length }} 项</span>
       </header>
 
-      <div class="source-column-tools">
-        <div class="source-search">
-          <input
-            v-model="activePanel.query"
-            class="input"
-            :disabled="!activeSource.canSearch || activePanel.loading"
-            placeholder="搜索作品"
-            @keyup.enter="submitSearch"
-          />
-          <button
-            class="btn small"
-            type="button"
-            :disabled="!activeSource.canSearch || activePanel.loading"
-            :aria-label="`搜索 ${activeSource.name}`"
-            @click="submitSearch"
-          >
-            <Loader2 v-if="activePanel.loading" :size="15" class="spin" />
-            <Search v-else :size="15" />
-          </button>
-        </div>
-
-        <div v-if="activeSource.filters?.length" class="source-filter-grid">
+      <div v-if="activeSource.filters?.length" class="source-column-tools">
+        <div class="source-filter-grid">
           <label v-for="group in activeSource.filters" :key="group.key" class="field compact">
             <span>{{ group.label }}</span>
             <select

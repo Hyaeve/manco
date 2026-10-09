@@ -33,12 +33,19 @@ type Subscription struct {
 	Author           string     `json:"author"`
 	Enabled          bool       `json:"enabled"`
 	AutoDownload     bool       `json:"autoDownload"`
+	CronExpr         string     `json:"cronExpr"`
 	LastChapterID    string     `json:"lastChapterId"`
 	LastChapterTitle string     `json:"lastChapterTitle"`
 	LastChapterOrder float64    `json:"lastChapterOrder"`
 	LastCheckedAt    *time.Time `json:"lastCheckedAt,omitempty"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	UpdatedAt        time.Time  `json:"updatedAt"`
+	ComicStatus      string     `json:"comicStatus,omitempty"`
+	LastNewChapterAt *time.Time `json:"lastNewChapterAt,omitempty"`
+	DisabledAt       *time.Time `json:"disabledAt,omitempty"`
+	CompletedAt      *time.Time `json:"completedAt,omitempty"`
+	ArchivedAt       *time.Time `json:"archivedAt,omitempty"`
+	ArchiveReason    string     `json:"archiveReason,omitempty"`
 }
 
 type DownloadJob struct {
@@ -55,6 +62,8 @@ type DownloadJob struct {
 	CompletedPages int        `json:"completedPages"`
 	FilePath       string     `json:"filePath,omitempty"`
 	Error          string     `json:"error,omitempty"`
+	RetryCount     int        `json:"retryCount"`
+	NextRetryAt    *time.Time `json:"nextRetryAt,omitempty"`
 	CreatedAt      time.Time  `json:"createdAt"`
 	UpdatedAt      time.Time  `json:"updatedAt"`
 	StartedAt      *time.Time `json:"startedAt,omitempty"`
@@ -76,7 +85,10 @@ type SourceInfo struct {
 	NeedsLogin  bool          `json:"needsLogin"`
 	CanSearch   bool          `json:"canSearch"`
 	CanBrowse   bool          `json:"canBrowse"`
+	Icon        string        `json:"icon,omitempty"`
+	Sites       []string      `json:"sites,omitempty"`
 	Filters     []FilterGroup `json:"filters,omitempty"`
+	Hidden      bool          `json:"hidden,omitempty"`
 }
 
 type FilterOption struct {

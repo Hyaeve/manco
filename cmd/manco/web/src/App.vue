@@ -14,6 +14,7 @@ import {
   Settings,
   User,
 } from 'lucide-vue-next'
+import MancoLogo from './components/MancoLogo.vue'
 import { useAuthStore } from './stores/auth'
 
 const auth = useAuthStore()
@@ -71,7 +72,7 @@ async function signOut() {
   <div v-else class="app-shell">
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
-        <span class="brand-mark">M</span>
+        <MancoLogo class="brand-logo" :size="36" />
         <span class="brand-text">
           <strong>Manco</strong>
           <span>漫画订阅下载</span>
@@ -109,7 +110,6 @@ async function signOut() {
           </button>
           <div>
             <h1>{{ pageTitle }}</h1>
-            <p>订阅漫画源，按话自动打包为 CBZ</p>
           </div>
         </div>
       </header>

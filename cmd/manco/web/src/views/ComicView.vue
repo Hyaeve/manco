@@ -81,7 +81,7 @@ async function downloadSelected() {
   error.value = ''
   message.value = ''
   try {
-    await api.createDownload({
+    const result = await api.createDownload({
       sourceId,
       comicId: comic.value.id,
       comicTitle: comic.value.title,
@@ -89,7 +89,11 @@ async function downloadSelected() {
       autoDownload: autoDownload.value,
       chapters: picked,
     })
-    message.value = `已加入 ${picked.length} 个章节，将在后台逐话打包为 CBZ。`
+    const queued = Number(result.queued || 0)
+    const skipped = Number(result.skipped || 0)
+    message.value = [`已加入 ${queued} 个章节`, skipped ? `跳过 ${skipped} 个已下载章节` : '']
+      .filter(Boolean)
+      .join('，') + '。'
   } catch (err) {
     error.value = err.message
   } finally {

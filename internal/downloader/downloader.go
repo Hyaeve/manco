@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"image"
@@ -22,10 +23,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/liuzl/gocc"
 	"golang.org/x/image/webp"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -40,8 +43,17 @@ type Engine struct {
 	maxChapterConcurrency int
 	maxPageConcurrency    int
 	logger                *log.Logger
+	sourceConcurrency     map[string]int
+	batchSize             int
+	batchInterval         time.Duration
+	batchCompleted        int
+	cooldownUntil         time.Time
+	convertToSimplified   bool
+	activeTotal           int
+	activeBySource        map[string]int
 
 	mu      sync.Mutex
+	metaMu  sync.Mutex
 	active  map[int64]context.CancelFunc
 	kick    chan struct{}
 	started bool
@@ -57,8 +69,47 @@ func (e *Engine) SetConcurrency(chapters, pages int) {
 		pages = 1
 	}
 	e.mu.Lock()
-	e.maxChapterConcurrency = chapters
 	e.maxPageConcurrency = pages
+	for sourceID := range e.sourceConcurrency {
+		e.sourceConcurrency[sourceID] = chapters
+	}
+	e.maxChapterConcurrency = chapters * len(e.sourceConcurrency)
+	e.mu.Unlock()
+	e.Notify()
+}
+
+// SetSourceConcurrency applies per-source chapter limits.
+func (e *Engine) SetSourceConcurrency(limits map[string]int) {
+	e.mu.Lock()
+	total := 0
+	for sourceID, limit := range limits {
+		if limit < 1 {
+			limit = 1
+		}
+		e.sourceConcurrency[sourceID] = limit
+		total += limit
+	}
+	if total > 0 {
+		e.maxChapterConcurrency = total
+	}
+	e.mu.Unlock()
+	e.Notify()
+}
+
+// SetDownloadPolicy configures the batch pause and text conversion behavior.
+func (e *Engine) SetDownloadPolicy(batchSize, intervalMinutes int, convertToSimplified bool) {
+	e.mu.Lock()
+	if batchSize < 0 {
+		batchSize = 0
+	}
+	if intervalMinutes < 0 {
+		intervalMinutes = 0
+	}
+	e.batchSize = batchSize
+	e.batchInterval = time.Duration(intervalMinutes) * time.Minute
+	e.convertToSimplified = convertToSimplified
+	e.batchCompleted = 0
+	e.cooldownUntil = time.Time{}
 	e.mu.Unlock()
 	e.Notify()
 }
@@ -69,6 +120,9 @@ type Jobs interface {
 	ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
 	DownloadJob(ctx context.Context, id int64) (model.DownloadJob, error)
 	UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error
+	FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error
+	ResetDownloadJob(ctx context.Context, id int64) error
+	ActivateDueRetries(ctx context.Context, now time.Time) (int64, error)
 	UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error
 }
 
@@ -88,9 +142,15 @@ func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxCh
 		downloadDir:           downloadDir,
 		maxChapterConcurrency: maxChapterConcurrency,
 		maxPageConcurrency:    maxPageConcurrency,
-		logger:                logger,
-		active:                map[int64]context.CancelFunc{},
-		kick:                  make(chan struct{}, 1),
+		sourceConcurrency: map[string]int{
+			"picacg":  maxChapterConcurrency,
+			"jmcomic": maxChapterConcurrency,
+			"baozimh": maxChapterConcurrency,
+		},
+		logger:         logger,
+		active:         map[int64]context.CancelFunc{},
+		activeBySource: map[string]int{},
+		kick:           make(chan struct{}, 1),
 	}
 }
 
@@ -113,11 +173,10 @@ func (e *Engine) Notify() {
 }
 
 func (e *Engine) Retry(ctx context.Context, id int64) error {
-	job, err := e.store.DownloadJob(ctx, id)
-	if err != nil {
+	if _, err := e.store.DownloadJob(ctx, id); err != nil {
 		return err
 	}
-	if err := e.store.UpdateDownloadJob(ctx, id, "queued", job.TotalPages, 0, job.FilePath, ""); err != nil {
+	if err := e.store.ResetDownloadJob(ctx, id); err != nil {
 		return err
 	}
 	e.Notify()
@@ -152,7 +211,6 @@ func (e *Engine) loop(ctx context.Context) {
 		e.started = false
 		e.mu.Unlock()
 	}()
-	semaphore := make(chan struct{}, e.concurrency())
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -162,6 +220,14 @@ func (e *Engine) loop(ctx context.Context) {
 		case <-ticker.C:
 		case <-e.kick:
 		}
+		if activated, err := e.store.ActivateDueRetries(ctx, time.Now()); err != nil {
+			e.logger.Printf("downloader: activate retries: %v", err)
+		} else if activated > 0 {
+			e.logger.Printf("downloader: requeued %d failed job(s) for automatic retry", activated)
+		}
+		if e.inCooldown() {
+			continue
+		}
 		jobs, err := e.store.ListQueuedJobs(ctx)
 		if err != nil {
 			e.logger.Printf("downloader: list queue: %v", err)
@@ -169,19 +235,16 @@ func (e *Engine) loop(ctx context.Context) {
 		}
 		for _, job := range jobs {
 			job := job
-			if !e.claim(job.ID) {
+			if !e.claim(job) {
 				continue
 			}
-			select {
-			case semaphore <- struct{}{}:
-			case <-ctx.Done():
-				e.release(job.ID)
+			if ctx.Err() != nil {
+				e.release(job)
 				return
 			}
 			go func() {
 				defer func() {
-					<-semaphore
-					e.release(job.ID)
+					e.release(job)
 					e.Notify()
 				}()
 				e.runJob(ctx, job)
@@ -190,19 +253,63 @@ func (e *Engine) loop(ctx context.Context) {
 	}
 }
 
-func (e *Engine) claim(id int64) bool {
+func (e *Engine) claim(job model.DownloadJob) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if _, exists := e.active[id]; exists {
+	if _, exists := e.active[job.ID]; exists {
 		return false
 	}
-	e.active[id] = func() {}
+	if e.activeTotal >= e.maxChapterConcurrency {
+		return false
+	}
+	if limit := e.sourceConcurrency[job.SourceID]; limit > 0 && e.activeBySource[job.SourceID] >= limit {
+		return false
+	}
+	e.active[job.ID] = func() {}
+	e.activeTotal++
+	e.activeBySource[job.SourceID]++
 	return true
 }
 
-func (e *Engine) release(id int64) {
+func (e *Engine) release(job model.DownloadJob) {
 	e.mu.Lock()
-	delete(e.active, id)
+	defer e.mu.Unlock()
+	if _, exists := e.active[job.ID]; !exists {
+		return
+	}
+	delete(e.active, job.ID)
+	if e.activeTotal > 0 {
+		e.activeTotal--
+	}
+	if e.activeBySource[job.SourceID] > 0 {
+		e.activeBySource[job.SourceID]--
+	}
+}
+
+// inCooldown reports whether the configured batch pause is still active.
+func (e *Engine) inCooldown() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.batchSize > 0 && time.Now().Before(e.cooldownUntil)
+}
+
+// markBatchComplete pauses the engine after the configured number of jobs.
+func (e *Engine) markBatchComplete() {
+	e.mu.Lock()
+	if e.batchSize <= 0 {
+		e.mu.Unlock()
+		return
+	}
+	e.batchCompleted++
+	if e.batchCompleted < e.batchSize {
+		e.mu.Unlock()
+		return
+	}
+	e.batchCompleted = 0
+	if e.batchInterval > 0 {
+		e.cooldownUntil = time.Now().Add(e.batchInterval)
+		e.logger.Printf("downloader: batch of %d completed, pausing until %s", e.batchSize, e.cooldownUntil.Format(time.RFC3339))
+	}
 	e.mu.Unlock()
 }
 
@@ -215,18 +322,35 @@ func (e *Engine) runJob(parent context.Context, job model.DownloadJob) {
 
 	err := e.download(ctx, job)
 	if err == nil {
+		e.markBatchComplete()
 		return
-	}
-	status := "failed"
-	if errors.Is(err, context.Canceled) {
-		status = "canceled"
 	}
 	message := err.Error()
 	if len(message) > 500 {
 		message = message[:500]
 	}
-	_ = e.store.UpdateDownloadJob(context.Background(), job.ID, status, job.TotalPages, job.CompletedPages, "", message)
-	e.logger.Printf("downloader: %s/%s failed: %v", job.ComicTitle, job.ChapterTitle, err)
+	if errors.Is(err, context.Canceled) {
+		_ = e.store.UpdateDownloadJob(context.Background(), job.ID, "canceled", job.TotalPages, job.CompletedPages, "", message)
+		e.logger.Printf("downloader: %s/%s canceled", job.ComicTitle, job.ChapterTitle)
+		return
+	}
+	retryCount := job.RetryCount
+	var nextRetry *time.Time
+	if retryCount < 2 {
+		delay := 30 * time.Minute
+		if retryCount == 0 {
+			delay = 10 * time.Minute
+		}
+		at := time.Now().Add(delay)
+		nextRetry = &at
+		retryCount++
+	}
+	_ = e.store.FailDownloadJob(context.Background(), job.ID, job.TotalPages, job.CompletedPages, message, retryCount, nextRetry)
+	if nextRetry != nil {
+		e.logger.Printf("downloader: %s/%s failed, retry in %s: %v", job.ComicTitle, job.ChapterTitle, time.Until(*nextRetry).Round(time.Second), err)
+	} else {
+		e.logger.Printf("downloader: %s/%s failed, automatic retries exhausted: %v", job.ComicTitle, job.ChapterTitle, err)
+	}
 }
 
 func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
@@ -330,7 +454,50 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		entries = append(entries, pageEntry{name: name, path: path})
 	}
 
-	outputPath := filepath.Join(e.downloadDir, SafeName(job.ComicTitle), SafeName(job.ChapterTitle)+".cbz")
+	metadata := model.Comic{
+		SourceID: job.SourceID,
+		ID:       job.ComicID,
+		Title:    job.ComicTitle,
+		Cover:    job.ComicCover,
+	}
+	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+	} else {
+		e.logger.Printf("downloader: detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
+	}
+	comicTitle := job.ComicTitle
+	chapterTitle := job.ChapterTitle
+	if e.convertToSimplified {
+		comicTitle = convertToSimplifiedText(comicTitle)
+		chapterTitle = convertToSimplifiedText(chapterTitle)
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+		metadata.Status = convertToSimplifiedText(metadata.Status)
+		for index := range metadata.Tags {
+			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
+		}
+	}
+	comicDir := filepath.Join(e.downloadDir, SafeName(comicTitle))
+	e.metaMu.Lock()
+	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, len(pages))
+	e.metaMu.Unlock()
+	if metaErr != nil {
+		return fmt.Errorf("download comic metadata: %w", metaErr)
+	}
+	if len(infoPayload) > 0 {
+		infoPath := filepath.Join(tempDir, "ComicInfo.xml")
+		if err := os.WriteFile(infoPath, infoPayload, 0o644); err != nil {
+			return err
+		}
+		entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
+	}
+
+	outputPath := filepath.Join(comicDir, SafeName(chapterTitle)+".cbz")
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
@@ -343,6 +510,123 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 type pageEntry struct {
 	name string
 	path string
+}
+
+// ComicInfo mirrors the ComicInfo.xml schema used by comic readers so the
+// downloaded metadata (author, summary, tags, status) stays interoperable.
+type ComicInfo struct {
+	XMLName     xml.Name `xml:"ComicInfo"`
+	Title       string   `xml:"Title,omitempty"`
+	Series      string   `xml:"Series,omitempty"`
+	Number      string   `xml:"Number,omitempty"`
+	Volume      string   `xml:"Volume,omitempty"`
+	Writer      string   `xml:"Writer,omitempty"`
+	Publisher   string   `xml:"Publisher,omitempty"`
+	Summary     string   `xml:"Summary,omitempty"`
+	Genre       string   `xml:"Genre,omitempty"`
+	Web         string   `xml:"Web,omitempty"`
+	PageCount   int      `xml:"PageCount,omitempty"`
+	Manga       string   `xml:"Manga,omitempty"`
+	LanguageISO string   `xml:"LanguageISO,omitempty"`
+	Status      string   `xml:"Status,omitempty"`
+	Notes       string   `xml:"Notes,omitempty"`
+}
+
+var (
+	textConvertOnce sync.Once
+	textConverter   *gocc.OpenCC
+	textConvertErr  error
+)
+
+// convertToSimplifiedText converts Traditional Chinese metadata to Simplified
+// Chinese. If the converter cannot be initialized, the original text is kept.
+func convertToSimplifiedText(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	textConvertOnce.Do(func() {
+		textConverter, textConvertErr = gocc.New("t2s")
+	})
+	if textConvertErr != nil || textConverter == nil {
+		return value
+	}
+	converted, err := textConverter.Convert(value)
+	if err != nil || converted == "" {
+		return value
+	}
+	return converted
+}
+
+func writeComicMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic, comicDir, chapterTitle string, chapterOrder float64, pageCount int) ([]byte, error) {
+	if err := os.MkdirAll(comicDir, 0o755); err != nil {
+		return nil, err
+	}
+	info := item.Info()
+	coverURL := strings.TrimSpace(comic.Cover)
+	if coverURL != "" {
+		existing, _ := filepath.Glob(filepath.Join(comicDir, "cover.*"))
+		if len(existing) == 0 {
+			data, err := fetchImage(ctx, client, account, model.Page{URL: coverURL, Referer: info.Homepage})
+			if err != nil {
+				return nil, fmt.Errorf("cover: %w", err)
+			}
+			coverPath := filepath.Join(comicDir, "cover"+imageExtension(data, coverURL))
+			if err := os.WriteFile(coverPath, data, 0o644); err != nil {
+				return nil, err
+			}
+		}
+	}
+	infoDoc := ComicInfo{
+		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
+		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
+		Number:      comicNumber(chapterOrder),
+		Writer:      comic.Author,
+		Summary:     comic.Description,
+		Genre:       strings.Join(comic.Tags, ","),
+		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
+		PageCount:   pageCount,
+		Manga:       "YesAndRightToLeft",
+		LanguageISO: "zh-Hans",
+		Status:      comic.Status,
+		Notes:       fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID),
+	}
+	payload, err := xml.MarshalIndent(infoDoc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	payload = append([]byte(xml.Header), payload...)
+	if err := os.WriteFile(filepath.Join(comicDir, "ComicInfo.xml"), payload, 0o644); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func comicNumber(order float64) string {
+	if order <= 0 {
+		return ""
+	}
+	if order == float64(int64(order)) {
+		return strconv.FormatInt(int64(order), 10)
+	}
+	return strconv.FormatFloat(order, 'f', -1, 64)
+}
+
+// comicPageURL builds a best-effort link back to the source detail page.
+func comicPageURL(homepage, sourceID, comicID string) string {
+	base := strings.TrimRight(strings.TrimSpace(homepage), "/")
+	if base == "" {
+		return ""
+	}
+	switch sourceID {
+	case "jmcomic":
+		return base + "/album/" + comicID
+	case "picacg":
+		return base + "/comic/" + comicID
+	case "baozimh":
+		return base + "/comic/" + comicID
+	default:
+		return base
+	}
 }
 
 func fetchImage(ctx context.Context, client *http.Client, account source.Account, page model.Page) ([]byte, error) {

@@ -4,10 +4,13 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/hyaeve/manco/internal/cronutil"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/sources"
 )
@@ -19,7 +22,8 @@ type Downloads interface {
 
 type Subscriptions interface {
 	ListSubscriptions(ctx context.Context) ([]model.Subscription, error)
-	UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64) error
+	Subscription(ctx context.Context, id int64) (model.Subscription, error)
+	UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error
 }
 
 type Scheduler struct {
@@ -66,15 +70,18 @@ func (s *Scheduler) Start(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
+		s.RunDue(ctx)
+		// A one-minute ticker lets per-subscription cron expressions run close
+		// to their scheduled minute without a second scheduled job store.
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
 		for {
-			timer := time.NewTimer(time.Duration(s.intervalNanos.Load()))
 			select {
 			case <-ctx.Done():
-				timer.Stop()
 				return
-			case <-timer.C:
+			case <-ticker.C:
 			}
-			s.RunOnce(ctx)
+			s.RunDue(ctx)
 		}
 	}()
 }
@@ -112,12 +119,12 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 		return err
 	}
 	if len(chapters) == 0 {
-		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder)
+		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, subscription.ComicStatus, false, false)
 	}
 	newest := chapters[len(chapters)-1]
 	if subscription.LastChapterID == "" {
 		// First observation only records a baseline.
-		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order)
+		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(chapters), false)
 	}
 	if subscription.AutoDownload {
 		for _, chapter := range chapters {
@@ -140,9 +147,9 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 		s.downloads.Notify()
 	}
 	if isNewer(newest, subscription) {
-		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order)
+		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(chapters), true)
 	}
-	return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder)
+	return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, subscription.ComicStatus, completedStatus(chapters), false)
 }
 
 func isNewer(chapter model.Chapter, subscription model.Subscription) bool {
@@ -153,4 +160,104 @@ func isNewer(chapter model.Chapter, subscription model.Subscription) bool {
 		return true
 	}
 	return chapter.Order == subscription.LastChapterOrder && chapter.ID > subscription.LastChapterID
+}
+
+// completedStatus reports whether the newest chapter title marks the comic as
+// finished, so the subscription can be archived after a grace period.
+func completedStatus(chapters []model.Chapter) bool {
+	if len(chapters) == 0 {
+		return false
+	}
+	title := strings.ToLower(chapters[len(chapters)-1].Title)
+	for _, marker := range []string{"完结", "已完结", "全本", "终章", "[完]", "（完）", "(完)"} {
+		if strings.Contains(title, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrNoChapters reports that a subscribed comic has no chapters to queue.
+var ErrNoChapters = errors.New("订阅作品没有可下载章节")
+
+// QueueLatest queues the newest chapter for one subscription even when auto
+// download is disabled. It also advances the subscription baseline so the
+// scheduled checker does not report the same chapter as newly published.
+func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscription) (model.DownloadJob, error) {
+	item, err := s.registry.Get(subscription.SourceID)
+	if err != nil {
+		return model.DownloadJob{}, err
+	}
+	account, err := s.registry.Account(ctx, subscription.SourceID)
+	if err != nil {
+		return model.DownloadJob{}, err
+	}
+	chapters, err := item.Chapters(ctx, account, subscription.ComicID)
+	if err != nil {
+		return model.DownloadJob{}, err
+	}
+	if len(chapters) == 0 {
+		return model.DownloadJob{}, ErrNoChapters
+	}
+	newest := chapters[len(chapters)-1]
+	job, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:     subscription.SourceID,
+		ComicID:      subscription.ComicID,
+		ComicTitle:   subscription.Title,
+		ComicCover:   subscription.Cover,
+		ChapterID:    newest.ID,
+		ChapterTitle: newest.Title,
+		ChapterOrder: newest.Order,
+	})
+	if err != nil {
+		return model.DownloadJob{}, err
+	}
+	if err := s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(chapters), true); err != nil {
+		s.logger.Printf("scheduler: update manual download baseline %s/%s: %v", subscription.SourceID, subscription.Title, err)
+	}
+	s.downloads.Notify()
+	return job, nil
+}
+
+// RunDue checks subscriptions whose weekly cron schedule has come due.
+func (s *Scheduler) RunDue(ctx context.Context) {
+	subscriptions, err := s.subscriptions.ListSubscriptions(ctx)
+	if err != nil {
+		s.logger.Printf("scheduler: list subscriptions: %v", err)
+		return
+	}
+	now := time.Now()
+	for _, subscription := range subscriptions {
+		if !subscription.Enabled || !s.due(subscription, now) {
+			continue
+		}
+		if err := s.check(ctx, subscription); err != nil {
+			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
+		}
+	}
+}
+
+func (s *Scheduler) due(subscription model.Subscription, now time.Time) bool {
+	base := subscription.CreatedAt
+	if subscription.LastCheckedAt != nil && !subscription.LastCheckedAt.IsZero() {
+		base = *subscription.LastCheckedAt
+	}
+	if base.IsZero() {
+		return false
+	}
+	due, err := cronutil.Due(subscription.CronExpr, base, now, time.Duration(s.intervalNanos.Load()))
+	if err != nil {
+		s.logger.Printf("scheduler: invalid cron for %s/%s: %v", subscription.SourceID, subscription.Title, err)
+		return false
+	}
+	return due
+}
+
+// CheckOne checks a single subscription immediately.
+func (s *Scheduler) CheckOne(ctx context.Context, id int64) error {
+	subscription, err := s.subscriptions.Subscription(ctx, id)
+	if err != nil {
+		return err
+	}
+	return s.check(ctx, subscription)
 }

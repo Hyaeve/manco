@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { BookOpenCheck, ExternalLink, KeyRound, Loader2, RefreshCw, Save, Server, Trash2 } from 'lucide-vue-next'
+import { BookOpenCheck, ExternalLink, Eye, EyeOff, KeyRound, Loader2, RefreshCw, Save, Server, Trash2 } from 'lucide-vue-next'
 import { api } from '../api'
 import PasswordInput from '../components/PasswordInput.vue'
 
@@ -75,6 +75,21 @@ async function save(item, login) {
   }
 }
 
+async function toggleHidden(item) {
+	busy.value = item.id
+	error.value = ''
+	message.value = ''
+	try {
+		const result = await api.updateSource(item.id, { hidden: !item.hidden })
+		item.hidden = Boolean(result.hidden)
+		message.value = item.hidden ? `${item.name} 已从发现页隐藏。` : `${item.name} 已显示在发现页。`
+	} catch (err) {
+		error.value = err.message
+	} finally {
+		busy.value = ''
+	}
+}
+
 async function disconnect(item) {
   if (!window.confirm(`确定清除「${item.name}」的账号凭据吗？`)) return
   busy.value = item.id
@@ -126,14 +141,22 @@ async function disconnect(item) {
     <span>加载漫画源</span>
   </div>
   <div v-else class="source-grid">
-    <section v-for="item in sources" :key="item.id" class="card card-pad">
+    <section v-for="item in sources" :key="item.id" class="card card-pad source-card" :class="{ 'source-card-hidden': item.hidden }">
       <div class="section-head" style="margin-bottom: 8px">
         <div class="inline">
           <Server :size="17" />
           <h2>{{ item.name }}</h2>
         </div>
-        <span v-if="connected(item.id)" class="badge success">已连接</span>
-        <span v-else class="badge">未连接</span>
+        <div class="inline">
+          <span v-if="connected(item.id)" class="badge success">已连接</span>
+          <span v-else class="badge">未连接</span>
+          <button class="btn secondary small" type="button" :disabled="busy === item.id" @click="toggleHidden(item)">
+            <Loader2 v-if="busy === item.id" :size="14" class="spin" />
+            <EyeOff v-else-if="!item.hidden" :size="14" />
+            <Eye v-else :size="14" />
+            {{ item.hidden ? '在发现页显示' : '从发现页隐藏' }}
+          </button>
+        </div>
       </div>
       <p class="muted small" style="margin-top: 0">{{ item.description }}</p>
       <div class="tag-list">
@@ -155,8 +178,16 @@ async function disconnect(item) {
         </template>
         <template v-else>
           <label class="field" style="margin-bottom: 10px">
-            <span>站点域名（可选）</span>
-            <input v-model="forms[item.id].homeUrl" class="input" :placeholder="item.homepage" />
+            <span>网站地址（可选内置镜像，也可自定义）</span>
+            <input
+              v-model="forms[item.id].homeUrl"
+              class="input"
+              :placeholder="item.homepage"
+              :list="`sites-${item.id}`"
+            />
+            <datalist :id="`sites-${item.id}`">
+              <option v-for="site in item.sites || []" :key="site" :value="site">{{ site }}</option>
+            </datalist>
           </label>
           <label class="field" style="margin-bottom: 12px">
             <span>Cookie（可选，用于通过校验）</span>

@@ -32,6 +32,8 @@ export const api = {
   me: () => request('/api/auth/me'),
 
   sources: () => request('/api/sources'),
+  updateSource: (id, payload) =>
+    request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   saveAccount: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAccount: (id) => request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'DELETE' }),
@@ -55,10 +57,18 @@ export const api = {
     request(`/api/subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteSubscription: (id) => request(`/api/subscriptions/${id}`, { method: 'DELETE' }),
   checkSubscription: (id) => request(`/api/subscriptions/${id}/check`, { method: 'POST' }),
+  downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
 
   downloads: (limit = 200) => request(`/api/downloads?limit=${limit}`),
   createDownload: (payload) => request('/api/downloads', { method: 'POST', body: JSON.stringify(payload) }),
   retryDownload: (id) => request(`/api/downloads/${id}/retry`, { method: 'POST' }),
+  retryDownloads: async (ids) => {
+    const results = []
+    for (const id of ids) {
+      results.push(await request(`/api/downloads/${id}/retry`, { method: 'POST' }))
+    }
+    return results
+  },
   deleteDownload: (id, removeFile = false) =>
     request(`/api/downloads/${id}?removeFile=${removeFile}`, { method: 'DELETE' }),
 

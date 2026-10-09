@@ -60,6 +60,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  true,
 		CanSearch:   true,
 		CanBrowse:   true,
+		Icon:        "https://www.google.com/s2/favicons?domain=manhuabika.com&sz=64",
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "分类", Options: categoryFilterOptions()},
 			{

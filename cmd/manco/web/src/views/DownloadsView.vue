@@ -20,6 +20,8 @@ const error = ref('')
 const message = ref('')
 const filter = ref('all')
 const busy = ref(0)
+const selected = ref(new Set())
+let lastIndex = -1
 let timer = 0
 
 const filters = [
@@ -50,6 +52,37 @@ const visible = computed(() => {
 })
 
 const hasActive = computed(() => items.value.some((item) => ['queued', 'running', 'paused'].includes(item.status)))
+
+const failedVisible = computed(() => visible.value.filter((item) => ['failed', 'canceled'].includes(item.status)))
+const allFailedSelected = computed(() => failedVisible.value.length > 0 && failedVisible.value.every((item) => selected.value.has(item.id)))
+
+function toggleSelect(item, index, event) {
+  const next = new Set(selected.value)
+  if (event?.shiftKey && lastIndex >= 0) {
+    const start = Math.min(lastIndex, index)
+    const end = Math.max(lastIndex, index)
+    for (let cursor = start; cursor <= end; cursor += 1) {
+      const row = visible.value[cursor]
+      if (row && ['failed', 'canceled'].includes(row.status)) next.add(row.id)
+    }
+  } else if (next.has(item.id)) {
+    next.delete(item.id)
+  } else {
+    next.add(item.id)
+  }
+  selected.value = next
+  lastIndex = index
+}
+
+function toggleSelectAll() {
+  const next = new Set(selected.value)
+  if (allFailedSelected.value) {
+    for (const item of failedVisible.value) next.delete(item.id)
+  } else {
+    for (const item of failedVisible.value) next.add(item.id)
+  }
+  selected.value = next
+}
 
 onMounted(async () => {
   await load()
@@ -120,6 +153,24 @@ async function retry(item) {
   }
 }
 
+async function retrySelected() {
+  const ids = failedVisible.value.filter((item) => selected.value.has(item.id)).map((item) => item.id)
+  if (!ids.length) return
+  busy.value = -1
+  error.value = ''
+  message.value = ''
+  try {
+    await api.retryDownloads(ids)
+    selected.value = new Set()
+    message.value = `已将 ${ids.length} 条失败记录重新加入下载队列。`
+    await load(true)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    busy.value = 0
+  }
+}
+
 async function remove(item, removeFile) {
   const hint = removeFile
     ? `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录并删除已下载的 CBZ 文件吗？`
@@ -156,6 +207,16 @@ async function remove(item, removeFile) {
       </button>
     </div>
     <span class="spacer" />
+    <template v-if="filter === 'failed' && failedVisible.length">
+      <button class="btn secondary small" type="button" @click="toggleSelectAll">
+        {{ allFailedSelected ? '取消全选' : '全选失败' }}
+      </button>
+      <button class="btn primary small" type="button" :disabled="!selected.size || busy === -1" @click="retrySelected">
+        <Loader2 v-if="busy === -1" :size="14" class="spin" />
+        <RotateCcw v-else :size="14" />
+        重试选中（{{ selected.size }}）
+      </button>
+    </template>
     <RouterLink class="btn secondary small" to="/discover">
       <Compass :size="15" />
       去发现页新建下载
@@ -187,6 +248,7 @@ async function remove(item, removeFile) {
       <thead>
         <tr>
           <th>作品 / 章节</th>
+          <th v-if="filter === 'failed'" style="width: 34px"></th>
           <th>状态</th>
           <th>进度</th>
           <th>输出文件</th>
@@ -196,6 +258,14 @@ async function remove(item, removeFile) {
       </thead>
       <tbody>
         <tr v-for="item in visible" :key="item.id">
+          <td v-if="filter === 'failed'">
+            <input
+              type="checkbox"
+              :checked="selected.has(item.id)"
+              :disabled="!['failed', 'canceled'].includes(item.status)"
+              @click="toggleSelect(item, visible.indexOf(item), $event)"
+            />
+          </td>
           <td>
             <div class="inline">
               <img

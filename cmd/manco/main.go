@@ -66,7 +66,9 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	box := secret.New(cfg.Secret)
 	client := source.NewHTTPClient()
 	if rawProxy, err := repository.Setting(ctx, "proxy"); err == nil {
-		if err := source.SetHTTPClientProxy(client, rawProxy); err != nil {
+		proxyUsername, _ := repository.Setting(ctx, "proxy_username")
+		proxyPassword, _ := repository.Setting(ctx, "proxy_password")
+		if err := source.SetHTTPClientProxyCredentials(client, rawProxy, proxyUsername, proxyPassword); err != nil {
 			logger.Printf("manco: apply proxy: %v", err)
 		}
 	}
@@ -89,6 +91,13 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Logs:      logs,
 		Assets:    assets,
 	})
+	settings, err := server.Settings(ctx)
+	if err != nil {
+		logger.Printf("manco: load settings: %v", err)
+	} else {
+		engine.SetSourceConcurrency(settings.SourceConcurrency)
+		engine.SetDownloadPolicy(settings.BatchSize, settings.BatchIntervalMinutes, settings.ConvertToSimplified)
+	}
 	_ = repository.CleanupSessions(ctx, time.Now())
 	// A process restart invalidates all browser sessions, so every client has
 	// to authenticate again after the service comes back up.
@@ -100,6 +109,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	}
 	engine.Start(ctx)
 	scanner.Start(ctx)
+	go server.RunSubscriptionMaintenance(ctx, 30*time.Minute)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,

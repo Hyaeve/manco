@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -131,6 +132,57 @@ func TestCreateDownloadJobKeepsCompletedStatus(t *testing.T) {
 	}
 }
 
+func TestOpenBackfillsCronForLegacySubscriptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manco.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	if _, err := database.Exec(`CREATE TABLE subscriptions (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		source_id TEXT NOT NULL,
+		comic_id TEXT NOT NULL,
+		title TEXT NOT NULL,
+		cover TEXT NOT NULL DEFAULT '',
+		author TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		auto_download INTEGER NOT NULL DEFAULT 1,
+		last_chapter_id TEXT NOT NULL DEFAULT '',
+		last_chapter_title TEXT NOT NULL DEFAULT '',
+		last_chapter_order REAL NOT NULL DEFAULT 0,
+		last_checked_at DATETIME,
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(source_id, comic_id)
+	)`); err != nil {
+		_ = database.Close()
+		t.Fatalf("create legacy subscriptions table: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO subscriptions(source_id, comic_id, title, created_at) VALUES('stub', '1', '测试作品', '2026-10-09 10:30:00')`); err != nil {
+		_ = database.Close()
+		t.Fatalf("insert legacy subscription: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+
+	repository, err := Open(path)
+	if err != nil {
+		t.Fatalf("migrate legacy database: %v", err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	subscriptions, err := repository.ListSubscriptions(context.Background())
+	if err != nil {
+		t.Fatalf("list migrated subscriptions: %v", err)
+	}
+	if len(subscriptions) != 1 {
+		t.Fatalf("subscriptions after migration = %d, want 1", len(subscriptions))
+	}
+	if subscriptions[0].CronExpr != "0 10 * * 5" {
+		t.Fatalf("backfilled cron = %q, want 0 10 * * 5", subscriptions[0].CronExpr)
+	}
+}
+
 func TestDeleteAllSessionsInvalidatesLogins(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)
@@ -153,5 +205,37 @@ func TestDeleteAllSessionsInvalidatesLogins(t *testing.T) {
 	}
 	if _, err := repository.UserBySession(ctx, "token-hash-a", time.Now()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("session after restart error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateSubscriptionReactivationResetsCheckCycle(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	sub, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID:     "stub",
+		ComicID:      "1",
+		Title:        "测试作品",
+		Enabled:      true,
+		AutoDownload: true,
+		CronExpr:     "0 10 * * 5",
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := repository.db.ExecContext(ctx, `UPDATE subscriptions SET last_checked_at = '2026-10-01 00:00:00', enabled = 0 WHERE id = ?`, sub.ID); err != nil {
+		t.Fatalf("seed disabled subscription: %v", err)
+	}
+	if err := repository.UpdateSubscription(ctx, sub.ID, true, true, "0 10 * * 5"); err != nil {
+		t.Fatalf("reactivate subscription: %v", err)
+	}
+	updated, err := repository.Subscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("reload subscription: %v", err)
+	}
+	if updated.LastCheckedAt != nil && !updated.LastCheckedAt.IsZero() {
+		t.Fatalf("last_checked_at = %v, want cleared on reactivation", updated.LastCheckedAt)
+	}
+	if !updated.Enabled {
+		t.Fatal("subscription should be enabled after reactivation")
 	}
 }

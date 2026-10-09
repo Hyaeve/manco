@@ -109,9 +109,64 @@ func (m *memoryJobs) find(id int64) (model.DownloadJob, bool) {
 	return model.DownloadJob{}, false
 }
 
+func (m *memoryJobs) FailDownloadJob(_ context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for index := range m.jobs {
+		if m.jobs[index].ID != id {
+			continue
+		}
+		m.jobs[index].Status = "failed"
+		m.jobs[index].TotalPages = totalPages
+		m.jobs[index].CompletedPages = completedPages
+		m.jobs[index].Error = jobError
+		m.jobs[index].RetryCount = retryCount
+		m.jobs[index].NextRetryAt = nextRetryAt
+		return nil
+	}
+	return fmt.Errorf("job %d not found", id)
+}
+
+func (m *memoryJobs) ResetDownloadJob(_ context.Context, id int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for index := range m.jobs {
+		if m.jobs[index].ID != id {
+			continue
+		}
+		m.jobs[index].Status = "queued"
+		m.jobs[index].CompletedPages = 0
+		m.jobs[index].Error = ""
+		m.jobs[index].RetryCount = 0
+		m.jobs[index].NextRetryAt = nil
+		return nil
+	}
+	return fmt.Errorf("job %d not found", id)
+}
+
+func (m *memoryJobs) ActivateDueRetries(_ context.Context, now time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var activated int64
+	for index := range m.jobs {
+		job := &m.jobs[index]
+		if job.Status != "failed" || job.RetryCount >= 2 || job.NextRetryAt == nil {
+			continue
+		}
+		if job.NextRetryAt.After(now) {
+			continue
+		}
+		job.Status = "queued"
+		job.NextRetryAt = nil
+		activated++
+	}
+	return activated, nil
+}
+
 // staticSource returns a fixed chapter list and page list.
 type staticSource struct {
-	pages map[string][]model.Page
+	detail model.Comic
+	pages  map[string][]model.Page
 }
 
 func (s *staticSource) Info() model.SourceInfo {
@@ -127,7 +182,10 @@ func (s *staticSource) Browse(context.Context, source.Account, model.BrowseOptio
 }
 
 func (s *staticSource) Detail(context.Context, source.Account, string) (model.Comic, error) {
-	return model.Comic{SourceID: "stub", ID: "1", Title: "测试作品"}, nil
+	if s.detail.Title == "" {
+		return model.Comic{SourceID: "stub", ID: "1", Title: "测试作品"}, nil
+	}
+	return s.detail, nil
 }
 
 func (s *staticSource) Chapters(context.Context, source.Account, string) ([]model.Chapter, error) {
@@ -157,9 +215,10 @@ func pngImage(t *testing.T, shade uint8) []byte {
 // stub source and asserts that every chapter ends up as exactly one archive.
 func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	images := map[string][]byte{
-		"/1.png": pngImage(t, 0x11),
-		"/2.png": pngImage(t, 0x22),
-		"/3.png": pngImage(t, 0x33),
+		"/cover.png": pngImage(t, 0x01),
+		"/1.png":     pngImage(t, 0x11),
+		"/2.png":     pngImage(t, 0x22),
+		"/3.png":     pngImage(t, 0x33),
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, ok := images[r.URL.Path]
@@ -173,17 +232,27 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	defer server.Close()
 
 	registry := sources.NewRegistry(server.Client(), nil, nil)
-	registry.Register(&staticSource{pages: map[string][]model.Page{
-		"1": {
-			{URL: server.URL + "/2.png"},
-			{URL: server.URL + "/1.png"},
-			{URL: server.URL + "/3.png"},
+	registry.Register(&staticSource{
+		detail: model.Comic{
+			SourceID:    "stub",
+			ID:          "1",
+			Title:       "测试作品",
+			Author:      "测试作者",
+			Description: "测试简介",
+			Cover:       server.URL + "/cover.png",
+			Tags:        []string{"测试", "漫画"},
 		},
-		"2": {
-			{URL: server.URL + "/3.png"},
-			{URL: server.URL + "/2.png"},
-		},
-	}})
+		pages: map[string][]model.Page{
+			"1": {
+				{URL: server.URL + "/2.png"},
+				{URL: server.URL + "/1.png"},
+				{URL: server.URL + "/3.png"},
+			},
+			"2": {
+				{URL: server.URL + "/3.png"},
+				{URL: server.URL + "/2.png"},
+			},
+		}})
 
 	store := &memoryJobs{}
 	downloadDir := t.TempDir()
@@ -222,7 +291,7 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 
 	first := readZip(t, filepath.Join(downloadDir, "测试作品", "第1话.cbz"))
-	assertEntries(t, first, []string{"001.png", "002.png", "003.png"})
+	assertEntries(t, first, []string{"001.png", "002.png", "003.png", "ComicInfo.xml"})
 	if !bytes.Equal(first["001.png"], images["/2.png"]) {
 		t.Fatal("chapter 1 page order was not preserved")
 	}
@@ -231,7 +300,7 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 
 	second := readZip(t, filepath.Join(downloadDir, "测试作品", "第2话.cbz"))
-	assertEntries(t, second, []string{"001.png", "002.png"})
+	assertEntries(t, second, []string{"001.png", "002.png", "ComicInfo.xml"})
 	if !bytes.Equal(second["001.png"], images["/3.png"]) {
 		t.Fatal("chapter 2 first page mismatch")
 	}
@@ -246,6 +315,29 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 	if !strings.HasSuffix(job.FilePath, filepath.Join("测试作品", "第1话.cbz")) {
 		t.Fatalf("job file path = %q", job.FilePath)
+	}
+	cover, err := os.ReadFile(filepath.Join(downloadDir, "测试作品", "cover.png"))
+	if err != nil {
+		t.Fatalf("read downloaded cover: %v", err)
+	}
+	if !bytes.Equal(cover, images["/cover.png"]) {
+		t.Fatal("downloaded cover does not match the source")
+	}
+	nfo, err := os.ReadFile(filepath.Join(downloadDir, "测试作品", "ComicInfo.xml"))
+	if err != nil {
+		t.Fatalf("read comic nfo: %v", err)
+	}
+	for _, value := range []string{"<ComicInfo", "<Series>测试作品</Series>", "<Writer>测试作者</Writer>", "<Summary>测试简介</Summary>", "<Genre>测试,漫画</Genre>", "<PageCount>3</PageCount>"} {
+		if !bytes.Contains(nfo, []byte(value)) {
+			t.Fatalf("ComicInfo.xml is missing %q: %s", value, nfo)
+		}
+	}
+	embedded, ok := first["ComicInfo.xml"]
+	if !ok {
+		t.Fatal("CBZ is missing embedded ComicInfo.xml")
+	}
+	if !bytes.Contains(embedded, []byte("<Series>测试作品</Series>")) || !bytes.Contains(embedded, []byte("<PageCount>3</PageCount>")) {
+		t.Fatalf("embedded ComicInfo.xml content mismatch: %s", embedded)
 	}
 }
 

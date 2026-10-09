@@ -1,0 +1,34 @@
+<script setup>
+defineProps({
+  size: { type: [Number, String], default: 36 },
+  title: { type: String, default: 'Manco' },
+})
+</script>
+
+<template>
+  <svg
+    :width="size"
+    :height="size"
+    viewBox="0 0 64 64"
+    role="img"
+    :aria-label="title"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <rect x="2" y="2" width="60" height="60" rx="15" fill="#111827" />
+    <path d="M8 18h5M7 26h6M8 34h5" stroke="#FACC15" stroke-width="2.5" stroke-linecap="round" />
+    <rect x="12" y="15" width="40" height="34" rx="5" fill="#F8FAFC" />
+    <path d="M32 15v34" stroke="#111827" stroke-width="2.5" />
+    <rect x="17" y="20" width="10" height="9" rx="2" fill="#FB7185" />
+    <rect x="37" y="20" width="10" height="9" rx="2" fill="#38BDF8" />
+    <rect x="17" y="35" width="10" height="9" rx="2" fill="#FACC15" />
+    <rect x="37" y="35" width="10" height="9" rx="2" fill="#A78BFA" />
+    <path
+      d="M42 6h14a5 5 0 0 1 5 5v9a5 5 0 0 1-5 5h-4l-5 4v-4h-5a5 5 0 0 1-5-5v-9a5 5 0 0 1 5-5Z"
+      fill="#FFFFFF"
+      stroke="#111827"
+      stroke-width="2"
+      stroke-linejoin="round"
+    />
+    <path d="M44 11h2.4l2.1 3.2 2.1-3.2H53v7h-2.2v-3.5l-1.8 2.7h-.8l-1.8-2.7V18H44Z" fill="#111827" />
+  </svg>
+</template>

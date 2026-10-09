@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyaeve/manco/internal/cronutil"
 	"github.com/hyaeve/manco/internal/model"
 	_ "modernc.org/sqlite"
 )
@@ -71,10 +72,17 @@ func (s *Store) migrate(ctx context.Context) error {
 			author TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			auto_download INTEGER NOT NULL DEFAULT 1,
+			cron_expr TEXT NOT NULL DEFAULT '',
 			last_chapter_id TEXT NOT NULL DEFAULT '',
 			last_chapter_title TEXT NOT NULL DEFAULT '',
 			last_chapter_order REAL NOT NULL DEFAULT 0,
+			comic_status TEXT NOT NULL DEFAULT '',
+			last_new_chapter_at DATETIME,
 			last_checked_at DATETIME,
+			disabled_at DATETIME,
+			completed_at DATETIME,
+			archived_at DATETIME,
+			archive_reason TEXT NOT NULL DEFAULT '',
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(source_id, comic_id)
@@ -93,6 +101,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			completed_pages INTEGER NOT NULL DEFAULT 0,
 			file_path TEXT NOT NULL DEFAULT '',
 			error TEXT NOT NULL DEFAULT '',
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			next_retry_at DATETIME,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			started_at DATETIME,
@@ -109,6 +119,94 @@ func (s *Store) migrate(ctx context.Context) error {
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "cron_expr", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	for _, column := range []struct {
+		name        string
+		declaration string
+	}{
+		{"comic_status", `TEXT NOT NULL DEFAULT ''`},
+		{"last_new_chapter_at", `DATETIME`},
+		{"disabled_at", `DATETIME`},
+		{"completed_at", `DATETIME`},
+		{"archived_at", `DATETIME`},
+		{"archive_reason", `TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := s.ensureColumn(ctx, "subscriptions", column.name, column.declaration); err != nil {
+			return err
+		}
+	}
+	if err := s.ensureColumn(ctx, "download_jobs", "retry_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "download_jobs", "next_retry_at", `DATETIME`); err != nil {
+		return err
+	}
+	if err := s.backfillSubscriptionCron(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET last_new_chapter_at = created_at WHERE last_new_chapter_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill subscription update baseline: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ensureColumn(ctx context.Context, table, column, declaration string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, declaration)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+func (s *Store) backfillSubscriptionCron(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, created_at FROM subscriptions WHERE cron_expr = ''`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id        int64
+		createdAt time.Time
+	}
+	var items []pending
+	for rows.Next() {
+		var item pending
+		if err := rows.Scan(&item.id, &item.createdAt); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if _, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET cron_expr = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, cronutil.Default(item.createdAt), item.id); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -247,19 +345,24 @@ func (s *Store) DeleteSourceAccount(ctx context.Context, sourceID string) error 
 
 func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, author, enabled, auto_download, last_chapter_id, last_chapter_title, last_chapter_order)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
 			title = excluded.title,
 			cover = excluded.cover,
 			author = excluded.author,
 			enabled = excluded.enabled,
 			auto_download = excluded.auto_download,
+			cron_expr = CASE WHEN excluded.cron_expr <> '' THEN excluded.cron_expr ELSE subscriptions.cron_expr END,
+			comic_status = CASE WHEN excluded.comic_status <> '' THEN excluded.comic_status ELSE subscriptions.comic_status END,
 			last_chapter_id = CASE WHEN subscriptions.last_chapter_id = '' THEN excluded.last_chapter_id ELSE subscriptions.last_chapter_id END,
 			last_chapter_title = CASE WHEN subscriptions.last_chapter_id = '' THEN excluded.last_chapter_title ELSE subscriptions.last_chapter_title END,
 			last_chapter_order = CASE WHEN subscriptions.last_chapter_id = '' THEN excluded.last_chapter_order ELSE subscriptions.last_chapter_order END,
+			disabled_at = NULL,
+			archived_at = NULL,
+			archive_reason = '',
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.Author, sub.Enabled, sub.AutoDownload, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder)
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -275,7 +378,7 @@ func (s *Store) Subscription(ctx context.Context, id int64) (model.Subscription,
 }
 
 func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` ORDER BY updated_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NULL ORDER BY updated_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -291,29 +394,70 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 	return subscriptions, rows.Err()
 }
 
-const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, author, enabled, auto_download, last_chapter_id, last_chapter_title, last_chapter_order, last_checked_at, created_at, updated_at FROM subscriptions`
+const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at FROM subscriptions`
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
-	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.LastCheckedAt, &sub.CreatedAt, &sub.UpdatedAt)
+	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Subscription{}, ErrNotFound
 	}
 	return sub, err
 }
 
-func (s *Store) UpdateSubscription(ctx context.Context, id int64, enabled, autoDownload bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET enabled = ?, auto_download = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, enabled, autoDownload, id)
-	return err
-}
-
-func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64) error {
+func (s *Store) UpdateSubscription(ctx context.Context, id int64, enabled, autoDownload bool, cronExpr string) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE subscriptions SET last_chapter_id = ?, last_chapter_title = ?, last_chapter_order = ?, last_checked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`, chapterID, chapterTitle, chapterOrder, id)
+		UPDATE subscriptions SET enabled = ?, auto_download = ?, cron_expr = ?,
+			last_checked_at = CASE WHEN ? = 1 THEN NULL WHEN cron_expr = ? THEN last_checked_at ELSE NULL END,
+			last_new_chapter_at = CASE WHEN ? = 1 AND enabled = 0 THEN CURRENT_TIMESTAMP ELSE last_new_chapter_at END,
+			disabled_at = CASE WHEN ? = 1 THEN NULL ELSE disabled_at END,
+			archived_at = CASE WHEN ? = 1 THEN NULL ELSE archived_at END,
+			archive_reason = CASE WHEN ? = 1 THEN '' ELSE archive_reason END,
+			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		enabled, autoDownload, cronExpr, enabled, cronExpr, enabled, enabled, enabled, enabled, id)
 	return err
 }
 
+func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE subscriptions SET last_chapter_id = ?, last_chapter_title = ?, last_chapter_order = ?,
+			comic_status = ?,
+			completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE NULL END,
+			last_new_chapter_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE last_new_chapter_at END,
+			last_checked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`, chapterID, chapterTitle, chapterOrder, comicStatus, completed, newChapter, id)
+	return err
+}
+
+// MaintainSubscriptions closes stale subscriptions and archives them after
+// the configured grace period. Only subscriptions closed automatically are
+// archived by the stale rule; manual pauses remain visible for the user.
+func (s *Store) MaintainSubscriptions(ctx context.Context, staleDays map[string]int, now time.Time) error {
+	now = now.UTC()
+	completedCutoff := now.Add(-15 * 24 * time.Hour)
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE subscriptions SET archived_at = ?, archive_reason = 'completed', enabled = 0, updated_at = CURRENT_TIMESTAMP
+		WHERE archived_at IS NULL AND completed_at IS NOT NULL AND completed_at <= ?`, now, completedCutoff); err != nil {
+		return err
+	}
+	for sourceID, days := range staleDays {
+		if days <= 0 {
+			continue
+		}
+		cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE subscriptions SET enabled = 0, disabled_at = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE archived_at IS NULL AND enabled = 1 AND source_id = ?
+			  AND COALESCE(last_new_chapter_at, created_at) <= ?`, now, sourceID, cutoff); err != nil {
+			return err
+		}
+	}
+	disabledCutoff := now.Add(-15 * 24 * time.Hour)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE subscriptions SET archived_at = ?, archive_reason = 'stale', updated_at = CURRENT_TIMESTAMP
+		WHERE archived_at IS NULL AND disabled_at IS NOT NULL AND disabled_at <= ?`, now, disabledCutoff)
+	return err
+}
 func (s *Store) DeleteSubscription(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id = ?`, id)
 	return err
@@ -330,6 +474,8 @@ func (s *Store) CreateDownloadJob(ctx context.Context, job model.DownloadJob) (m
 			chapter_order = excluded.chapter_order,
 			status = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.status ELSE 'queued' END,
 			error = CASE WHEN download_jobs.status = 'completed' THEN download_jobs.error ELSE '' END,
+			retry_count = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.retry_count ELSE 0 END,
+			next_retry_at = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.next_retry_at ELSE NULL END,
 			updated_at = CURRENT_TIMESTAMP`,
 		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ChapterID, job.ChapterTitle, job.ChapterOrder)
 	if err != nil {
@@ -391,11 +537,11 @@ func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
 	return jobs, rows.Err()
 }
 
-const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, created_at, updated_at, started_at, finished_at FROM download_jobs`
+const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, created_at, updated_at, started_at, finished_at FROM download_jobs`
 
 func scanJob(row rowScanner) (model.DownloadJob, error) {
 	var job model.DownloadJob
-	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
+	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.DownloadJob{}, ErrNotFound
 	}
@@ -411,6 +557,35 @@ func (s *Store) UpdateDownloadJob(ctx context.Context, id int64, status string, 
 	return err
 }
 
+// FailDownloadJob records a failed attempt and its next automatic retry.
+func (s *Store) FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE download_jobs SET status = 'failed', total_pages = ?, completed_pages = ?, error = ?,
+			retry_count = ?, next_retry_at = ?, updated_at = CURRENT_TIMESTAMP,
+			finished_at = CURRENT_TIMESTAMP
+		WHERE id = ?`, totalPages, completedPages, jobError, retryCount, nextRetryAt, id)
+	return err
+}
+
+// ResetDownloadJob queues a task manually and restarts its retry budget.
+func (s *Store) ResetDownloadJob(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE download_jobs SET status = 'queued', completed_pages = 0, error = '', retry_count = 0,
+			next_retry_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	return err
+}
+
+// ActivateDueRetries moves failed jobs whose retry delay has elapsed back to
+// the queue. Automatic attempts are capped at two retries per manual run.
+func (s *Store) ActivateDueRetries(ctx context.Context, now time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE download_jobs SET status = 'queued', next_retry_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE status = 'failed' AND retry_count < 2 AND next_retry_at IS NOT NULL AND next_retry_at <= ?`, now.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
 func (s *Store) UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE download_jobs SET completed_pages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, completedPages, id)
 	return err

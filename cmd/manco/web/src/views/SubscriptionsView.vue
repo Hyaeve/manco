@@ -2,23 +2,28 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
-  BookOpen,
-  CircleCheck,
-  Clock,
-  Loader2,
-  Play,
-  RefreshCw,
-  Rss,
-  Trash2,
+	BookOpen,
+	CalendarClock,
+	CircleCheck,
+	Clock,
+	Download,
+	Loader2,
+	Play,
+	RefreshCw,
+	Rss,
+	Save,
+	Trash2,
 } from 'lucide-vue-next'
 import { api } from '../api'
 
 const items = ref([])
 const jobs = ref([])
+const sources = ref({})
 const loading = ref(true)
 const busy = ref(0)
 const error = ref('')
 const message = ref('')
+const cronDrafts = ref({})
 let timer = 0
 
 const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 'paused'].includes(job.status)))
@@ -37,9 +42,23 @@ onUnmounted(() => {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [subscriptions, downloads] = await Promise.all([api.subscriptions(), api.downloads(300)])
-    items.value = subscriptions.items || []
-    jobs.value = downloads.items || []
+    const [subscriptions, downloads, sourcePayload] = await Promise.all([
+      api.subscriptions(),
+      api.downloads(300),
+      Object.keys(sources.value).length ? Promise.resolve({ items: [] }) : api.sources().catch(() => ({ items: [] })),
+    ])
+    for (const source of sourcePayload.items || []) {
+      sources.value = { ...sources.value, [source.id]: source }
+    }
+		items.value = subscriptions.items || []
+		if (!silent) {
+			cronDrafts.value = Object.fromEntries(items.value.map((item) => [item.id, item.cronExpr || '']))
+		} else {
+			for (const item of items.value) {
+				if (cronDrafts.value[item.id] === undefined) cronDrafts.value[item.id] = item.cronExpr || ''
+			}
+		}
+		jobs.value = downloads.items || []
     if (silent) error.value = ''
   } catch (err) {
     if (!silent) error.value = err.message
@@ -60,11 +79,50 @@ async function toggleAuto(item, value) {
   }
 }
 
+async function saveCron(item) {
+	const expression = String(cronDrafts.value[item.id] || '').trim()
+	if (!expression) {
+		error.value = 'Cron 表达式不能为空'
+		return
+	}
+	busy.value = item.id
+	error.value = ''
+	message.value = ''
+	try {
+		const updated = await api.updateSubscription(item.id, { cronExpr: expression })
+		Object.assign(item, updated)
+		cronDrafts.value[item.id] = updated.cronExpr || expression
+		message.value = `已更新《${item.title}》的检查计划。`
+	} catch (err) {
+		error.value = err.message
+	} finally {
+		busy.value = 0
+	}
+}
+
 async function toggleEnabled(item, value) {
   busy.value = item.id
   try {
     const updated = await api.updateSubscription(item.id, { enabled: value })
     Object.assign(item, updated)
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    busy.value = 0
+  }
+}
+
+async function download(item) {
+  busy.value = item.id
+  message.value = ''
+  error.value = ''
+  try {
+    const result = await api.downloadSubscription(item.id)
+    message.value =
+      result.item?.status === 'completed'
+        ? `《${item.title}》最新章节已在本地。`
+        : `已将《${item.title}》最新章节加入下载队列。`
+    await load(true)
   } catch (err) {
     error.value = err.message
   } finally {
@@ -104,6 +162,10 @@ function cover(item) {
   return api.imageUrl(item.cover, item.sourceId)
 }
 
+function sourceIcon(item) {
+  return sources.value[item.sourceId]?.icon || ''
+}
+
 function stats(item) {
   const rows = jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId)
   const active = rows.filter((job) => ['queued', 'running', 'paused'].includes(job.status)).length
@@ -121,6 +183,14 @@ function updatedText(item) {
   <div v-if="error" class="alert error">{{ error }}</div>
   <div v-if="message" class="alert ok">{{ message }}</div>
 
+  <div v-if="items.length" class="toolbar subscription-toolbar">
+    <span class="spacer" />
+    <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
+      <RefreshCw :size="15" :class="{ spin: loading }" />
+      刷新
+    </button>
+  </div>
+
   <div v-if="loading && !items.length" class="empty">
     <Loader2 :size="22" class="spin" />
     <span>加载订阅</span>
@@ -133,6 +203,9 @@ function updatedText(item) {
 
   <div v-else class="subscription-grid">
     <article v-for="item in items" :key="item.id" class="subscription-card">
+      <span v-if="sourceIcon(item)" class="subscription-source" :title="item.sourceId">
+        <img :src="sourceIcon(item)" :alt="item.sourceId" loading="lazy" />
+      </span>
       <div class="subscription-main">
         <RouterLink
           class="subscription-cover"
@@ -154,6 +227,25 @@ function updatedText(item) {
             <Clock :size="13" />
             {{ updatedText(item) }}
           </span>
+          <div class="subscription-cron">
+            <CalendarClock :size="14" />
+            <input
+              v-model="cronDrafts[item.id]"
+              class="input"
+              aria-label="Cron 表达式"
+              placeholder="0 21 * * 5"
+              @keyup.enter="saveCron(item)"
+            />
+            <button
+              class="btn secondary small"
+              type="button"
+              :disabled="busy === item.id"
+              title="保存 Cron 表达式"
+              @click="saveCron(item)"
+            >
+              <Save :size="13" />
+            </button>
+          </div>
           <div class="inline">
             <span class="badge primary">进行中 {{ stats(item).active }}</span>
             <span class="badge success">
@@ -186,6 +278,11 @@ function updatedText(item) {
           </label>
         </div>
         <span class="spacer" />
+        <button class="btn primary small" type="button" :disabled="busy === item.id" @click="download(item)">
+          <Loader2 v-if="busy === item.id" :size="14" class="spin" />
+          <Download v-else :size="14" />
+          下载最新话
+        </button>
         <button class="btn secondary small" type="button" :disabled="busy === item.id" @click="check(item)">
           <Loader2 v-if="busy === item.id" :size="14" class="spin" />
           <Play v-else :size="14" />
@@ -198,10 +295,4 @@ function updatedText(item) {
     </article>
   </div>
 
-  <div class="inline" style="margin-top: 14px">
-    <button class="btn secondary small" type="button" @click="load()">
-      <RefreshCw :size="15" />
-      刷新
-    </button>
-  </div>
 </template>

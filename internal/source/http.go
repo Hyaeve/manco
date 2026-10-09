@@ -37,6 +37,12 @@ func (c *ProxyController) Proxy(request *http.Request) (*url.URL, error) {
 // HTTP(S)_PROXY / NO_PROXY environment variables. Only http and https proxies
 // are supported because those are the schemes understood by Go's HTTP client.
 func (c *ProxyController) Set(raw string) error {
+	return c.SetCredentials(raw, "", "")
+}
+
+// SetCredentials updates the proxy resolver, optionally adding HTTP basic
+// credentials. Supplying an empty URL restores the environment proxy.
+func (c *ProxyController) SetCredentials(raw, username, password string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		c.current.Store(proxyFunc(http.ProxyFromEnvironment))
@@ -51,6 +57,9 @@ func (c *ProxyController) Set(raw string) error {
 	}
 	if parsed.Host == "" {
 		return errors.New("代理地址缺少主机名")
+	}
+	if strings.TrimSpace(username) != "" {
+		parsed.User = url.UserPassword(username, password)
 	}
 	c.current.Store(proxyFunc(http.ProxyURL(parsed)))
 	return nil
@@ -83,6 +92,12 @@ func NewHTTPClient() *http.Client {
 // NewHTTPClient. It reports an error for clients that do not carry a runtime
 // ProxyController.
 func SetHTTPClientProxy(client *http.Client, raw string) error {
+	return SetHTTPClientProxyCredentials(client, raw, "", "")
+}
+
+// SetHTTPClientProxyCredentials changes the proxy and optional proxy login
+// used by a client created with NewHTTPClient.
+func SetHTTPClientProxyCredentials(client *http.Client, raw, username, password string) error {
 	if client == nil {
 		return errors.New("HTTP client is nil")
 	}
@@ -90,7 +105,7 @@ func SetHTTPClientProxy(client *http.Client, raw string) error {
 	if !ok {
 		return errors.New("HTTP client does not support runtime proxy configuration")
 	}
-	return transport.proxy.Set(raw)
+	return transport.proxy.SetCredentials(raw, username, password)
 }
 
 func FetchText(ctx context.Context, client *http.Client, address string, headers map[string]string) (string, error) {
