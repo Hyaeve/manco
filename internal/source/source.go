@@ -12,6 +12,13 @@ import (
 
 var ErrAuthRequired = errors.New("source account is not connected")
 
+// Source kinds. Comic sources yield image chapters packed into CBZ files;
+// book sources yield per-chapter text files instead.
+const (
+	KindComic = "comic"
+	KindBook  = "book"
+)
+
 type Account struct {
 	Username string
 	Password string
@@ -61,6 +68,20 @@ type LoginResult struct {
 	Token    string
 	Username string
 	Extra    map[string]any
+}
+
+// ContentSource is implemented by book sources. It returns the full text of a
+// chapter so the downloader can persist one file per chapter.
+type ContentSource interface {
+	ChapterContent(ctx context.Context, account Account, bookID string, chapter model.Chapter) (string, error)
+}
+
+// KindOf reports the source kind, defaulting to comic when unspecified.
+func KindOf(info model.SourceInfo) string {
+	if info.Kind == KindBook {
+		return KindBook
+	}
+	return KindComic
 }
 
 type LoginSource interface {

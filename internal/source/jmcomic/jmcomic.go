@@ -56,6 +56,7 @@ const (
 var defaultSites = []string{
 	defaultSite,
 	"https://18comic.org",
+	"https://18mh.org",
 	"https://jm-comic.me",
 	"https://jm-comic.group",
 	"https://jmcomic.me",
@@ -73,13 +74,14 @@ var (
 	scramblePattern  = regexp.MustCompile(`var\s+scramble_id\s*=\s*(\d+)`)
 	albumIDPattern   = regexp.MustCompile(`var\s+(?:album_id|aid)\s*=\s*(\d+)`)
 	domainPattern    = regexp.MustCompile(`var\s+data_original_domain\s*=\s*["']([^"']+)["']`)
-	imageHostPattern = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*)\.(?:vip|org|cc|site|club))`)
+	imageHostPattern = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*|jmapinodeudzn)\.(?:vip|org|cc|site|club|net))`)
 )
 
 func (s *Source) Info() model.SourceInfo {
 	return model.SourceInfo{
 		ID:          sourceID,
 		Name:        "禁漫天堂",
+		Kind:        source.KindComic,
 		Description: "18comic album source",
 		Homepage:    defaultSite + "/",
 		NeedsLogin:  false,
@@ -102,7 +104,7 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 		"search_query": {query},
 		"page":         {strconv.Itoa(page)},
 	}
-	html, base, err := s.get(ctx, account, "/search/photos", values)
+	html, base, err := s.getMatching(ctx, account, []string{"/search", "/search/photos"}, values, hasAlbumLinks)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
@@ -121,7 +123,11 @@ func (s *Source) Browse(ctx context.Context, account source.Account, options mod
 	if category != "" && category != "0" {
 		values.Set("category", category)
 	}
-	html, base, err := s.get(ctx, account, "/albums", values)
+	paths := []string{"/albums.html", "/albums"}
+	if page > 1 {
+		paths = append(paths, "/albums-index-page-"+strconv.Itoa(page)+".html")
+	}
+	html, base, err := s.getMatching(ctx, account, paths, values, hasAlbumLinks)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
@@ -133,7 +139,7 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if comicID == "" {
 		return model.Comic{}, errors.New("无效的禁漫作品 ID")
 	}
-	html, base, err := s.get(ctx, account, "/album/"+comicID, nil)
+	html, base, err := s.getMatching(ctx, account, []string{"/album/" + comicID}, nil, hasAlbumLinks)
 	if err != nil {
 		return model.Comic{}, err
 	}
@@ -163,7 +169,7 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if comicID == "" {
 		return nil, errors.New("无效的禁漫作品 ID")
 	}
-	html, base, err := s.get(ctx, account, "/album/"+comicID, nil)
+	html, base, err := s.getMatching(ctx, account, []string{"/album/" + comicID}, nil, hasAlbumLinks)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +230,10 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 	if comicID == "" {
 		comicID = photoID
 	}
-	html, base, err := s.get(ctx, account, "/photo/"+photoID, nil)
+	html, base, err := s.getMatching(ctx, account, []string{"/photo/" + photoID}, nil, func(page string) bool {
+		_, ok := pageArray(page)
+		return ok
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -301,6 +310,46 @@ func (s *Source) get(ctx context.Context, account source.Account, path string, v
 		}
 		return headers
 	})
+}
+
+// getMatching walks every mirror and candidate path until one returns a page
+// that satisfies ok. 18comic mirrors frequently rotate to parked or
+// challenge pages that answer HTTP 200 with no album markup, so plain status
+// checks would silently return empty results from a dead mirror.
+func (s *Source) getMatching(ctx context.Context, account source.Account, paths []string, values url.Values, ok func(string) bool) (string, string, error) {
+	var lastErr error
+	for _, base := range s.bases(account) {
+		for _, path := range paths {
+			address := source.BuildURL(base, path, values)
+			headers := map[string]string{
+				"Referer":                   base + "/",
+				"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
+				"Upgrade-Insecure-Requests": "1",
+			}
+			for key, value := range source.HeaderCookie(account.Cookie) {
+				headers[key] = value
+			}
+			html, err := source.FetchText(ctx, s.client, address, headers)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if ok != nil && !ok(html) {
+				lastErr = fmt.Errorf("%s 未返回有效内容", base+path)
+				continue
+			}
+			return html, base, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("禁漫镜像均不可用")
+	}
+	return "", "", lastErr
+}
+
+// hasAlbumLinks reports whether a page really lists albums.
+func hasAlbumLinks(html string) bool {
+	return albumPattern.MatchString(html)
 }
 
 func parseSearch(html, base string, page int) (model.SearchResult, error) {
@@ -414,6 +463,8 @@ func imageDomains(html string) []string {
 		"https://cdn-msp2.18comic.vip",
 		"https://cdn-msp.18comic.org",
 		"https://cdn-msp2.18comic.org",
+		"https://cdn-msp.jmapinodeudzn.net",
+		"https://cdn-msp2.jmapinodeudzn.net",
 		"https://cdn-msp.jmapiproxy2.cc",
 		"https://cdn-msp2.jmapiproxy2.cc",
 	} {

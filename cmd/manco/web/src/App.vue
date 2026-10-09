@@ -4,6 +4,7 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Compass,
   Download,
+  HardDrive,
   LayoutDashboard,
   Library,
   LogOut,
@@ -28,7 +29,8 @@ const navItems = [
   { name: 'subscriptions', label: '订阅', to: '/subscriptions', icon: Rss },
   { name: 'downloads', label: '下载', to: '/downloads', icon: Download },
   { name: 'library', label: '资料库', to: '/library', icon: Library },
-  { name: 'sources', label: '漫画源', to: '/sources', icon: Server },
+  { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
+  { name: 'sources', label: '资源', to: '/sources', icon: Server },
   { name: 'logs', label: '系统日志', to: '/logs', icon: ScrollText },
 ]
 
@@ -42,7 +44,8 @@ const pageTitle = computed(() => {
   if (route.name === 'subscriptions') return '订阅追更'
   if (route.name === 'downloads') return '下载任务'
   if (route.name === 'library') return '本地资料库'
-  if (route.name === 'sources') return '漫画源'
+  if (route.name === 'local') return '本地库'
+  if (route.name === 'sources') return '资源'
   if (route.name === 'settings') return '系统设置'
   if (route.name === 'logs') return '系统日志'
   return 'Manco'

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { BookOpenCheck, ExternalLink, Eye, EyeOff, KeyRound, Loader2, RefreshCw, Save, Server, Trash2 } from 'lucide-vue-next'
 import { api } from '../api'
 import PasswordInput from '../components/PasswordInput.vue'
@@ -13,6 +13,11 @@ const error = ref('')
 const message = ref('')
 
 const forms = reactive({})
+const activeKind = ref('comic')
+
+const comicSources = computed(() => sources.value.filter((item) => (item.kind || 'comic') === 'comic'))
+const bookSources = computed(() => sources.value.filter((item) => item.kind === 'book'))
+const visibleSources = computed(() => (activeKind.value === 'book' ? bookSources.value : comicSources.value))
 
 onMounted(load)
 
@@ -136,15 +141,27 @@ async function disconnect(item) {
     <p v-if="repoUrl" class="muted small" style="margin: 10px 0 0; word-break: break-all">{{ repoUrl }}</p>
   </div>
 
+  <div class="segmented" role="tablist" aria-label="资源类型" style="margin-bottom: 14px">
+    <button type="button" :class="{ active: activeKind === 'comic' }" @click="activeKind = 'comic'">
+      漫画源
+      <span class="segmented-count">{{ comicSources.length }}</span>
+    </button>
+    <button type="button" :class="{ active: activeKind === 'book' }" @click="activeKind = 'book'">
+      书籍源
+      <span class="segmented-count">{{ bookSources.length }}</span>
+    </button>
+  </div>
+
   <div v-if="loading && !sources.length" class="empty">
     <Loader2 :size="22" class="spin" />
-    <span>加载漫画源</span>
+    <span>加载资源</span>
   </div>
   <div v-else class="source-grid">
-    <section v-for="item in sources" :key="item.id" class="card card-pad source-card" :class="{ 'source-card-hidden': item.hidden }">
+    <section v-for="item in visibleSources" :key="item.id" class="card card-pad source-card" :class="{ 'source-card-hidden': item.hidden }">
       <div class="section-head" style="margin-bottom: 8px">
         <div class="inline">
-          <Server :size="17" />
+          <img v-if="item.icon" class="source-favicon" :src="item.icon" alt="" />
+          <Server v-else :size="17" />
           <h2>{{ item.name }}</h2>
         </div>
         <div class="inline">

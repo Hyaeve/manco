@@ -1,21 +1,38 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { BookOpen, ChevronLeft, ChevronRight, ImageOff, Loader2, Search } from 'lucide-vue-next'
 import { api } from '../api'
+import { readDiscoverNav, saveDiscoverNav } from '../stores/discover'
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v1'
+const PAGE_SIZE = 30
+const CARD_MIN = 158
+const GRID_GAP = 16
+const CARD_BODY = 88
 
 const route = useRoute()
 const router = useRouter()
 const allSources = ref([])
+const activeKind = ref('comic')
 const activeId = ref('')
+const jumpInput = ref('')
+const gridRef = ref(null)
+const gridWidth = ref(0)
+const viewportHeight = ref(640)
+const scrollTop = ref(0)
+let resizeObserver = null
+let scrollTimer = null
 const panels = ref({})
 const loadingSources = ref(true)
 const sourcesError = ref('')
 const savedFilters = ref(readSavedFilters())
 
-const sources = computed(() => allSources.value.filter((source) => !source.hidden))
+const sources = computed(() =>
+  allSources.value.filter((source) => !source.hidden && (source.kind || 'comic') === activeKind.value),
+)
+const comicCount = computed(() => allSources.value.filter((s) => !s.hidden && (s.kind || 'comic') === 'comic').length)
+const bookCount = computed(() => allSources.value.filter((s) => !s.hidden && s.kind === 'book').length)
 
 function readSavedFilters() {
   try {
@@ -49,8 +66,9 @@ function panelFor(source) {
       query: '',
       mode: 'browse',
       page: 1,
+      sourcePage: 1,
+      sourceHasMore: true,
       items: [],
-      hasMore: false,
       loading: false,
       loaded: false,
       error: '',
@@ -63,15 +81,68 @@ function panelFor(source) {
 const activeSource = computed(() => sources.value.find((source) => source.id === activeId.value) || null)
 const activePanel = computed(() => (activeSource.value ? panelFor(activeSource.value) : null))
 
+const visibleItems = computed(() => {
+  const panel = activePanel.value
+  if (!panel) return []
+  const start = (panel.page - 1) * PAGE_SIZE
+  return panel.items.slice(start, start + PAGE_SIZE)
+})
+
+const hasNextPage = computed(() => {
+  const panel = activePanel.value
+  if (!panel) return false
+  return panel.sourceHasMore || panel.items.length > panel.page * PAGE_SIZE
+})
+
+const columns = computed(() => {
+  const width = gridWidth.value
+  if (width <= 0) return 4
+  return Math.max(1, Math.floor((width + GRID_GAP) / (CARD_MIN + GRID_GAP)))
+})
+
+const rowHeight = computed(() => {
+  const width = gridWidth.value
+  const usable = width > 0 ? width - (columns.value - 1) * GRID_GAP : CARD_MIN * columns.value
+  const cardWidth = usable > 0 ? usable / columns.value : CARD_MIN
+  return Math.round(cardWidth * 1.5) + CARD_BODY
+})
+
+const rowCount = computed(() => Math.ceil(visibleItems.value.length / columns.value))
+const totalHeight = computed(() => rowCount.value * rowHeight.value)
+const firstRow = computed(() => Math.max(0, Math.floor(scrollTop.value / rowHeight.value) - 2))
+const lastRow = computed(() =>
+  Math.min(rowCount.value, Math.ceil((scrollTop.value + viewportHeight.value) / rowHeight.value) + 2),
+)
+const virtualRows = computed(() => {
+  const rows = []
+  for (let index = firstRow.value; index < lastRow.value; index += 1) {
+    const start = index * columns.value
+    rows.push({
+      index,
+      top: index * rowHeight.value,
+      items: visibleItems.value.slice(start, start + columns.value),
+    })
+  }
+  return rows
+})
+
 async function loadSources() {
+  const nav = readDiscoverNav()
   try {
     const payload = await api.sources()
     allSources.value = payload.items || []
-    const requested = typeof route.query.source === 'string' ? route.query.source : ''
-    const found = sources.value.find((source) => source.id === requested)
+    const requestedKind = route.query.kind === 'book' ? 'book' : route.query.kind === 'comic' ? 'comic' : ''
+    activeKind.value = requestedKind || (nav.kind === 'book' ? 'book' : 'comic')
+    const preferred = typeof route.query.source === 'string' ? route.query.source : nav.source || ''
+    const found = sources.value.find((source) => source.id === preferred)
     activeId.value = found?.id || sources.value[0]?.id || ''
     if (activeId.value) {
-      await load(activeSource.value, activePanel.value)
+      const panel = panelFor(activeSource.value)
+      const restorePage = nav.source === activeId.value && nav.page ? nav.page : 1
+      await ensure(activeSource.value, panel, restorePage)
+      await nextTick()
+      attachGrid()
+      restoreScroll(nav)
     }
   } catch (err) {
     sourcesError.value = err.message
@@ -82,54 +153,161 @@ async function loadSources() {
 
 onMounted(loadSources)
 
+onBeforeUnmount(() => {
+  if (resizeObserver) resizeObserver.disconnect()
+  if (scrollTimer) window.clearTimeout(scrollTimer)
+})
+
 watch(
-  () => route.query.source,
-  (value) => {
-    if (typeof value === 'string' && value && value !== activeId.value) {
-      selectSource(value)
+  () => [route.query.kind, route.query.source],
+  ([kind, source]) => {
+    if (typeof kind === 'string' && kind && kind !== activeKind.value) {
+      switchKind(kind)
+      return
+    }
+    if (typeof source === 'string' && source && source !== activeId.value) {
+      selectSource(source)
     }
   },
 )
 
-async function selectSource(id) {
-  if (!sources.value.some((source) => source.id === id)) return
-  activeId.value = id
-  if (route.query.source !== id) {
-    router.replace({ name: 'discover', query: { source: id } })
+function attachGrid() {
+  if (!gridRef.value) return
+  viewportHeight.value = gridRef.value.clientHeight || viewportHeight.value
+  // 减去虚拟行两侧内边距，保证列数与卡片宽度计算一致。
+  gridWidth.value = Math.max(0, gridRef.value.clientWidth - 36)
+  if (resizeObserver) resizeObserver.disconnect()
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        gridWidth.value = Math.max(0, Math.round(entry.contentRect.width) - 36)
+        viewportHeight.value = Math.round(entry.contentRect.height) || viewportHeight.value
+      }
+    })
+    resizeObserver.observe(gridRef.value)
   }
-  const panel = panelFor(activeSource.value)
-  if (!panel.loaded && !panel.loading) {
-    await load(activeSource.value, panel)
+  updateScroll()
+}
+
+watch(
+  () => activePanel.value,
+  () => {
+    nextTick(attachGrid)
+  },
+)
+
+function updateScroll() {
+  if (!gridRef.value) return
+  scrollTop.value = gridRef.value.scrollTop
+  viewportHeight.value = gridRef.value.clientHeight || viewportHeight.value
+}
+
+function handleScroll() {
+  updateScroll()
+  if (scrollTimer) window.clearTimeout(scrollTimer)
+  scrollTimer = window.setTimeout(() => rememberPosition(), 200)
+}
+
+function rememberPosition() {
+  saveDiscoverNav({
+    kind: activeKind.value,
+    source: activeId.value,
+    page: activePanel.value?.page || 1,
+    scrollTop: gridRef.value ? gridRef.value.scrollTop : scrollTop.value,
+  })
+}
+
+function restoreScroll(nav) {
+  if (nav.source !== activeId.value || !nav.scrollTop || !gridRef.value) return
+  gridRef.value.scrollTop = nav.scrollTop
+  updateScroll()
+}
+
+async function switchKind(kind) {
+  if (kind !== 'comic' && kind !== 'book') return
+  if (kind === activeKind.value) return
+  activeKind.value = kind
+  activeId.value = sources.value[0]?.id || ''
+  if (route.query.kind !== kind || route.query.source !== activeId.value) {
+    router.replace({ name: 'discover', query: { kind, source: activeId.value } })
+  }
+  if (activeId.value) {
+    await ensure(activeSource.value, panelFor(activeSource.value), 1)
+    await nextTick()
+    attachGrid()
+    if (gridRef.value) gridRef.value.scrollTop = 0
+    updateScroll()
+    rememberPosition()
   }
 }
 
-async function load(source, panel) {
+async function selectSource(id) {
+  if (!sources.value.some((source) => source.id === id)) return
+  activeId.value = id
+  if (route.query.source !== id || route.query.kind !== activeKind.value) {
+    router.replace({ name: 'discover', query: { kind: activeKind.value, source: id } })
+  }
+  const panel = panelFor(activeSource.value)
+  if (!panel.loaded && !panel.loading) {
+    await ensure(activeSource.value, panel, 1)
+  }
+  await nextTick()
+  attachGrid()
+  if (gridRef.value) gridRef.value.scrollTop = 0
+  updateScroll()
+  rememberPosition()
+}
+
+function fetchPage(source, panel, page) {
+  return panel.mode === 'search' && panel.query.trim()
+    ? api.search(source.id, panel.query.trim(), page)
+    : api.browse(source.id, panel.filters, page)
+}
+
+async function ensure(source, panel, targetPage) {
   if (!source || !panel || panel.loading) return
+  const wanted = Math.max(1, targetPage)
+  const need = wanted * PAGE_SIZE
   panel.loading = true
   panel.error = ''
   try {
-    const result =
-      panel.mode === 'search' && panel.query.trim()
-        ? await api.search(source.id, panel.query.trim(), panel.page)
-        : await api.browse(source.id, panel.filters, panel.page)
-    panel.items = result.items || []
-    panel.hasMore = Boolean(result.hasMore)
+    while (panel.items.length < need) {
+      const result = await fetchPage(source, panel, panel.sourcePage)
+      const items = result.items || []
+      panel.items = panel.items.concat(items)
+      panel.sourcePage += 1
+      panel.sourceHasMore = Boolean(result.hasMore)
+      if (!items.length) {
+        panel.sourceHasMore = false
+        break
+      }
+      if (!panel.sourceHasMore) break
+    }
   } catch (err) {
-    panel.items = []
-    panel.hasMore = false
-    panel.error = err.message
+    if (!panel.items.length) panel.error = err.message
+    panel.sourceHasMore = false
   } finally {
     panel.loading = false
     panel.loaded = true
   }
+  const maxPage = Math.max(1, Math.ceil(panel.items.length / PAGE_SIZE))
+  panel.page = panel.sourceHasMore ? wanted : Math.min(wanted, maxPage)
+}
+
+function resetPanel(panel) {
+  panel.items = []
+  panel.sourcePage = 1
+  panel.sourceHasMore = true
+  panel.page = 1
 }
 
 async function submitSearch() {
   const panel = activePanel.value
   if (!panel) return
-  panel.page = 1
+  resetPanel(panel)
   panel.mode = panel.query.trim() ? 'search' : 'browse'
-  await load(activeSource.value, panel)
+  await ensure(activeSource.value, panel, 1)
+  await afterLoad()
 }
 
 async function changeFilter() {
@@ -139,8 +317,17 @@ async function changeFilter() {
   persistFilters()
   panel.query = ''
   panel.mode = 'browse'
-  panel.page = 1
-  await load(activeSource.value, panel)
+  resetPanel(panel)
+  await ensure(activeSource.value, panel, 1)
+  await afterLoad()
+}
+
+async function goPage(page) {
+  const panel = activePanel.value
+  if (!panel || panel.loading) return
+  const target = Math.max(1, Number(page) || 1)
+  await ensure(activeSource.value, panel, target)
+  await afterLoad()
 }
 
 async function changePage(delta) {
@@ -148,8 +335,23 @@ async function changePage(delta) {
   if (!panel) return
   const next = panel.page + delta
   if (next < 1) return
-  panel.page = next
-  await load(activeSource.value, panel)
+  if (delta > 0 && !hasNextPage.value) return
+  await goPage(next)
+}
+
+async function afterLoad() {
+  await nextTick()
+  attachGrid()
+  if (gridRef.value) gridRef.value.scrollTop = 0
+  updateScroll()
+  jumpInput.value = ''
+  rememberPosition()
+}
+
+function jumpToPage() {
+  const value = Number(jumpInput.value)
+  if (!Number.isFinite(value) || value < 1) return
+  goPage(Math.floor(value))
 }
 
 function cover(item) {
@@ -159,8 +361,19 @@ function cover(item) {
 
 <template>
   <div class="discover-tabs-wrap">
-    <div v-if="sources.length && !loadingSources" class="discover-head">
-      <nav class="discover-tabs" aria-label="漫画源">
+    <div class="discover-head">
+      <div class="inline discover-head-left">
+        <div class="segmented" role="tablist" aria-label="资源类型">
+          <button type="button" :class="{ active: activeKind === 'comic' }" @click="switchKind('comic')">
+            漫画源
+            <span class="segmented-count">{{ comicCount }}</span>
+          </button>
+          <button type="button" :class="{ active: activeKind === 'book' }" @click="switchKind('book')">
+            书籍源
+            <span class="segmented-count">{{ bookCount }}</span>
+          </button>
+        </div>
+        <nav v-if="sources.length && !loadingSources" class="discover-tabs" aria-label="漫画源">
         <button
           v-for="source in sources"
           :key="source.id"
@@ -168,11 +381,12 @@ function cover(item) {
           :class="{ active: source.id === activeId }"
           @click="selectSource(source.id)"
         >
-          {{ source.name }}
-        </button>
-      </nav>
+            {{ source.name }}
+          </button>
+        </nav>
+      </div>
 
-      <div v-if="activeSource" class="source-search discover-search">
+      <div v-if="activeSource && activePanel" class="source-search discover-search">
         <input
           v-model="activePanel.query"
           class="input"
@@ -196,20 +410,23 @@ function cover(item) {
     <div v-if="sourcesError" class="alert error">{{ sourcesError }}</div>
     <div v-else-if="loadingSources" class="source-loading">
       <Loader2 :size="22" class="spin" />
-      <span>正在加载漫画源</span>
+      <span>正在加载资源</span>
     </div>
     <div v-else-if="!sources.length" class="card empty">
       <ImageOff :size="26" />
-      <span>所有漫画源均已在系统设置中隐藏</span>
+      <span>{{ activeKind === 'comic' ? '所有漫画源均已在资源页中隐藏' : '暂无可用书籍源' }}</span>
     </div>
 
     <section v-else-if="activeSource && activePanel" class="source-page">
       <header class="source-page-head">
-        <div>
-          <h2>{{ activeSource.name }}</h2>
-          <p>{{ activeSource.description }}</p>
+        <div class="inline">
+          <img v-if="activeSource.icon" class="source-favicon" :src="activeSource.icon" alt="" />
+          <div>
+            <h2>{{ activeSource.name }}</h2>
+            <p>{{ activeSource.description }}</p>
+          </div>
         </div>
-        <span class="badge primary">{{ activePanel.items.length }} 项</span>
+        <span class="badge primary">{{ visibleItems.length }} / {{ activePanel.items.length }} 项</span>
       </header>
 
       <div v-if="activeSource.filters?.length" class="source-column-tools">
@@ -242,22 +459,32 @@ function cover(item) {
         <span>没有作品</span>
       </div>
 
-      <div v-else class="source-comic-grid">
-        <RouterLink
-          v-for="item in activePanel.items"
-          :key="`${item.sourceId}-${item.id}`"
-          class="comic-card source-comic-card"
-          :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-        >
-          <div class="comic-cover">
-            <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
-            <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
+      <div v-else ref="gridRef" class="virtual-grid" @scroll="handleScroll">
+        <div class="virtual-grid-inner" :style="{ height: `${totalHeight}px` }">
+          <div
+            v-for="row in virtualRows"
+            :key="row.index"
+            class="virtual-row source-comic-grid"
+            :style="{ transform: `translateY(${row.top}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }"
+          >
+            <RouterLink
+              v-for="item in row.items"
+              :key="`${item.sourceId}-${item.id}`"
+              class="comic-card source-comic-card"
+              :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+              @click="rememberPosition"
+            >
+              <div class="comic-cover">
+                <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+                <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
+              </div>
+              <div class="comic-body">
+                <span class="comic-title">{{ item.title }}</span>
+                <span class="comic-meta">{{ item.author || '未知作者' }}</span>
+              </div>
+            </RouterLink>
           </div>
-          <div class="comic-body">
-            <span class="comic-title">{{ item.title }}</span>
-            <span class="comic-meta">{{ item.author || '未知作者' }}</span>
-          </div>
-        </RouterLink>
+        </div>
       </div>
 
       <div class="source-pagination">
@@ -270,16 +497,21 @@ function cover(item) {
           <ChevronLeft :size="15" />
           上一页
         </button>
-        <span class="muted small">第 {{ activePanel.page }} 页</span>
+        <span class="muted small">第 {{ activePanel.page }} 页 · 每页 {{ PAGE_SIZE }} 项</span>
         <button
           class="btn secondary small"
           type="button"
-          :disabled="!activePanel.hasMore || activePanel.loading"
+          :disabled="!hasNextPage || activePanel.loading"
           @click="changePage(1)"
         >
           下一页
           <ChevronRight :size="15" />
         </button>
+        <form class="page-jump" @submit.prevent="jumpToPage">
+          <span class="muted small">跳至</span>
+          <input v-model="jumpInput" class="input page-jump-input" type="number" min="1" placeholder="#" />
+          <button class="btn secondary small" type="submit" :disabled="activePanel.loading">跳转</button>
+        </form>
       </div>
     </section>
   </div>

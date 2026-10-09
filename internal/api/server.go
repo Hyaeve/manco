@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -229,6 +231,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/downloads/{id}", s.requireAuth(s.handleDeleteDownload))
 
 	mux.HandleFunc("GET /api/library", s.requireAuth(s.handleLibrary))
+	mux.HandleFunc("GET /api/local", s.requireAuth(s.handleLocalLibrary))
+	mux.HandleFunc("GET /api/local/file", s.requireAuth(s.handleLocalFile))
 	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
@@ -929,6 +933,203 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": comics, "downloadDir": s.cfg.DownloadDir})
+}
+
+type localFileEntry struct {
+	Name    string    `json:"name"`
+	Path    string    `json:"path"`
+	Ext     string    `json:"ext"`
+	Kind    string    `json:"kind"`
+	Size    int64     `json:"size"`
+	ModTime time.Time `json:"modTime"`
+}
+
+type localItemEntry struct {
+	Title       string           `json:"title"`
+	Path        string           `json:"path"`
+	Kind        string           `json:"kind"`
+	SourceID    string           `json:"sourceId,omitempty"`
+	ComicID     string           `json:"comicId,omitempty"`
+	Author      string           `json:"author,omitempty"`
+	Description string           `json:"description,omitempty"`
+	Cover       string           `json:"cover,omitempty"`
+	Files       []localFileEntry `json:"files"`
+	Size        int64            `json:"size"`
+	UpdatedAt   time.Time        `json:"updatedAt"`
+}
+
+// handleLocalLibrary lists the download directory directly, so the local
+// library reflects the mounted downloads folder even for files that were not
+// produced by a recorded download job.
+func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
+	root := s.cfg.DownloadDir
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []localItemEntry{}, "downloadDir": root})
+		return
+	}
+	items := make([]localItemEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		item := s.scanLocalDir(root, entry.Name())
+		if len(item.Files) == 0 {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "downloadDir": root})
+}
+
+func (s *Server) scanLocalDir(root, name string) localItemEntry {
+	item := localItemEntry{Title: name, Path: name, Kind: "comic", Files: []localFileEntry{}}
+	folder := filepath.Join(root, name)
+	files, err := os.ReadDir(folder)
+	if err != nil {
+		return item
+	}
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		info, err := file.Info()
+		if err != nil {
+			continue
+		}
+		lower := strings.ToLower(file.Name())
+		if strings.HasPrefix(lower, "cover.") {
+			item.Cover = filepath.ToSlash(filepath.Join(name, file.Name()))
+			continue
+		}
+		switch lower {
+		case "book.json":
+			item.Kind = "book"
+			applyBookMeta(filepath.Join(folder, file.Name()), &item)
+			continue
+		case "comicinfo.xml":
+			applyComicMeta(filepath.Join(folder, file.Name()), &item)
+			continue
+		}
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(file.Name())), ".")
+		kind := ""
+		switch ext {
+		case "cbz", "zip":
+			kind = "comic"
+		case "txt", "epub":
+			kind = "book"
+		}
+		if kind == "" {
+			continue
+		}
+		item.Files = append(item.Files, localFileEntry{
+			Name:    file.Name(),
+			Path:    filepath.ToSlash(filepath.Join(name, file.Name())),
+			Ext:     ext,
+			Kind:    kind,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		})
+		item.Size += info.Size()
+		if info.ModTime().After(item.UpdatedAt) {
+			item.UpdatedAt = info.ModTime()
+		}
+	}
+	sort.SliceStable(item.Files, func(i, j int) bool { return item.Files[i].Name < item.Files[j].Name })
+	if item.Kind == "comic" && len(item.Files) > 0 {
+		allBook := true
+		for _, file := range item.Files {
+			if file.Kind != "book" {
+				allBook = false
+				break
+			}
+		}
+		if allBook {
+			item.Kind = "book"
+		}
+	}
+	return item
+}
+
+func applyBookMeta(path string, item *localItemEntry) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var payload struct {
+		SourceID    string `json:"source"`
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Author      string `json:"author"`
+		Description string `json:"description"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return
+	}
+	if payload.Title != "" {
+		item.Title = payload.Title
+	}
+	item.SourceID = payload.SourceID
+	item.ComicID = payload.ID
+	item.Author = payload.Author
+	item.Description = payload.Description
+}
+
+func applyComicMeta(path string, item *localItemEntry) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var info downloader.ComicInfo
+	if xml.Unmarshal(raw, &info) != nil {
+		return
+	}
+	if info.Series != "" {
+		item.Title = info.Series
+	}
+	item.Author = info.Writer
+	item.Description = info.Summary
+	for _, part := range strings.Fields(info.Notes) {
+		if value, ok := strings.CutPrefix(part, "source="); ok {
+			item.SourceID = value
+		}
+		if value, ok := strings.CutPrefix(part, "comicId="); ok {
+			item.ComicID = value
+		}
+	}
+}
+
+func (s *Server) handleLocalFile(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rel == "" {
+		writeError(w, http.StatusBadRequest, "缺少 path 参数")
+		return
+	}
+	root, err := filepath.Abs(s.cfg.DownloadDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	target, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	within, err := filepath.Rel(root, target)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(os.PathSeparator)) {
+		writeError(w, http.StatusForbidden, "路径不在下载目录内")
+		return
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.IsDir() {
+		writeError(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	if r.URL.Query().Get("download") == "1" {
+		w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(target)+"\"")
+	}
+	http.ServeFile(w, r, target)
 }
 
 func (s *Server) settingsResponse(ctx context.Context, username string) map[string]any {

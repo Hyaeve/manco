@@ -1,12 +1,14 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { BookOpen, Download, Loader2, Rss, Square, SquareCheck } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import { BookOpen, ChevronLeft, Download, Loader2, Rss, Square, SquareCheck } from 'lucide-vue-next'
 import { api } from '../api'
 
 const route = useRoute()
+const router = useRouter()
 const sourceId = route.params.sourceId
 const comicId = route.params.comicId
+const isBook = ref(false)
 
 const detail = ref(null)
 const selected = ref(new Set())
@@ -28,7 +30,22 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  try {
+    const payload = await api.sources()
+    const source = (payload.items || []).find((item) => item.id === sourceId)
+    isBook.value = source?.kind === 'book'
+  } catch {
+    isBook.value = false
+  }
 })
+
+function goBack() {
+  if (window.history.state?.back) {
+    router.back()
+  } else {
+    router.push({ name: 'discover' })
+  }
+}
 
 function toggle(id) {
   const next = new Set(selected.value)
@@ -112,6 +129,12 @@ async function downloadSelected() {
     <p>{{ error || '没有找到该作品' }}</p>
   </div>
   <div v-else>
+    <div class="detail-back">
+      <button class="btn secondary small" type="button" @click="goBack">
+        <ChevronLeft :size="15" />
+        返回
+      </button>
+    </div>
     <div v-if="error" class="alert error">{{ error }}</div>
     <div v-if="message" class="alert ok">{{ message }}</div>
 
@@ -179,7 +202,11 @@ async function downloadSelected() {
           </button>
         </div>
         <p class="muted small" style="margin-bottom: 0">
-          每个章节会单独生成一个 CBZ 压缩包，文件夹结构为作品名/章节名.cbz。
+          {{
+            isBook
+              ? '每个章节会单独生成一个文本文件，并写入 book.json 元数据。'
+              : '每个章节会单独生成一个 CBZ 压缩包，文件夹结构为作品名/章节名.cbz。'
+          }}
         </p>
       </aside>
     </div>

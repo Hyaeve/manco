@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -24,6 +26,7 @@ func New(client *http.Client) *Source { return &Source{client: client} }
 const (
 	sourceID    = "baozimh"
 	defaultSite = "https://www.baozimh.com"
+	perPage     = 30
 )
 
 // defaultSites lists the public baozimh mirrors used as fallbacks when a
@@ -92,6 +95,7 @@ func (s *Source) Info() model.SourceInfo {
 	return model.SourceInfo{
 		ID:          sourceID,
 		Name:        "包子漫画",
+		Kind:        source.KindComic,
 		Description: "baozimh web source",
 		Homepage:    defaultSite + "/",
 		NeedsLogin:  false,
@@ -142,10 +146,7 @@ func parseAmpComicList(raw string, page int) (model.SearchResult, error) {
 		if comicID == "" {
 			continue
 		}
-		cover := strings.TrimSpace(item.TopicImg)
-		if cover != "" && !strings.HasPrefix(cover, "http") {
-			cover = "https://static-tw.baozimh.com/cover/" + strings.TrimLeft(cover, "/")
-		}
+		cover := coverAddress(strings.TrimSpace(item.TopicImg))
 		items = append(items, model.Comic{
 			SourceID: sourceID,
 			ID:       comicID,
@@ -156,7 +157,7 @@ func parseAmpComicList(raw string, page int) (model.SearchResult, error) {
 	}
 	limit := payload.Limit
 	if limit <= 0 {
-		limit = 36
+		limit = perPage
 	}
 	return model.SearchResult{
 		Items:   items,
@@ -181,7 +182,7 @@ func (s *Source) Browse(ctx context.Context, account source.Account, options mod
 		"region": {region},
 		"type":   {category},
 		"state":  {state},
-		"limit":  {"36"},
+		"limit":  {strconv.Itoa(perPage)},
 		"page":   {strconv.Itoa(page)},
 	}
 	if raw, _, err := s.get(ctx, account, "/api/bzmhq/amp_comic_list", apiValues); err == nil {
@@ -210,7 +211,7 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if slug == "" {
 		return model.Comic{}, errors.New("无效的包子漫画作品 ID")
 	}
-	html, base, err := s.get(ctx, account, "/comic/"+slug, nil)
+	html, _, err := s.get(ctx, account, "/comic/"+slug, nil)
 	if err != nil {
 		return model.Comic{}, err
 	}
@@ -222,16 +223,16 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 		SourceID: sourceID,
 		ID:       slug,
 		Title: source.FirstNonEmpty(
-			attr(document, "meta[property='og:title']", "content"),
-			attr(document, "meta[property='og:novel:book_name']", "content"),
+			metaContent(document, "og:novel:book_name"),
+			metaContent(document, "og:title"),
 			strings.TrimSpace(document.Find("h1").First().Text()),
 		),
-		Cover: source.Absolutize(base, source.FirstNonEmpty(
-			attr(document, "meta[property='og:image']", "content"),
+		Cover: coverAddress(source.FirstNonEmpty(
+			metaContent(document, "og:image"),
 			imageFrom(document.Find(".comic-cover, .cover, .book-cover")),
 		)),
-		Tags:   splitList(listFrom(document, ".tags a, .tag, .categories a")),
-		Status: strings.TrimSpace(document.Find(".status, .book-status").First().Text()),
+		Tags:   splitList(source.FirstNonEmpty(metaContent(document, "og:novel:category"), listFrom(document, ".tags a, .tag, .categories a"))),
+		Status: source.FirstNonEmpty(metaContent(document, "og:novel:status"), strings.TrimSpace(document.Find(".status, .book-status").First().Text())),
 	}
 	if comic.Title == "" {
 		comic.Title = strings.TrimSpace(document.Find("title").First().Text())
@@ -240,14 +241,14 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 		comic.Title = "包子漫画 " + slug
 	}
 	comic.Author = source.FirstNonEmpty(
-		attr(document, "meta[property='og:novel:author']", "content"),
+		metaContent(document, "og:novel:author"),
 		listFrom(document, ".author a, .author, .book-author"),
 	)
 	comic.Description = source.FirstNonEmpty(
-		attr(document, "meta[property='og:description']", "content"),
+		metaContent(document, "og:description"),
 		strings.TrimSpace(document.Find(".description, .book-description, .intro").First().Text()),
 	)
-	comic.ChapterCount = document.Find("a[href*='/comic/chapter/']").Length()
+	comic.ChapterCount = document.Find("a[href*='/comic/chapter/'], a[href*='/user/page_direct']").Length()
 	return comic, nil
 }
 
@@ -256,39 +257,53 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if slug == "" {
 		return nil, errors.New("无效的包子漫画作品 ID")
 	}
-	html, base, err := s.get(ctx, account, "/comic/"+slug, nil)
-	if err != nil {
-		return nil, err
-	}
-	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		return nil, err
-	}
 	chapters := make([]model.Chapter, 0, 128)
 	seen := map[string]bool{}
-	document.Find("a[href*='/comic/chapter/']").Each(func(_ int, selection *goquery.Selection) {
-		href, ok := selection.Attr("href")
-		if !ok {
-			return
+	if html, base, err := s.get(ctx, account, "/comic/"+slug, nil); err == nil {
+		if document, err := goquery.NewDocumentFromReader(strings.NewReader(html)); err == nil {
+			// baozimh renders a newest-first "latest chapters" teaser and a
+			// recommendation block above the real catalogue, so scope the parse
+			// to the two catalogue containers, which list chapters ascending.
+			selector := "#chapter-items a[href*='/user/page_direct'], #chapters_other_list a[href*='/user/page_direct'], #chapter-items a[href*='/comic/chapter/'], #chapters_other_list a[href*='/comic/chapter/']"
+			if document.Find(selector).Length() == 0 {
+				selector = "a[href*='/comic/chapter/'], a[href*='/user/page_direct']"
+			}
+			document.Find(selector).Each(func(_ int, selection *goquery.Selection) {
+				href, ok := selection.Attr("href")
+				if !ok {
+					return
+				}
+				href = chapterHref(href)
+				if href == "" {
+					return
+				}
+				chapterID := chapterSlug(href)
+				key := chapterKey(chapterID)
+				if chapterID == "" || key == "" || seen[key] {
+					return
+				}
+				seen[key] = true
+				title := source.FirstNonEmpty(
+					strings.TrimSpace(selection.AttrOr("title", "")),
+					strings.TrimSpace(selection.Find(".chapter-title, .chapter-name, span, p").First().Text()),
+					strings.TrimSpace(selection.Text()),
+					chapterID,
+				)
+				chapters = append(chapters, model.Chapter{
+					ID:      chapterID,
+					ComicID: slug,
+					Title:   title,
+					Order:   float64(len(chapters) + 1),
+					URL:     source.Absolutize(base, href),
+				})
+			})
 		}
-		matches := chapterPattern.FindStringSubmatch(href)
-		if len(matches) < 2 || seen[matches[1]] {
-			return
+	}
+	if len(chapters) == 0 {
+		if viaAPI, err := s.chaptersFromApp(ctx, slug); err == nil && len(viaAPI) > 0 {
+			return viaAPI, nil
 		}
-		seen[matches[1]] = true
-		title := source.FirstNonEmpty(
-			strings.TrimSpace(selection.AttrOr("title", "")),
-			strings.TrimSpace(selection.Text()),
-			matches[1],
-		)
-		chapters = append(chapters, model.Chapter{
-			ID:      matches[1],
-			ComicID: slug,
-			Title:   title,
-			Order:   float64(len(chapters) + 1),
-			URL:     source.Absolutize(base, href),
-		})
-	})
+	}
 	orderChapters(chapters)
 	return chapters, nil
 }
@@ -367,15 +382,21 @@ func chapterNumber(chapter model.Chapter) (float64, bool) {
 }
 
 func (s *Source) Pages(ctx context.Context, account source.Account, comicID string, chapter model.Chapter) ([]model.Page, error) {
-	slug := normalizeChapterID(source.FirstNonEmpty(chapter.ID, chapter.URL))
-	if slug == "" {
+	path := chapterPath(chapter)
+	if path == "" {
 		return nil, errors.New("无效的包子漫画章节 ID")
 	}
-	html, base, err := s.get(ctx, account, "/comic/chapter/"+slug, nil)
+	// The reader endpoint only returns the real page with the .html suffix;
+	// without it the mirror answers 200 with a tiny placeholder shell.
+	readerPath := path
+	if !strings.HasSuffix(readerPath, ".html") {
+		readerPath += ".html"
+	}
+	html, base, err := s.get(ctx, account, "/comic/chapter/"+readerPath, nil)
 	if err != nil {
 		return nil, err
 	}
-	referer := source.BuildURL(base, "/comic/chapter/"+slug, nil)
+	referer := source.BuildURL(base, "/comic/chapter/"+readerPath, nil)
 	seen := map[string]bool{}
 	pages := make([]model.Page, 0, 64)
 	add := func(raw string) {
@@ -384,13 +405,17 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 			return
 		}
 		address := source.Absolutize(base, raw)
-		if !strings.HasPrefix(address, "http") || seen[address] {
+		if !strings.HasPrefix(address, "http") {
 			return
 		}
-		if !isImageAddress(address) {
+		if !isImageAddress(address) || isCoverImage(address) {
 			return
 		}
-		seen[address] = true
+		key := imageKey(address)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
 		pages = append(pages, model.Page{
 			URL:      address,
 			Referer:  referer,
@@ -398,12 +423,17 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		})
 	}
 	if document, err := goquery.NewDocumentFromReader(strings.NewReader(html)); err == nil {
-		document.Find("img").Each(func(_ int, selection *goquery.Selection) {
+		images := document.Find(".comic-contain img, .comic-contain__item img, img.chapter-img")
+		if images.Length() == 0 {
+			images = document.Find("img")
+		}
+		images.Each(func(_ int, selection *goquery.Selection) {
 			class, _ := selection.Attr("class")
 			if strings.Contains(class, "avatar") || strings.Contains(class, "logo") {
 				return
 			}
 			add(source.FirstNonEmpty(
+				selection.AttrOr("data-img", ""),
 				selection.AttrOr("data-original", ""),
 				selection.AttrOr("data-src", ""),
 				selection.AttrOr("data-lazy-src", ""),
@@ -417,9 +447,230 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		}
 	}
 	if len(pages) == 0 {
-		return nil, errors.New("包子漫画章节没有解析到图片，站点可能启用了更强的 Cloudflare 校验，请在源设置里更新 Cookie")
+		return nil, fmt.Errorf("包子漫画章节没有解析到图片（镜像 %s，页面 %d 字节），站点可能启用了更强的 Cloudflare 校验，请在源设置里更新 Cookie", base, len(html))
 	}
 	return pages, nil
+}
+
+// coverHost is the image CDN baozimh serves from. The site's previous cover
+// host (static-tw.baozimh.com) sits behind Cloudflare and frequently 403s,
+// while the same files are publicly served by s1/s2.bzcdn.net.
+const coverHost = "https://s1.bzcdn.net"
+
+// coverAddress normalises the different cover shapes baozimh returns so
+// protocol-relative and root-relative paths still resolve to real images.
+func coverAddress(raw string) string {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, `\/`, `/`))
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	raw = strings.NewReplacer(
+		"static-tw.baozimh.com", "s1.bzcdn.net",
+		"static.baozimh.com", "s1.bzcdn.net",
+	).Replace(raw)
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		return raw
+	}
+	if strings.HasPrefix(raw, "/") {
+		return coverHost + raw
+	}
+	if strings.Contains(raw, "/") {
+		return coverHost + "/" + strings.TrimLeft(raw, "/")
+	}
+	return coverHost + "/cover/" + strings.TrimLeft(raw, "/")
+}
+
+// chapterKey collapses the mirror-specific comic id so the same chapter that
+// is listed twice (main list plus the "other chapters" section) is counted
+// only once.
+func chapterKey(chapterID string) string {
+	chapterID = strings.TrimSpace(chapterID)
+	if index := strings.LastIndex(chapterID, "/"); index >= 0 {
+		return chapterID[index+1:]
+	}
+	return chapterID
+}
+
+// chapterHref normalises a baozimh chapter anchor into the canonical reader
+// path. The server-rendered comic page links chapters through
+// /user/page_direct?comic_id=<id>&section_slot=<s>&chapter_slot=<c>, whose real
+// reader URL is /comic/chapter/<id>/<s>_<c>.html.
+func chapterHref(href string) string {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return ""
+	}
+	if !strings.Contains(href, "/user/page_direct") {
+		if strings.Contains(href, "/comic/chapter/") {
+			return href
+		}
+		return ""
+	}
+	parsed, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+	query := parsed.Query()
+	comicID := strings.TrimSpace(query.Get("comic_id"))
+	section := strings.TrimSpace(query.Get("section_slot"))
+	chapter := strings.TrimSpace(query.Get("chapter_slot"))
+	if comicID == "" || chapter == "" {
+		return ""
+	}
+	if section == "" {
+		section = "0"
+	}
+	return "/comic/chapter/" + comicID + "/" + section + "_" + chapter + ".html"
+}
+
+// chapterSlug extracts the chapter identifier from a /comic/chapter/ link.
+func chapterSlug(href string) string {
+	return chapterPathValue(href)
+}
+
+// chapterPath resolves the reader path for a chapter, accepting an id or url.
+func chapterPath(chapter model.Chapter) string {
+	for _, value := range []string{chapter.URL, chapter.ID} {
+		if path := chapterPathValue(value); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func chapterPathValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if index := strings.Index(value, "/comic/chapter/"); index >= 0 {
+		value = value[index+len("/comic/chapter/"):]
+	} else if parsed, err := url.Parse(value); err == nil && parsed.IsAbs() {
+		value = parsed.Path
+	}
+	if cut := strings.IndexAny(value, "?#"); cut >= 0 {
+		value = value[:cut]
+	}
+	value = strings.TrimSuffix(value, ".html")
+	return strings.Trim(value, "/")
+}
+
+// chaptersFromApp uses the baozimh app chapter API, which the web comic page
+// relies on for its client-rendered chapter list.
+func (s *Source) chaptersFromApp(ctx context.Context, comicID string) ([]model.Chapter, error) {
+	address := "https://appcn.baozimh.com/baozimhapp/comic/chapter/" + comicID
+	raw, err := source.FetchText(ctx, s.client, address, map[string]string{
+		"Referer":         "https://www.baozimh.com/",
+		"Accept":          "application/json, text/plain, */*",
+		"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseAppChapters(raw, comicID), nil
+}
+
+type appChapter struct {
+	id    string
+	title string
+	order float64
+}
+
+// parseAppChapters walks the app API payload generically, so it keeps working
+// when the API nests its chapter list differently across mirrors.
+func parseAppChapters(raw, comicID string) []model.Chapter {
+	var payload any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil
+	}
+	collected := make([]appChapter, 0, 64)
+	seen := map[string]bool{}
+	var walk func(node any)
+	walk = func(node any) {
+		switch value := node.(type) {
+		case map[string]any:
+			id := jsonString(value, "chapterid", "chapter_id", "chapterId")
+			if id != "" && !seen[id] {
+				seen[id] = true
+				collected = append(collected, appChapter{
+					id:    id,
+					title: jsonString(value, "chapter_title", "chaptertitle", "chapter_name", "name", "title"),
+					order: jsonNumber(value, "chapterindex", "chapter_index", "index", "sort", "order"),
+				})
+			}
+			for _, child := range value {
+				walk(child)
+			}
+		case []any:
+			for _, child := range value {
+				walk(child)
+			}
+		}
+	}
+	walk(payload)
+	if len(collected) == 0 {
+		return nil
+	}
+	hasOrder := false
+	for _, item := range collected {
+		if item.order > 0 {
+			hasOrder = true
+			break
+		}
+	}
+	if hasOrder {
+		sort.SliceStable(collected, func(i, j int) bool {
+			if collected[i].order == collected[j].order {
+				return collected[i].id < collected[j].id
+			}
+			return collected[i].order < collected[j].order
+		})
+	}
+	chapters := make([]model.Chapter, 0, len(collected))
+	for index, item := range collected {
+		chapters = append(chapters, model.Chapter{
+			ID:      item.id,
+			ComicID: comicID,
+			Title:   source.FirstNonEmpty(item.title, item.id),
+			Order:   float64(index + 1),
+		})
+	}
+	return chapters
+}
+
+func jsonString(value map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if raw, ok := value[key]; ok {
+			switch typed := raw.(type) {
+			case string:
+				if trimmed := strings.TrimSpace(typed); trimmed != "" {
+					return trimmed
+				}
+			case float64:
+				if typed != 0 {
+					return strconv.FormatFloat(typed, 'f', -1, 64)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func jsonNumber(value map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		switch typed := value[key].(type) {
+		case float64:
+			return typed
+		case string:
+			if number, err := strconv.ParseFloat(strings.TrimSpace(typed), 64); err == nil {
+				return number
+			}
+		}
+	}
+	return 0
 }
 
 func (s *Source) bases(account source.Account) []string {
@@ -481,7 +732,7 @@ func parseComics(html, base string, page int) model.SearchResult {
 				strings.TrimSpace(selection.Find(".comic-title, .title, h3, h2, p").First().Text()),
 				strings.TrimSpace(selection.Text()),
 			),
-			Cover: source.Absolutize(base, imageFrom(selection)),
+			Cover: coverAddress(imageFrom(selection)),
 		}
 		if item.Title == "" {
 			item.Title = matches[1]
@@ -531,6 +782,23 @@ func isImageAddress(address string) bool {
 	return strings.Contains(lower, "image") || strings.Contains(lower, "pic")
 }
 
+// isCoverImage reports whether an image belongs to a cover / promotion slot
+// rather than the chapter reader.
+func isCoverImage(address string) bool {
+	lower := strings.ToLower(address)
+	return strings.Contains(lower, "/cover/") || strings.Contains(lower, "default_cover")
+}
+
+// imageKey ignores query strings so cache-busting variants of the same file
+// are not counted as separate pages.
+func imageKey(address string) string {
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Host == "" {
+		return address
+	}
+	return parsed.Host + parsed.Path
+}
+
 func fileNameFromURL(address string) string {
 	parsed, err := url.Parse(address)
 	if err != nil {
@@ -541,6 +809,16 @@ func fileNameFromURL(address string) string {
 		name = name[index+1:]
 	}
 	return name
+}
+
+// metaContent reads an Open Graph-style meta tag. baozimh mirrors publish
+// these with name="og:*" while other mirrors use property="og:*", so both
+// spellings are accepted.
+func metaContent(document *goquery.Document, name string) string {
+	return source.FirstNonEmpty(
+		attr(document, "meta[name='"+name+"']", "content"),
+		attr(document, "meta[property='"+name+"']", "content"),
+	)
 }
 
 func attr(document *goquery.Document, selector, name string) string {

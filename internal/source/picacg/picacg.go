@@ -55,6 +55,7 @@ func (s *Source) Info() model.SourceInfo {
 	return model.SourceInfo{
 		ID:          "picacg",
 		Name:        "哔咔漫画",
+		Kind:        source.KindComic,
 		Description: "Pica Comic API source",
 		Homepage:    "https://picaapi.go2778.com/",
 		NeedsLogin:  true,

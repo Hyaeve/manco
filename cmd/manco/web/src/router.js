@@ -13,6 +13,7 @@ const routes = [
   { path: '/subscriptions', name: 'subscriptions', component: () => import('./views/SubscriptionsView.vue') },
   { path: '/downloads', name: 'downloads', component: () => import('./views/DownloadsView.vue') },
   { path: '/library', name: 'library', component: () => import('./views/LibraryView.vue') },
+  { path: '/local', name: 'local', component: () => import('./views/LocalLibraryView.vue') },
   { path: '/sources', name: 'sources', component: () => import('./views/SourcesView.vue') },
   { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue') },
   { path: '/logs', name: 'logs', component: () => import('./views/LogsView.vue') },

@@ -1292,3 +1292,54 @@ tbody tr:hover {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* 发现页：资源类型切换、虚拟列表与快速跳页 */
+.discover-head-left {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.source-favicon {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  object-fit: contain;
+  padding: 3px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+}
+
+.virtual-grid {
+  position: relative;
+  max-height: calc(100vh - 320px);
+  min-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.virtual-grid-inner {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 16px;
+  padding: 0 18px 16px;
+}
+
+.page-jump {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+}
+
+.page-jump-input {
+  width: 78px;
+  padding: 5px 8px;
+}

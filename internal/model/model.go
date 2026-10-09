@@ -80,6 +80,7 @@ type Stats struct {
 type SourceInfo struct {
 	ID          string        `json:"id"`
 	Name        string        `json:"name"`
+	Kind        string        `json:"kind,omitempty"`
 	Description string        `json:"description"`
 	Homepage    string        `json:"homepage"`
 	NeedsLogin  bool          `json:"needsLogin"`

@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -362,6 +363,9 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if err != nil {
 		return err
 	}
+	if source.KindOf(item.Info()) == source.KindBook {
+		return e.downloadBook(ctx, item, account, job)
+	}
 	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", 0, 0, "", ""); err != nil {
 		return err
 	}
@@ -555,6 +559,90 @@ func convertToSimplifiedText(value string) string {
 		return value
 	}
 	return converted
+}
+
+// downloadBook persists one text file per chapter for book sources, plus a
+// short book.json metadata file shared by all chapters of the work.
+func (e *Engine) downloadBook(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
+	contentSource, ok := item.(source.ContentSource)
+	if !ok {
+		return errors.New("该书源不支持正文下载")
+	}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", 1, 0, "", ""); err != nil {
+		return err
+	}
+	chapter := model.Chapter{ID: job.ChapterID, ComicID: job.ComicID, Title: job.ChapterTitle, Order: job.ChapterOrder}
+	text, err := contentSource.ChapterContent(ctx, account, job.ComicID, chapter)
+	if err != nil {
+		return fmt.Errorf("fetch chapter content: %w", err)
+	}
+	comicTitle := job.ComicTitle
+	chapterTitle := job.ChapterTitle
+	metadata := model.Comic{SourceID: job.SourceID, ID: job.ComicID, Title: comicTitle, Cover: job.ComicCover}
+	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+	} else {
+		e.logger.Printf("downloader: book detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
+	}
+	if e.convertToSimplified {
+		text = convertToSimplifiedText(text)
+		comicTitle = convertToSimplifiedText(comicTitle)
+		chapterTitle = convertToSimplifiedText(chapterTitle)
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+	}
+	comicDir := filepath.Join(e.downloadDir, SafeName(comicTitle))
+	if err := os.MkdirAll(comicDir, 0o755); err != nil {
+		return err
+	}
+	outputPath := filepath.Join(comicDir, SafeName(chapterTitle)+".txt")
+	if err := os.WriteFile(outputPath, []byte(text), 0o644); err != nil {
+		return err
+	}
+	e.metaMu.Lock()
+	metaErr := writeBookMetadata(ctx, e.registry.Client(), account, item, metadata, comicDir)
+	e.metaMu.Unlock()
+	if metaErr != nil {
+		e.logger.Printf("downloader: book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
+	}
+	return e.store.UpdateDownloadJob(ctx, job.ID, "completed", 1, 1, outputPath, "")
+}
+
+// writeBookMetadata stores book.json plus a best-effort cover image at the
+// series level. It is intentionally separate from ComicInfo.xml, which only
+// describes comic archives.
+func writeBookMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, book model.Comic, comicDir string) error {
+	info := item.Info()
+	if coverURL := strings.TrimSpace(book.Cover); coverURL != "" {
+		existing, _ := filepath.Glob(filepath.Join(comicDir, "cover.*"))
+		if len(existing) == 0 {
+			if data, err := fetchImage(ctx, client, account, model.Page{URL: coverURL, Referer: info.Homepage}); err == nil {
+				_ = os.WriteFile(filepath.Join(comicDir, "cover"+imageExtension(data, coverURL)), data, 0o644)
+			}
+		}
+	}
+	payload, err := json.MarshalIndent(map[string]any{
+		"type":        "book",
+		"source":      book.SourceID,
+		"id":          book.ID,
+		"title":       book.Title,
+		"author":      book.Author,
+		"description": book.Description,
+		"tags":        book.Tags,
+		"status":      book.Status,
+		"cover":       book.Cover,
+		"web":         comicPageURL(info.Homepage, book.SourceID, book.ID),
+		"updatedAt":   time.Now().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(comicDir, "book.json"), payload, 0o644)
 }
 
 func writeComicMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic, comicDir, chapterTitle string, chapterOrder float64, pageCount int) ([]byte, error) {

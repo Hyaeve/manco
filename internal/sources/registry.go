@@ -12,8 +12,10 @@ import (
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/source/baozimh"
+	"github.com/hyaeve/manco/internal/source/gutenberg"
 	"github.com/hyaeve/manco/internal/source/jmcomic"
 	"github.com/hyaeve/manco/internal/source/picacg"
+	"github.com/hyaeve/manco/internal/source/shencou"
 	"github.com/hyaeve/manco/internal/store"
 )
 
@@ -29,6 +31,8 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) 
 		picacg.New(client),
 		jmcomic.New(client),
 		baozimh.New(client),
+		shencou.New(client),
+		gutenberg.New(client),
 	}
 	registry := &Registry{client: client, box: box, store: repository, byID: make(map[string]source.Source, len(items))}
 	for _, item := range items {
@@ -42,7 +46,7 @@ func (r *Registry) List() []model.SourceInfo {
 	for _, item := range r.byID {
 		items = append(items, item.Info())
 	}
-	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2}
+	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "shencou": 3, "gutenberg": 4}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, leftOK := order[items[i].ID]
 		right, rightOK := order[items[j].ID]
@@ -116,10 +120,13 @@ func (r *Registry) AllowedImageHost(host string) bool {
 		return false
 	}
 	for _, suffix := range []string{
-		".18comic.vip", ".18comic.org", ".18comic.cc",
+		".18comic.vip", ".18comic.org", ".18comic.cc", ".18mh.org",
 		".jmapiproxy.cc", ".jmapiproxy1.cc", ".jmapiproxy2.cc",
+		".jmapinodeudzn.net",
 		".jm-comic.me", ".jm-comic.group", ".jmcomic.me", ".jmcomic.rocks", ".jmcomic1.rocks", ".jmcomic2.rocks", ".jm-comic1.rocks", ".jm-comic2.rocks",
-		".baozimh.com", ".baozimh.org", ".baozimhcn.com", ".baozicdn.com", ".bzmgcn.com",
+		".baozimh.com", ".baozimh.org", ".baozimhcn.com", ".baozicdn.com", ".bzmgcn.com", ".bzcdn.net",
+		".wowenku.com", ".shencou.com", ".wenruya.com",
+		".gutenberg.org",
 		".webmota.com", ".kukuc.co", ".twmanga.com", ".dinnerku.com", ".twmanhua.com",
 		".picacomic.com", ".go2778.com",
 	} {

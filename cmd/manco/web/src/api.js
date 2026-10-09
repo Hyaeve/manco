@@ -73,6 +73,13 @@ export const api = {
     request(`/api/downloads/${id}?removeFile=${removeFile}`, { method: 'DELETE' }),
 
   library: () => request('/api/library'),
+  localLibrary: () => request('/api/local'),
+  localFileUrl: (path, download = false) => {
+    if (!path) return ''
+    const params = new URLSearchParams({ path })
+    if (download) params.set('download', '1')
+    return `/api/local/file?${params.toString()}`
+  },
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   stats: () => request('/api/stats'),
