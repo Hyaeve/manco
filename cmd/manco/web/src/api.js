@@ -59,6 +59,7 @@ export const api = {
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   stats: () => request('/api/stats'),
+  logs: (limit = 300) => request(`/api/logs?limit=${limit}`),
 
   imageUrl: (url, sourceId, referer) => {
     if (!url) return ''

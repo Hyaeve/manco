@@ -16,6 +16,7 @@ import (
 	"github.com/hyaeve/manco/internal/api"
 	"github.com/hyaeve/manco/internal/config"
 	"github.com/hyaeve/manco/internal/downloader"
+	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/scheduler"
 	"github.com/hyaeve/manco/internal/secret"
@@ -28,8 +29,9 @@ import (
 var embedded embed.FS
 
 func main() {
-	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmsgprefix)
-	if err := run(logger); err != nil {
+	logs := logbuf.New(500, os.Stdout)
+	logger := log.New(logs, "", log.LstdFlags|log.Lmsgprefix)
+	if err := run(logger, logs); err != nil {
 		logger.Fatalf("manco: %v", err)
 	}
 }
@@ -47,7 +49,7 @@ func (q downloadQueue) CreateDownloadJob(ctx context.Context, job model.Download
 
 func (q downloadQueue) Notify() { q.engine.Notify() }
 
-func run(logger *log.Logger) error {
+func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -84,6 +86,7 @@ func run(logger *log.Logger) error {
 		Engine:    engine,
 		Scheduler: scanner,
 		Logger:    logger,
+		Logs:      logs,
 		Assets:    assets,
 	})
 	_ = repository.CleanupSessions(ctx, time.Now())

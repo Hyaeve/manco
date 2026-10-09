@@ -8,6 +8,7 @@ const auth = useAuthStore()
 const settings = ref(null)
 const repoUrl = ref('')
 const proxy = ref('')
+const username = ref('')
 const currentPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
@@ -26,6 +27,7 @@ async function load() {
     settings.value = payload
     repoUrl.value = payload.repoUrl || ''
     proxy.value = payload.proxy || ''
+    username.value = payload.username || auth.user?.username || ''
   } catch (err) {
     error.value = err.message
   } finally {
@@ -44,6 +46,7 @@ async function save() {
       return
     }
     const payload = await api.saveSettings({
+      username: username.value,
       repoUrl: repoUrl.value,
       proxy: proxy.value,
       currentPassword: currentPassword.value,
@@ -51,6 +54,8 @@ async function save() {
       cookieSecure: settings.value.cookieSecure,
     })
     settings.value = { ...settings.value, repoUrl: payload.repoUrl, proxy: payload.proxy }
+    username.value = payload.username || username.value
+    if (auth.user) auth.user = { ...auth.user, username: payload.username || auth.user.username }
     proxy.value = payload.proxy || ''
     currentPassword.value = ''
     newPassword.value = ''
@@ -141,16 +146,27 @@ async function save() {
         <span>HTTP / HTTPS 代理地址</span>
         <input v-model="proxy" class="input" placeholder="http://127.0.0.1:7890" />
       </label>
+      <div class="inline" style="margin-top: 12px">
+        <button class="btn" type="button" :disabled="saving" @click="save">
+          <Loader2 v-if="saving" :size="15" class="spin" />
+          <Save v-else :size="15" />
+          保存
+        </button>
+      </div>
     </section>
 
     <section class="card card-pad">
       <div class="section-head" style="margin-bottom: 10px">
         <div class="inline">
           <KeyRound :size="17" />
-          <h2>修改密码</h2>
+          <h2>账号设置</h2>
         </div>
       </div>
-      <p class="muted small" style="margin: 0 0 12px">当前登录：{{ auth.user?.username }}</p>
+      <div class="field" style="margin-bottom: 10px">
+        <span>用户名</span>
+        <input v-model="username" class="input" autocomplete="username" />
+      </div>
+      <p class="muted small" style="margin: 0 0 12px">修改密码需填写当前密码；只改用户名时密码留空即可。</p>
       <div class="field" style="margin-bottom: 10px">
         <span>当前密码</span>
         <input v-model="currentPassword" class="input" type="password" autocomplete="current-password" />
@@ -162,6 +178,13 @@ async function save() {
       <div class="field">
         <span>确认新密码</span>
         <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" />
+      </div>
+      <div class="inline" style="margin-top: 12px">
+        <button class="btn" type="button" :disabled="saving" @click="save">
+          <Loader2 v-if="saving" :size="15" class="spin" />
+          <Save v-else :size="15" />
+          保存账号设置
+        </button>
       </div>
     </section>
   </template>

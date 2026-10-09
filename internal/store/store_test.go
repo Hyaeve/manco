@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -60,6 +61,31 @@ func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	}
 	if stored.CompletedPages != 3 || stored.TotalPages != 12 {
 		t.Fatalf("running job progress = %d/%d, want 3/12", stored.CompletedPages, stored.TotalPages)
+	}
+}
+
+func TestUpdateUsername(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	if err := repository.CreateUser(ctx, "alice", "hash-a"); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if err := repository.CreateUser(ctx, "bob", "hash-b"); err != nil {
+		t.Fatalf("create bob: %v", err)
+	}
+
+	alice, err := repository.UserByUsername(ctx, "alice")
+	if err != nil {
+		t.Fatalf("load alice: %v", err)
+	}
+	if err := repository.UpdateUsername(ctx, alice.ID, "alice2"); err != nil {
+		t.Fatalf("rename alice: %v", err)
+	}
+	if _, err := repository.UserByUsername(ctx, "alice2"); err != nil {
+		t.Fatalf("renamed user missing: %v", err)
+	}
+	if err := repository.UpdateUsername(ctx, alice.ID, "bob"); !errors.Is(err, ErrUsernameTaken) {
+		t.Fatalf("duplicate rename error = %v, want ErrUsernameTaken", err)
 	}
 }
 

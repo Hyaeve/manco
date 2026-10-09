@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   Rss,
+  ScrollText,
   Server,
   Settings,
   User,
@@ -28,6 +29,7 @@ const navItems = [
   { name: 'library', label: '资料库', to: '/library', icon: Library },
   { name: 'sources', label: '漫画源', to: '/sources', icon: Server },
   { name: 'settings', label: '设置', to: '/settings', icon: Settings },
+  { name: 'logs', label: '系统日志', to: '/logs', icon: ScrollText },
 ]
 
 const showShell = computed(() => route.name !== 'login')
@@ -40,6 +42,7 @@ const pageTitle = computed(() => {
   if (route.name === 'library') return '本地资料库'
   if (route.name === 'sources') return '漫画源'
   if (route.name === 'settings') return '设置'
+  if (route.name === 'logs') return '系统日志'
   return 'Manco'
 })
 

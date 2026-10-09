@@ -7,8 +7,9 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 
 ## 功能
 
-- 首次启动进入创建账号页；登录后可在「设置」中修改密码。
+- 首次启动进入创建账号页；登录后可在「设置 → 账号设置」中修改用户名和密码。
 - 漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**。
+- 「系统日志」页面展示最近 500 行运行日志；同一份日志也会输出到容器标准输出，可用 `docker logs -f Manco` 查看。
 - 支持搜索、浏览、作品详情、章节列表、勾选章节批量下载。
 - 网络代理可在「设置」中配置，用于访问被地域或网络策略拦截的漫画源。
 - 订阅追更：首次检查只记录当前最新章节作为基线，之后自动把新章节加入下载队列。
@@ -160,6 +161,7 @@ docker compose up -d
 | `GET` | `/api/library` | 本地 CBZ 资料库 |
 | `GET/PUT` | `/api/settings` | 设置 |
 | `GET` | `/api/stats` | 统计 |
+| `GET` | `/api/logs?limit=` | 最近运行日志 |
 | `GET` | `/api/proxy/image?url=&sourceId=` | 图片代理 |
 
 ## CI 与镜像发布
@@ -179,7 +181,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v0.0.3 && git push origin v0.0.3     # 构建并发布 :v0.0.3
+git tag v0.0.4 && git push origin v0.0.4     # 构建并发布 :v0.0.4
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

@@ -824,3 +824,18 @@ tbody tr:hover {
   background: rgba(15, 23, 42, 0.35);
   z-index: 30;
 }
+
+.log-view {
+  margin: 0;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

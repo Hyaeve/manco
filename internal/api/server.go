@@ -26,6 +26,7 @@ import (
 
 	"github.com/hyaeve/manco/internal/config"
 	"github.com/hyaeve/manco/internal/downloader"
+	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/scheduler"
 	"github.com/hyaeve/manco/internal/secret"
@@ -47,6 +48,7 @@ type Server struct {
 	engine    *downloader.Engine
 	scheduler *scheduler.Scheduler
 	logger    *log.Logger
+	logs      *logbuf.Buffer
 	assets    fs.FS
 }
 
@@ -68,6 +70,7 @@ type Options struct {
 	Engine    *downloader.Engine
 	Scheduler *scheduler.Scheduler
 	Logger    *log.Logger
+	Logs      *logbuf.Buffer
 	Assets    fs.FS
 }
 
@@ -84,6 +87,7 @@ func New(options Options) *Server {
 		engine:    options.Engine,
 		scheduler: options.Scheduler,
 		logger:    logger,
+		logs:      options.Logs,
 		assets:    options.Assets,
 	}
 }
@@ -156,6 +160,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
+	mux.HandleFunc("GET /api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("GET /api/proxy/image", s.requireAuth(s.handleImageProxy))
 
 	mux.HandleFunc("/", s.handleSPA)
@@ -738,15 +743,21 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	current := s.loadSettings(r.Context())
+	username := ""
+	if user, ok := userFromContext(r.Context()); ok {
+		username = user.Username
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"repoUrl":               s.sourceRepo(r.Context()),
+		"username":              username,
+		"repoUrl":               current.RepoURL,
 		"downloadDir":           s.cfg.DownloadDir,
 		"dataDir":               s.cfg.DataDir,
-		"scanInterval":          s.cfg.ScanInterval.String(),
-		"maxChapterConcurrency": s.cfg.MaxChapterConcurrency,
-		"maxPageConcurrency":    s.cfg.MaxPageConcurrency,
-		"proxy":                 s.proxySetting(r.Context()),
-		"cookieSecure":          s.cookieSecure(r.Context()),
+		"scanInterval":          current.ScanInterval.String(),
+		"maxChapterConcurrency": current.MaxChapterConcurrency,
+		"maxPageConcurrency":    current.MaxPageConcurrency,
+		"proxy":                 current.Proxy,
+		"cookieSecure":          current.CookieSecure,
 	})
 }
 
@@ -758,12 +769,54 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		MaxPageConcurrency    int     `json:"maxPageConcurrency"`
 		Proxy                 *string `json:"proxy"`
 		CookieSecure          bool    `json:"cookieSecure"`
+		Username              string  `json:"username"`
 		CurrentPassword       string  `json:"currentPassword"`
 		NewPassword           string  `json:"newPassword"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	currentUser, ok := userFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "无法识别当前用户")
+		return
+	}
+	responseUsername := currentUser.Username
+	username := strings.TrimSpace(payload.Username)
+	if username != "" && username != currentUser.Username {
+		if len(username) < 3 || len(username) > 64 {
+			writeError(w, http.StatusBadRequest, "用户名长度需在 3 到 64 个字符之间")
+			return
+		}
+		existing, err := s.store.UserByUsername(r.Context(), username)
+		if err == nil && existing.ID != currentUser.ID {
+			writeError(w, http.StatusConflict, "用户名已存在")
+			return
+		}
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	newPasswordHash := ""
+	if payload.NewPassword != "" {
+		if len(payload.NewPassword) < 8 {
+			writeError(w, http.StatusBadRequest, "新密码至少需要 8 个字符")
+			return
+		}
+		if bcrypt.CompareHashAndPassword([]byte(currentUser.PasswordHash), []byte(payload.CurrentPassword)) != nil {
+			writeError(w, http.StatusUnauthorized, "当前密码不正确")
+			return
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(payload.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		newPasswordHash = string(hash)
 	}
 
 	if strings.TrimSpace(payload.RepoURL) != "" {
@@ -829,26 +882,19 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.NewPassword != "" {
-		user, ok := userFromContext(r.Context())
-		if !ok {
-			writeError(w, http.StatusInternalServerError, "无法识别当前用户")
-			return
-		}
-		if len(payload.NewPassword) < 8 {
-			writeError(w, http.StatusBadRequest, "新密码至少需要 8 个字符")
-			return
-		}
-		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(payload.CurrentPassword)) != nil {
-			writeError(w, http.StatusUnauthorized, "当前密码不正确")
-			return
-		}
-		hash, err := bcrypt.GenerateFromPassword([]byte(payload.NewPassword), bcrypt.DefaultCost)
-		if err != nil {
+	if username != "" && username != currentUser.Username {
+		if err := s.store.UpdateUsername(r.Context(), currentUser.ID, username); err != nil {
+			if errors.Is(err, store.ErrUsernameTaken) {
+				writeError(w, http.StatusConflict, "用户名已存在")
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if err := s.store.UpdateUserPassword(r.Context(), user.ID, string(hash)); err != nil {
+		responseUsername = username
+	}
+	if newPasswordHash != "" {
+		if err := s.store.UpdateUserPassword(r.Context(), currentUser.ID, newPasswordHash); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -858,6 +904,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	s.engine.SetConcurrency(current.MaxChapterConcurrency, current.MaxPageConcurrency)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                    true,
+		"username":              responseUsername,
 		"repoUrl":               current.RepoURL,
 		"scanInterval":          current.ScanInterval.String(),
 		"maxChapterConcurrency": current.MaxChapterConcurrency,
@@ -874,6 +921,20 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	limit := 300
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 2000 {
+			limit = parsed
+		}
+	}
+	lines := []string{}
+	if s.logs != nil {
+		lines = s.logs.Lines(limit)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
 }
 
 func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {

@@ -451,3 +451,21 @@ func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash s
 	}
 	return nil
 }
+
+func (s *Store) UpdateUsername(ctx context.Context, id int64, username string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET username = ? WHERE id = ?`, username, id)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrUsernameTaken
+		}
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
