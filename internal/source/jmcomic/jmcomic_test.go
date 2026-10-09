@@ -1,6 +1,10 @@
 package jmcomic
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hyaeve/manco/internal/source"
+)
 
 func TestScrambleParts(t *testing.T) {
 	cases := []struct {
@@ -60,5 +64,15 @@ func TestNormalizeComicID(t *testing.T) {
 		if got := normalizeComicID(input); got != want {
 			t.Fatalf("normalizeComicID(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestBasesPutConfiguredSiteFirst(t *testing.T) {
+	got := (&Source{}).bases(source.Account{HomeURL: "https://my-mirror.example/"})
+	if len(got) == 0 || got[0] != "https://my-mirror.example" {
+		t.Fatalf("first base = %q, want configured mirror", got[0])
+	}
+	if got[1] != defaultSite {
+		t.Fatalf("second base = %q, want default %q", got[1], defaultSite)
 	}
 }

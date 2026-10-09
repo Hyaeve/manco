@@ -31,6 +31,21 @@ const (
 	defaultOrigin = "https://cdn-msp.18comic.vip"
 )
 
+// defaultSites lists the public 18comic mirrors used as fallbacks when a
+// configured site is unreachable. The order is the preferred rotation order.
+var defaultSites = []string{
+	defaultSite,
+	"https://18comic.org",
+	"https://jm-comic.me",
+	"https://jm-comic.group",
+	"https://jmcomic.me",
+	"https://jmcomic.rocks",
+	"https://jmcomic1.rocks",
+	"https://jmcomic2.rocks",
+	"https://jm-comic1.rocks",
+	"https://jm-comic2.rocks",
+}
+
 var (
 	albumPattern     = regexp.MustCompile(`/album/(\d+)`)
 	photoPattern     = regexp.MustCompile(`/photo/(\d+)`)
@@ -61,11 +76,11 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 		"search_query": {query},
 		"page":         {strconv.Itoa(page)},
 	}
-	html, err := s.get(ctx, account, "/search/photos", values)
+	html, base, err := s.get(ctx, account, "/search/photos", values)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
-	return parseSearch(html, s.base(account), page)
+	return parseSearch(html, base, page)
 }
 
 func (s *Source) Browse(ctx context.Context, account source.Account, kind string, page int) (model.SearchResult, error) {
@@ -77,11 +92,11 @@ func (s *Source) Browse(ctx context.Context, account source.Account, kind string
 		"page":  {strconv.Itoa(page)},
 		"order": {order},
 	}
-	html, err := s.get(ctx, account, "/albums", values)
+	html, base, err := s.get(ctx, account, "/albums", values)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
-	return parseSearch(html, s.base(account), page)
+	return parseSearch(html, base, page)
 }
 
 func (s *Source) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
@@ -89,7 +104,7 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if comicID == "" {
 		return model.Comic{}, errors.New("无效的禁漫作品 ID")
 	}
-	html, err := s.get(ctx, account, "/album/"+comicID, nil)
+	html, base, err := s.get(ctx, account, "/album/"+comicID, nil)
 	if err != nil {
 		return model.Comic{}, err
 	}
@@ -97,7 +112,6 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if err != nil {
 		return model.Comic{}, err
 	}
-	base := s.base(account)
 	comic := model.Comic{
 		SourceID: sourceID,
 		ID:       comicID,
@@ -120,7 +134,7 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if comicID == "" {
 		return nil, errors.New("无效的禁漫作品 ID")
 	}
-	html, err := s.get(ctx, account, "/album/"+comicID, nil)
+	html, base, err := s.get(ctx, account, "/album/"+comicID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +142,6 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if err != nil {
 		return nil, err
 	}
-	base := s.base(account)
 	chapters := make([]model.Chapter, 0, 64)
 	seen := map[string]bool{}
 	document.Find("a[href*='/photo/']").Each(func(_ int, selection *goquery.Selection) {
@@ -182,7 +195,7 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 	if comicID == "" {
 		comicID = photoID
 	}
-	html, err := s.get(ctx, account, "/photo/"+photoID, nil)
+	html, base, err := s.get(ctx, account, "/photo/"+photoID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +213,7 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		parts = scrambleParts(scrambleID, albumID, names[0])
 	}
 	domains := imageDomains(html)
-	referer := source.BuildURL(s.base(account), "/photo/"+photoID, nil)
+	referer := source.BuildURL(base, "/photo/"+photoID, nil)
 	pages := make([]model.Page, 0, len(names))
 	for _, name := range names {
 		name = strings.TrimSpace(name)
@@ -229,21 +242,36 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 	return pages, nil
 }
 
-func (s *Source) base(account source.Account) string {
-	return strings.TrimRight(source.FirstNonEmpty(strings.TrimSpace(account.HomeURL), defaultSite), "/")
+func (s *Source) bases(account source.Account) []string {
+	seen := map[string]bool{}
+	order := make([]string, 0, len(defaultSites)+1)
+	add := func(value string) {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		order = append(order, value)
+	}
+	add(account.HomeURL)
+	for _, site := range defaultSites {
+		add(site)
+	}
+	return order
 }
 
-func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, error) {
-	address := source.BuildURL(s.base(account), path, values)
-	headers := map[string]string{
-		"Referer":                   s.base(account) + "/",
-		"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
-		"Upgrade-Insecure-Requests": "1",
-	}
-	for key, value := range source.HeaderCookie(account.Cookie) {
-		headers[key] = value
-	}
-	return source.FetchText(ctx, s.client, address, headers)
+func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, string, error) {
+	return source.FetchTextFallback(ctx, s.client, s.bases(account), path, values, func(base string) map[string]string {
+		headers := map[string]string{
+			"Referer":                   base + "/",
+			"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
+			"Upgrade-Insecure-Requests": "1",
+		}
+		for key, value := range source.HeaderCookie(account.Cookie) {
+			headers[key] = value
+		}
+		return headers
+	})
 }
 
 func parseSearch(html, base string, page int) (model.SearchResult, error) {

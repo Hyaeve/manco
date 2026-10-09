@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/source"
 )
 
 func chaptersFromTitles(titles ...string) []model.Chapter {
@@ -74,5 +75,15 @@ func TestChapterNumberReadsDecimalChapters(t *testing.T) {
 	number, ok := chapterNumber(model.Chapter{Title: "第 12.5 话 特别篇"})
 	if !ok || number != 12.5 {
 		t.Fatalf("chapterNumber = %v, %v; want 12.5, true", number, ok)
+	}
+}
+
+func TestBasesPutConfiguredSiteFirst(t *testing.T) {
+	got := (&Source{}).bases(source.Account{HomeURL: "https://my-mirror.example/"})
+	if len(got) == 0 || got[0] != "https://my-mirror.example" {
+		t.Fatalf("first base = %q, want configured mirror", got[0])
+	}
+	if got[1] != defaultSite {
+		t.Fatalf("second base = %q, want default %q", got[1], defaultSite)
 	}
 }

@@ -120,6 +120,8 @@ docker compose up -d
 
 **包子漫画（baozimh）** — 免费站点，遇到 Cloudflare 校验时把浏览器 Cookie 粘贴进来即可；同样支持自定义域名（镜像站）。
 
+禁漫天堂与包子漫画都已内置多个备用镜像站（镜像列表参考 Kototoro 拓展仓库）。请求某个站点失败时会自动按顺序切换下一个镜像；在「站点域名」里填写的自定义域名会作为最高优先级。
+
 三个源都参考 [Kototoro 拓展仓库](https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json) 中同名解析器的访问方式，但 Manco 使用 Go 原生实现，不加载 Android 插件包。
 
 ## 下载与文件命名
@@ -177,7 +179,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v0.0.2 && git push origin v0.0.2     # 构建并发布 :v0.0.2
+git tag v0.0.3 && git push origin v0.0.3     # 构建并发布 :v0.0.3
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

@@ -128,6 +128,26 @@ func FetchText(ctx context.Context, client *http.Client, address string, headers
 	return string(raw), nil
 }
 
+// FetchTextFallback tries each base URL in order and returns the first
+// successful response together with the base that served it. Bases must
+// include a scheme, for example "https://18comic.vip".
+func FetchTextFallback(ctx context.Context, client *http.Client, bases []string, path string, values url.Values, headers func(base string) map[string]string) (string, string, error) {
+	var failures []string
+	for _, base := range bases {
+		address := BuildURL(base, path, values)
+		var extra map[string]string
+		if headers != nil {
+			extra = headers(base)
+		}
+		text, err := FetchText(ctx, client, address, extra)
+		if err == nil {
+			return text, base, nil
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", base, err))
+	}
+	return "", "", fmt.Errorf("all mirror sites failed: %s", strings.Join(failures, "; "))
+}
+
 func BuildURL(base, path string, query url.Values) string {
 	base = strings.TrimRight(base, "/")
 	if path == "" {

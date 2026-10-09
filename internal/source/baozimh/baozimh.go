@@ -25,6 +25,19 @@ const (
 	defaultSite = "https://www.baozimh.com"
 )
 
+// defaultSites lists the public baozimh mirrors used as fallbacks when a
+// configured site is unreachable. The order is the preferred rotation order.
+var defaultSites = []string{
+	defaultSite,
+	"https://cn.baozimh.com",
+	"https://www.baozimhcn.com",
+	"https://www.webmota.com",
+	"https://www.kukuc.co",
+	"https://www.twmanga.com",
+	"https://www.dinnerku.com",
+	"https://www.bzmgcn.com",
+}
+
 var (
 	comicPattern   = regexp.MustCompile(`/comic/([A-Za-z0-9_\-]+)`)
 	chapterPattern = regexp.MustCompile(`/comic/chapter/([A-Za-z0-9_\-]+)`)
@@ -51,11 +64,11 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 		"q":    {query},
 		"page": {strconv.Itoa(page)},
 	}
-	html, err := s.get(ctx, account, "/search", values)
+	html, base, err := s.get(ctx, account, "/search", values)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
-	return parseComics(html, s.base(account), page), nil
+	return parseComics(html, base, page), nil
 }
 
 func (s *Source) Browse(ctx context.Context, account source.Account, kind string, page int) (model.SearchResult, error) {
@@ -70,11 +83,11 @@ func (s *Source) Browse(ctx context.Context, account source.Account, kind string
 	if page > 1 {
 		values.Set("page", strconv.Itoa(page))
 	}
-	html, err := s.get(ctx, account, path, values)
+	html, base, err := s.get(ctx, account, path, values)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
-	return parseComics(html, s.base(account), page), nil
+	return parseComics(html, base, page), nil
 }
 
 func (s *Source) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
@@ -82,7 +95,7 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if slug == "" {
 		return model.Comic{}, errors.New("无效的包子漫画作品 ID")
 	}
-	html, err := s.get(ctx, account, "/comic/"+slug, nil)
+	html, base, err := s.get(ctx, account, "/comic/"+slug, nil)
 	if err != nil {
 		return model.Comic{}, err
 	}
@@ -90,7 +103,6 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if err != nil {
 		return model.Comic{}, err
 	}
-	base := s.base(account)
 	comic := model.Comic{
 		SourceID: sourceID,
 		ID:       slug,
@@ -129,7 +141,7 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if slug == "" {
 		return nil, errors.New("无效的包子漫画作品 ID")
 	}
-	html, err := s.get(ctx, account, "/comic/"+slug, nil)
+	html, base, err := s.get(ctx, account, "/comic/"+slug, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +149,6 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if err != nil {
 		return nil, err
 	}
-	base := s.base(account)
 	chapters := make([]model.Chapter, 0, 128)
 	seen := map[string]bool{}
 	document.Find("a[href*='/comic/chapter/']").Each(func(_ int, selection *goquery.Selection) {
@@ -245,11 +256,10 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 	if slug == "" {
 		return nil, errors.New("无效的包子漫画章节 ID")
 	}
-	html, err := s.get(ctx, account, "/comic/chapter/"+slug, nil)
+	html, base, err := s.get(ctx, account, "/comic/chapter/"+slug, nil)
 	if err != nil {
 		return nil, err
 	}
-	base := s.base(account)
 	referer := source.BuildURL(base, "/comic/chapter/"+slug, nil)
 	seen := map[string]bool{}
 	pages := make([]model.Page, 0, 64)
@@ -297,20 +307,35 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 	return pages, nil
 }
 
-func (s *Source) base(account source.Account) string {
-	return strings.TrimRight(source.FirstNonEmpty(strings.TrimSpace(account.HomeURL), defaultSite), "/")
+func (s *Source) bases(account source.Account) []string {
+	seen := map[string]bool{}
+	order := make([]string, 0, len(defaultSites)+1)
+	add := func(value string) {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		order = append(order, value)
+	}
+	add(account.HomeURL)
+	for _, site := range defaultSites {
+		add(site)
+	}
+	return order
 }
 
-func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, error) {
-	address := source.BuildURL(s.base(account), path, values)
-	headers := map[string]string{
-		"Referer":         s.base(account) + "/",
-		"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
-	}
-	for key, value := range source.HeaderCookie(account.Cookie) {
-		headers[key] = value
-	}
-	return source.FetchText(ctx, s.client, address, headers)
+func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, string, error) {
+	return source.FetchTextFallback(ctx, s.client, s.bases(account), path, values, func(base string) map[string]string {
+		headers := map[string]string{
+			"Referer":         base + "/",
+			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
+		}
+		for key, value := range source.HeaderCookie(account.Cookie) {
+			headers[key] = value
+		}
+		return headers
+	})
 }
 
 func parseComics(html, base string, page int) model.SearchResult {

@@ -102,7 +102,9 @@ func (r *Registry) AllowedImageHost(host string) bool {
 	for _, suffix := range []string{
 		".18comic.vip", ".18comic.org", ".18comic.cc",
 		".jmapiproxy.cc", ".jmapiproxy1.cc", ".jmapiproxy2.cc",
-		".baozimh.com", ".baozimh.org", ".baozicdn.com", ".twmanhua.com",
+		".jm-comic.me", ".jm-comic.group", ".jmcomic.me", ".jmcomic.rocks", ".jmcomic1.rocks", ".jmcomic2.rocks", ".jm-comic1.rocks", ".jm-comic2.rocks",
+		".baozimh.com", ".baozimh.org", ".baozimhcn.com", ".baozicdn.com", ".bzmgcn.com",
+		".webmota.com", ".kukuc.co", ".twmanga.com", ".dinnerku.com", ".twmanhua.com",
 		".picacomic.com", ".go2778.com",
 	} {
 		if host == strings.TrimPrefix(suffix, ".") || strings.HasSuffix(host, suffix) {
