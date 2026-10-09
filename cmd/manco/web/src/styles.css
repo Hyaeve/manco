@@ -370,6 +370,36 @@ code {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
 }
 
+.password-control {
+  position: relative;
+}
+
+.password-control .input {
+  padding-right: 40px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.password-toggle:hover {
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
 .textarea {
   min-height: 84px;
   resize: vertical;

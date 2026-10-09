@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { BookOpenCheck, ExternalLink, KeyRound, Loader2, RefreshCw, Save, Server, Trash2 } from 'lucide-vue-next'
 import { api } from '../api'
+import PasswordInput from '../components/PasswordInput.vue'
 
 const sources = ref([])
 const accounts = ref({})
@@ -149,7 +150,7 @@ async function disconnect(item) {
           </label>
           <label class="field" style="margin-bottom: 12px">
             <span>密码</span>
-            <input v-model="forms[item.id].password" class="input" type="password" autocomplete="current-password" />
+            <PasswordInput v-model="forms[item.id].password" autocomplete="current-password" />
           </label>
         </template>
         <template v-else>

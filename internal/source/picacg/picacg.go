@@ -188,10 +188,14 @@ func (s *Source) request(ctx context.Context, account source.Account, method, pa
 	if base == "" {
 		base = "https://picaapi.go2778.com"
 	}
-	address := source.BuildURL(base, path, query)
-	signaturePath := path
-	if len(query) > 0 {
-		signaturePath += "?" + query.Encode()
+	queryString := encodePicaQuery(query)
+	address := source.BuildURL(base, path, nil)
+	if queryString != "" {
+		address += "?" + queryString
+	}
+	signaturePath := strings.TrimLeft(path, "/")
+	if queryString != "" {
+		signaturePath += "?" + queryString
 	}
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	signature := sign(signaturePath, timestamp, method)
@@ -254,6 +258,37 @@ func sign(path, timestamp, method string) string {
 	mac := hmac.New(sha256.New, []byte(secretKey))
 	_, _ = mac.Write([]byte(key))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// encodePicaQuery preserves the field order used by the reference client.
+// Pica signs the raw path and query, so sorting every key alphabetically
+// would make category browsing fail even though the URL itself is valid.
+func encodePicaQuery(values url.Values) string {
+	if len(values) == 0 {
+		return ""
+	}
+	order := []string{"page", "c", "s", "a", "ca", "ct", "t"}
+	parts := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, key := range order {
+		seen[key] = true
+		for _, value := range values[key] {
+			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if !seen[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		for _, value := range values[key] {
+			parts = append(parts, url.QueryEscape(key)+"="+url.QueryEscape(value))
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 func (s *Source) parseComicPage(response map[string]any, page int) (model.SearchResult, error) {

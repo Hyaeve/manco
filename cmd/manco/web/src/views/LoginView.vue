@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Loader2, LogIn, UserPlus } from 'lucide-vue-next'
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
+import PasswordInput from '../components/PasswordInput.vue'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -69,11 +70,11 @@ async function submit() {
         </label>
         <label class="field">
           <span>密码</span>
-          <input v-model="password" class="input" type="password" autocomplete="current-password" />
+          <PasswordInput v-model="password" autocomplete="current-password" />
         </label>
         <label v-if="setupRequired" class="field">
           <span>确认密码</span>
-          <input v-model="confirm" class="input" type="password" autocomplete="new-password" />
+          <PasswordInput v-model="confirm" autocomplete="new-password" />
         </label>
         <div v-if="error" class="alert error" style="margin: 0">{{ error }}</div>
         <button class="btn" type="submit" :disabled="loading">

@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { Database, FolderOpen, Gauge, KeyRound, Loader2, Network, RefreshCw, Save, Server, Timer } from 'lucide-vue-next'
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
+import PasswordInput from '../components/PasswordInput.vue'
 
 const auth = useAuthStore()
 const settings = ref(null)
@@ -169,15 +170,15 @@ async function save() {
       <p class="muted small" style="margin: 0 0 12px">修改密码需填写当前密码；只改用户名时密码留空即可。</p>
       <div class="field" style="margin-bottom: 10px">
         <span>当前密码</span>
-        <input v-model="currentPassword" class="input" type="password" autocomplete="current-password" />
+        <PasswordInput v-model="currentPassword" autocomplete="current-password" />
       </div>
       <div class="field" style="margin-bottom: 10px">
         <span>新密码</span>
-        <input v-model="newPassword" class="input" type="password" autocomplete="new-password" />
+        <PasswordInput v-model="newPassword" autocomplete="new-password" />
       </div>
       <div class="field">
         <span>确认新密码</span>
-        <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" />
+        <PasswordInput v-model="confirmPassword" autocomplete="new-password" />
       </div>
       <div class="inline" style="margin-top: 12px">
         <button class="btn" type="button" :disabled="saving" @click="save">
