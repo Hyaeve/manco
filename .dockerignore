@@ -1,0 +1,23 @@
+# Build context trimming for the Docker image.
+
+# Local build artifacts
+cmd/manco/web/node_modules
+cmd/manco/web/dist
+/web
+/manco
+/manco.exe
+/data
+/downloads
+/.smoke
+
+# VCS / editor
+/.git
+/.github
+/.idea
+/.vscode
+
+# Local-only AI change log
+/AGENTS.md
+
+# Docs
+/*.md

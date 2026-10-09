@@ -1,0 +1,223 @@
+# Manco
+
+Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览、订阅作品，发现新章节后自动下载，并且**每个章节单独打包为一个 `.cbz` 文件**（不是一张张散图）。后端 Go，前端 Vue 3，全部打包进单个 Docker 镜像，容器端口 `15600`。
+
+- 不接入 Komga，只负责订阅与下载到本地目录。
+- 默认部署目录：`/vol4/1000/Backups/Develop/Manco`（NAS 上的 x86_64 Docker 环境）。
+
+## 功能
+
+- 登录页 + 会话 Cookie 鉴权，默认管理员账号 `admin` / `manco-admin`（首次启动创建，可用环境变量覆盖）。
+- 漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**。
+- 支持搜索、浏览、作品详情、章节列表、勾选章节批量下载。
+- 订阅追更：首次检查只记录当前最新章节作为基线，之后自动把新章节加入下载队列。
+- 下载队列：章节级并发 + 图片级并发、失败重试、断点式进度显示、任务重试/删除。
+- 每个章节的图片先下载到临时目录，写出 `001.jpg`、`002.jpg`…… 后压缩为 `章节目录.cbz.part`，完成后重命名为最终 `.cbz`，不会留下半成品文件。
+- 禁漫天堂的图片按 18comic 的算法自动解扰（MD5 分段还原）。
+- 内置图片代理，带域名白名单 + 内网地址拦截，避免浏览器直连图床时的 Referer 限制和 SSRF 风险。
+- 前端 UI 参考 BangumiKomga 的浅色后台风格：左侧导航 + 卡片式列表。
+
+## 目录结构
+
+```
+Manco/
+├── cmd/manco/            # Go 入口 + 内嵌前端资源
+│   └── web/              # Vue 3 + Vite 前端
+├── internal/
+│   ├── api/              # HTTP API、登录会话、图片代理、SPA 托管
+│   ├── config/           # 环境变量配置
+│   ├── downloader/       # 下载引擎、CBZ 打包、解扰
+│   ├── scheduler/        # 订阅轮询
+│   ├── secret/           # 凭据加密
+│   ├── source/           # 三个漫画源的适配实现
+│   └── store/            # SQLite 持久化
+├── Dockerfile
+├── .github/workflows/docker.yml   # CI：测试 + 构建并推送 GHCR 镜像
+└── docker-compose.yml
+```
+
+## 快速开始（Docker）
+
+镜像是 `ghcr.io/hyaeve/manco:latest`（由 GitHub Actions 构建并推送，`linux/amd64`）。
+
+### 方式一：拉取 GHCR 镜像（NAS 推荐）
+
+在部署目录建一个 `docker-compose.yml`：
+
+```yaml
+services:
+  manco:
+    image: ghcr.io/hyaeve/manco:latest
+    container_name: manco
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "15600:15600"
+    environment:
+      MANCO_ADDR: ":15600"
+      MANCO_ADMIN_USER: "admin"
+      MANCO_ADMIN_PASSWORD: "manco-admin"   # 建议改掉
+      MANCO_SECRET: ""                       # 留空则自动生成 data/.secret
+      MANCO_DATA_DIR: "/app/data"
+      MANCO_DOWNLOAD_DIR: "/app/downloads"
+      MANCO_SCAN_INTERVAL: "30m"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./data:/app/data
+      - ./downloads:/app/downloads
+```
+
+```bash
+cd /vol4/1000/Backups/Develop/Manco
+docker compose pull
+docker compose up -d
+docker compose logs -f
+```
+
+启动后访问 `http://<NAS-IP>:15600`，用 `admin` / `manco-admin`（或你设置的密码）登录。
+
+> 首次拉取如果提示 `denied` 或未授权，说明 GHCR 包还是私有可见性：把 GitHub 仓库的
+> **Packages → manco → Package settings → Change visibility** 改成 Public，或在 NAS 上先
+> `echo <PAT> | docker login ghcr.io -u <GitHub用户名> --password-stdin`（PAT 需要 `read:packages`）。
+
+### 方式二：从源码本地构建
+
+仓库里的 `docker-compose.yml` 同时带 `build:` 与同一个 `image:`，所以下面两条都会得到
+`ghcr.io/hyaeve/manco:latest` 这个标签：
+
+```bash
+cd /vol4/1000/Backups/Develop/Manco
+
+# 可选：自定义管理员密码与加密密钥
+cat > .env <<'EOF'
+MANCO_ADMIN_PASSWORD=换成你的密码
+MANCO_SECRET=一串足够长的随机字符串
+EOF
+
+docker compose build      # 本地构建（等价于 docker build -t ghcr.io/hyaeve/manco:latest .）
+docker compose up -d
+```
+
+镜像固定使用 `platform: linux/amd64`，在 x86_64 NAS 上原生运行；在 ARM 设备上会通过模拟层运行。
+
+数据卷：
+
+| 容器路径 | 宿主机路径 | 说明 |
+| --- | --- | --- |
+| `/app/data` | `./data` | SQLite 数据库、会话、加密密钥 `.secret` |
+| `/app/downloads` | `./downloads` | 下载的 CBZ 文件 |
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MANCO_ADDR` | `:15600` | 监听地址 |
+| `MANCO_ADMIN_USER` | `admin` | 首次启动创建的管理员用户名 |
+| `MANCO_ADMIN_PASSWORD` | `manco-admin` | 管理员密码（仅在账号不存在时生效，修改后需删除 `data/manco.db` 或手动改库） |
+| `MANCO_SECRET` | 自动生成 `data/.secret` | 凭据加密密钥，建议显式设置并备份 |
+| `MANCO_DATA_DIR` | `data` | 数据目录 |
+| `MANCO_DOWNLOAD_DIR` | `downloads` | 下载目录 |
+| `MANCO_SOURCE_REPO` | Kototoro 拓展仓库 | 源清单参考地址 |
+| `MANCO_SCAN_INTERVAL` | `30m` | 订阅扫描间隔 |
+| `MANCO_MAX_CHAPTER_CONCURRENCY` | `2` | 同时下载的章节数 |
+| `MANCO_MAX_PAGE_CONCURRENCY` | `4` | 单章节内同时下载的图片数 |
+| `MANCO_COOKIE_SECURE` | `false` | 反向代理启用 HTTPS 后设为 `true` |
+
+## 漫画源配置
+
+登录后在「漫画源」页面配置：
+
+**哔咔漫画（picacg）** — 需要账号密码。填写账号与密码后点击「登录并保存」，后端调用 `POST /auth/sign-in` 获取 Token 并加密保存；之后的搜索、章节、图片请求都会自动带签名头。
+
+**禁漫天堂（jmcomic）** — 免登录即可浏览，但部分线路需要 Cookie 才能看到完整章节。可在「站点域名」里填写可用域名（如 `https://18comic.vip`），并把浏览器中的 Cookie 粘贴到 Cookie 输入框。
+
+**包子漫画（baozimh）** — 免费站点，遇到 Cloudflare 校验时把浏览器 Cookie 粘贴进来即可；同样支持自定义域名（镜像站）。
+
+三个源都参考 [Kototoro 拓展仓库](https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json) 中同名解析器的访问方式，但 Manco 使用 Go 原生实现，不加载 Android 插件包。
+
+## 下载与文件命名
+
+- 输出结构：`downloads/<作品名>/<章节名>.cbz`
+- 每个 `.cbz` 里是按顺序命名的图片：`001.jpg`、`002.png`……
+- 名称会过滤 `\ / : * ? " < > |` 等字符，并限制长度，避免 NAS 上的文件系统报错。
+- 图片扩展名按文件头判断，WebP/PNG 原样写入，JPEG 保持原格式；解扰后的禁漫图片统一转为 JPEG/PNG。
+
+## 订阅逻辑
+
+1. 在作品详情页点击「订阅追更」，当前最新章节会被记录为基线。
+2. 调度器按 `MANCO_SCAN_INTERVAL` 轮询漫画源。
+3. 发现比基线更新的章节时，自动创建下载任务，逐话打包 CBZ。
+4. 在「订阅」页可以开关「启用」（是否检查）与「自动下载」（检查但不自动下载）。
+
+## API 概览
+
+所有 `/api/*` 接口除登录外都需要登录会话。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/auth/login` | 登录 |
+| `POST` | `/api/auth/logout` | 退出 |
+| `GET` | `/api/auth/me` | 当前用户 |
+| `GET` | `/api/sources` | 漫画源列表与账号状态 |
+| `PUT` | `/api/sources/{id}/account` | 保存账号 / Cookie / 域名 |
+| `DELETE` | `/api/sources/{id}/account` | 清除凭据 |
+| `GET` | `/api/sources/{id}/search?q=&page=` | 搜索 |
+| `GET` | `/api/sources/{id}/browse?kind=&page=` | 浏览 |
+| `GET` | `/api/sources/{id}/comics/{comicId}` | 作品详情 + 章节 |
+| `GET/POST/PATCH/DELETE` | `/api/subscriptions` … | 订阅管理 |
+| `GET/POST/DELETE` | `/api/downloads` … | 下载任务 |
+| `GET` | `/api/library` | 本地 CBZ 资料库 |
+| `GET/PUT` | `/api/settings` | 设置 |
+| `GET` | `/api/stats` | 统计 |
+| `GET` | `/api/proxy/image?url=&sourceId=` | 图片代理 |
+
+## CI 与镜像发布
+
+工作流文件：`.github/workflows/docker.yml`。触发条件与行为：
+
+| 事件 | 行为 |
+| --- | --- |
+| push 到 `main` / `master` | 先 `go vet` + `go test`，再构建 `linux/amd64` 镜像并推送 `:latest` 与 `:sha-<短哈希>` |
+| 推送 `v*` 标签（如 `v1.2.0`） | 同样测试并推送 `:v1.2.0` 与 `:sha-<短哈希>` |
+| 向默认分支提 PR | 只构建验证，不推送镜像 |
+| 手动 `workflow_dispatch` | 与默认分支 push 一致 |
+
+镜像地址固定为 `ghcr.io/hyaeve/manco`，构建使用 Buildx + GitHub Actions 层缓存，并生成 OCI 标签、provenance 与 SBOM。
+首次推送成功后，到仓库 **Packages** 面板把 `manco` 的可见性改为 Public（或在 NAS 上登录 GHCR）才能匿名拉取。
+
+发新版本：
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0     # 构建并发布 :v1.0.0
+docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
+```
+
+## 本地开发
+
+```bash
+# 后端（默认 :15600）
+go run ./cmd/manco
+
+# 前端（Vite dev server，自动代理 /api 到 15600）
+cd cmd/manco/web
+npm install
+npm run dev
+```
+
+构建生产版本：
+
+```bash
+cd cmd/manco/web && npm run build      # 产物写入 cmd/manco/web/dist
+go build ./...                          # dist 通过 go:embed 打进二进制
+go test ./...
+```
+
+> 修改前端后必须重新执行 `npm run build`，否则 `go build` 嵌入的仍是旧的 `dist`。
+
+> 工作区里的 `AGENTS.md`（AI 变更日志：时间 / 代码位置 / 功能）已被 `.gitignore` 排除，只保留在本地，不会随仓库上传。
+
+## 说明与免责声明
+
+- 本项目只做本地缓存式下载，请自行确认所在地区对相关站点的访问与使用规定，仅用于个人备份。
+- 漫画源接口随时可能变化；若某个源失效，可在「漫画源」页更新域名或 Cookie，或在 `internal/source/<源>` 下调整解析逻辑。
+- 包子漫画使用 HTML 解析 + Cookie，遇到更强的 Cloudflare 校验时需要在浏览器中重新获取 Cookie。

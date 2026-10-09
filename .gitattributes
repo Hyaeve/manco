@@ -1,0 +1,14 @@
+# Keep line endings predictable across Windows dev machines, CI and the
+# Linux Docker build.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+*.cbz binary

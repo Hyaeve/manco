@@ -1,0 +1,19 @@
+# Go
+/manco
+/manco.exe
+/data/
+/downloads/
+
+# Frontend
+cmd/manco/web/node_modules/
+cmd/manco/web/dist/
+
+# Local smoke-test scratch space
+/.smoke/
+
+# Local-only AI change log — deliberately kept out of the repository
+/AGENTS.md
+
+# Env / local
+.env
+*.log
