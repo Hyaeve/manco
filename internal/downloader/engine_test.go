@@ -327,7 +327,9 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read comic nfo: %v", err)
 	}
-	for _, value := range []string{"<ComicInfo", "<Series>测试作品</Series>", "<Writer>测试作者</Writer>", "<Summary>测试简介</Summary>", "<Genre>测试,漫画</Genre>", "<PageCount>3</PageCount>"} {
+	// The standalone file describes the series, so it is chapter-independent
+	// (PageCount/Number live only in each chapter's embedded ComicInfo.xml).
+	for _, value := range []string{"<ComicInfo", "<Title>测试作品</Title>", "<Series>测试作品</Series>", "<Writer>测试作者</Writer>", "<Summary>测试简介</Summary>", "<Genre>测试,漫画</Genre>"} {
 		if !bytes.Contains(nfo, []byte(value)) {
 			t.Fatalf("ComicInfo.xml is missing %q: %s", value, nfo)
 		}

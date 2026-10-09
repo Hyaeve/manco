@@ -664,7 +664,7 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 			}
 		}
 	}
-	infoDoc := ComicInfo{
+	chapterDoc := ComicInfo{
 		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
 		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
 		Number:      comicNumber(chapterOrder),
@@ -678,15 +678,34 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 		Status:      comic.Status,
 		Notes:       fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID),
 	}
-	payload, err := xml.MarshalIndent(infoDoc, "", "  ")
+	payload, err := marshalComicInfo(chapterDoc)
 	if err != nil {
 		return nil, err
 	}
-	payload = append([]byte(xml.Header), payload...)
-	if err := os.WriteFile(filepath.Join(comicDir, "ComicInfo.xml"), payload, 0o644); err != nil {
+	// The standalone ComicInfo.xml describes the series, so it must not depend
+	// on whichever chapter finished last. Chapter-level fields stay in the
+	// per-chapter ComicInfo.xml embedded in each CBZ.
+	seriesDoc := chapterDoc
+	seriesDoc.Title = source.FirstNonEmpty(comic.Title, comic.ID)
+	seriesDoc.Number = ""
+	seriesDoc.PageCount = 0
+	seriesPayload, err := marshalComicInfo(seriesDoc)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(comicDir, "ComicInfo.xml"), seriesPayload, 0o644); err != nil {
 		return nil, err
 	}
 	return payload, nil
+}
+
+// marshalComicInfo renders a ComicInfo document with the XML header.
+func marshalComicInfo(doc ComicInfo) ([]byte, error) {
+	payload, err := xml.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(xml.Header), payload...), nil
 }
 
 func comicNumber(order float64) string {
