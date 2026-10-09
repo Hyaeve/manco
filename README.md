@@ -7,9 +7,10 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 
 ## 功能
 
-- 登录页 + 会话 Cookie 鉴权，默认管理员账号 `admin` / `manco-admin`（首次启动创建，可用环境变量覆盖）。
+- 首次启动进入创建账号页；登录后可在「设置」中修改密码。
 - 漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**。
 - 支持搜索、浏览、作品详情、章节列表、勾选章节批量下载。
+- 网络代理可在「设置」中配置，用于访问被地域或网络策略拦截的漫画源。
 - 订阅追更：首次检查只记录当前最新章节作为基线，之后自动把新章节加入下载队列。
 - 下载队列：章节级并发 + 图片级并发、失败重试、断点式进度显示、任务重试/删除。
 - 每个章节的图片先下载到临时目录，写出 `001.jpg`、`002.jpg`…… 后压缩为 `章节目录.cbz.part`，完成后重命名为最终 `.cbz`，不会留下半成品文件。
@@ -54,13 +55,6 @@ services:
     ports:
       - "15600:15600"
     environment:
-      MANCO_ADDR: ":15600"
-      MANCO_ADMIN_USER: "admin"
-      MANCO_ADMIN_PASSWORD: "manco-admin"   # 建议改掉
-      MANCO_SECRET: ""                       # 留空则自动生成 data/.secret
-      MANCO_DATA_DIR: "/app/data"
-      MANCO_DOWNLOAD_DIR: "/app/downloads"
-      MANCO_SCAN_INTERVAL: "30m"
       TZ: "Asia/Shanghai"
     volumes:
       - ./data:/app/data
@@ -74,7 +68,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-启动后访问 `http://<NAS-IP>:15600`，用 `admin` / `manco-admin`（或你设置的密码）登录。
+启动后访问 `http://<NAS-IP>:15600`，首次进入会要求创建登录账号；之后可在「设置 → 修改密码」中更新密码。
 
 > 首次拉取如果提示 `denied` 或未授权，说明 GHCR 包还是私有可见性：把 GitHub 仓库的
 > **Packages → manco → Package settings → Change visibility** 改成 Public，或在 NAS 上先
@@ -82,19 +76,12 @@ docker compose logs -f
 
 ### 方式二：从源码本地构建
 
-仓库里的 `docker-compose.yml` 同时带 `build:` 与同一个 `image:`，所以下面两条都会得到
-`ghcr.io/hyaeve/manco:latest` 这个标签：
+仓库里的 `docker-compose.yml` 使用 GHCR 镜像；如需本地构建，可临时把 `image:` 换成以下 build 段：
 
 ```bash
 cd /vol4/1000/Backups/Develop/Manco
 
-# 可选：自定义管理员密码与加密密钥
-cat > .env <<'EOF'
-MANCO_ADMIN_PASSWORD=换成你的密码
-MANCO_SECRET=一串足够长的随机字符串
-EOF
-
-docker compose build      # 本地构建（等价于 docker build -t ghcr.io/hyaeve/manco:latest .）
+docker build -t ghcr.io/hyaeve/manco:latest .
 docker compose up -d
 ```
 
@@ -112,8 +99,6 @@ docker compose up -d
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MANCO_ADDR` | `:15600` | 监听地址 |
-| `MANCO_ADMIN_USER` | `admin` | 首次启动创建的管理员用户名 |
-| `MANCO_ADMIN_PASSWORD` | `manco-admin` | 管理员密码（仅在账号不存在时生效，修改后需删除 `data/manco.db` 或手动改库） |
 | `MANCO_SECRET` | 自动生成 `data/.secret` | 凭据加密密钥，建议显式设置并备份 |
 | `MANCO_DATA_DIR` | `data` | 数据目录 |
 | `MANCO_DOWNLOAD_DIR` | `downloads` | 下载目录 |
@@ -126,6 +111,8 @@ docker compose up -d
 ## 漫画源配置
 
 登录后在「漫画源」页面配置：
+
+如果所在网络无法直连这些站点，先在「设置 → 网络代理」填入可用的 HTTP/HTTPS 代理，然后保存。
 
 **哔咔漫画（picacg）** — 需要账号密码。填写账号与密码后点击「登录并保存」，后端调用 `POST /auth/sign-in` 获取 Token 并加密保存；之后的搜索、章节、图片请求都会自动带签名头。
 
@@ -156,6 +143,8 @@ docker compose up -d
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/auth/login` | 登录 |
+| `GET` | `/api/auth/setup` | 查询是否需要首次创建账号 |
+| `POST` | `/api/auth/register` | 首次创建账号（仅空库可用） |
 | `POST` | `/api/auth/logout` | 退出 |
 | `GET` | `/api/auth/me` | 当前用户 |
 | `GET` | `/api/sources` | 漫画源列表与账号状态 |
@@ -188,7 +177,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0     # 构建并发布 :v1.0.0
+git tag v0.0.2 && git push origin v0.0.2     # 构建并发布 :v0.0.2
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

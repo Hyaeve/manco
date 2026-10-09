@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -13,6 +14,7 @@ import (
 )
 
 var ErrNotFound = errors.New("not found")
+var ErrUsernameTaken = errors.New("username already exists")
 
 type Store struct {
 	db *sql.DB
@@ -114,6 +116,20 @@ func (s *Store) migrate(ctx context.Context) error {
 
 func (s *Store) EnsureUser(ctx context.Context, username, passwordHash string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO users(username, password_hash) VALUES(?, ?) ON CONFLICT(username) DO NOTHING`, username, passwordHash)
+	return err
+}
+
+func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
+	return count, err
+}
+
+func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO users(username, password_hash) VALUES(?, ?)`, username, passwordHash)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique") {
+		return ErrUsernameTaken
+	}
 	return err
 }
 
@@ -419,4 +435,19 @@ func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, key, value)
 	return err
+}
+
+func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

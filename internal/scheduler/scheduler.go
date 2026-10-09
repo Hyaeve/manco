@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -25,7 +26,7 @@ type Scheduler struct {
 	registry      *sources.Registry
 	subscriptions Subscriptions
 	downloads     Downloads
-	interval      time.Duration
+	intervalNanos atomic.Int64
 	logger        *log.Logger
 }
 
@@ -36,13 +37,23 @@ func New(registry *sources.Registry, subscriptions Subscriptions, downloads Down
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		registry:      registry,
 		subscriptions: subscriptions,
 		downloads:     downloads,
-		interval:      interval,
 		logger:        logger,
 	}
+	scheduler.intervalNanos.Store(int64(interval))
+	return scheduler
+}
+
+// SetInterval updates the scan interval. The next timer picks up the new
+// value, so changes from the settings page do not require a restart.
+func (s *Scheduler) SetInterval(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	s.intervalNanos.Store(int64(interval))
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
@@ -55,16 +66,15 @@ func (s *Scheduler) Start(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		s.RunOnce(ctx)
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
 		for {
+			timer := time.NewTimer(time.Duration(s.intervalNanos.Load()))
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
-				s.RunOnce(ctx)
+			case <-timer.C:
 			}
+			s.RunOnce(ctx)
 		}
 	}()
 }

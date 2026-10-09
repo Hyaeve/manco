@@ -18,8 +18,6 @@ type Config struct {
 	DBPath                string
 	Secret                string
 	SourceRepo            string
-	AdminUser             string
-	AdminPassword         string
 	ScanInterval          time.Duration
 	MaxChapterConcurrency int
 	MaxPageConcurrency    int
@@ -32,8 +30,6 @@ func Load() (Config, error) {
 		DataDir:               env("MANCO_DATA_DIR", "data"),
 		DownloadDir:           env("MANCO_DOWNLOAD_DIR", "downloads"),
 		SourceRepo:            env("MANCO_SOURCE_REPO", "https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json"),
-		AdminUser:             env("MANCO_ADMIN_USER", "admin"),
-		AdminPassword:         env("MANCO_ADMIN_PASSWORD", "manco-admin"),
 		ScanInterval:          durationEnv("MANCO_SCAN_INTERVAL", 30*time.Minute),
 		MaxChapterConcurrency: intEnv("MANCO_MAX_CHAPTER_CONCURRENCY", 2),
 		MaxPageConcurrency:    intEnv("MANCO_MAX_PAGE_CONCURRENCY", 4),

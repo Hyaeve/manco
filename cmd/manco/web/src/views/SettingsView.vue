@@ -1,12 +1,16 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Database, FolderOpen, Gauge, Loader2, RefreshCw, Save, Server, Timer, User } from 'lucide-vue-next'
+import { Database, FolderOpen, Gauge, KeyRound, Loader2, Network, RefreshCw, Save, Server, Timer } from 'lucide-vue-next'
 import { api } from '../api'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
 const settings = ref(null)
 const repoUrl = ref('')
+const proxy = ref('')
+const currentPassword = ref('')
+const newPassword = ref('')
+const confirmPassword = ref('')
 const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
@@ -21,6 +25,7 @@ async function load() {
     const payload = await api.settings()
     settings.value = payload
     repoUrl.value = payload.repoUrl || ''
+    proxy.value = payload.proxy || ''
   } catch (err) {
     error.value = err.message
   } finally {
@@ -33,8 +38,23 @@ async function save() {
   error.value = ''
   message.value = ''
   try {
-    const payload = await api.saveSettings({ repoUrl: repoUrl.value })
-    settings.value = { ...settings.value, repoUrl: payload.repoUrl }
+    if (newPassword.value && newPassword.value !== confirmPassword.value) {
+      error.value = '两次输入的新密码不一致'
+      saving.value = false
+      return
+    }
+    const payload = await api.saveSettings({
+      repoUrl: repoUrl.value,
+      proxy: proxy.value,
+      currentPassword: currentPassword.value,
+      newPassword: newPassword.value,
+      cookieSecure: settings.value.cookieSecure,
+    })
+    settings.value = { ...settings.value, repoUrl: payload.repoUrl, proxy: payload.proxy }
+    proxy.value = payload.proxy || ''
+    currentPassword.value = ''
+    newPassword.value = ''
+    confirmPassword.value = ''
     message.value = '设置已保存。'
   } catch (err) {
     error.value = err.message
@@ -110,20 +130,39 @@ async function save() {
       </div>
     </section>
 
+    <section class="card card-pad" style="margin-bottom: 18px">
+      <div class="section-head">
+        <div class="inline">
+          <Network :size="17" />
+          <h2>网络代理</h2>
+        </div>
+      </div>
+      <label class="field">
+        <span>HTTP / HTTPS 代理地址</span>
+        <input v-model="proxy" class="input" placeholder="http://127.0.0.1:7890" />
+      </label>
+    </section>
+
     <section class="card card-pad">
       <div class="section-head" style="margin-bottom: 10px">
         <div class="inline">
-          <User :size="17" />
-          <h2>账号</h2>
+          <KeyRound :size="17" />
+          <h2>修改密码</h2>
         </div>
       </div>
-      <p class="muted small" style="margin: 0">
-        当前登录：{{ auth.user?.username }}。管理员账号由环境变量
-        <code>MANCO_ADMIN_USER</code> / <code>MANCO_ADMIN_PASSWORD</code> 在首次启动时创建。
-      </p>
-      <p class="muted small" style="margin: 8px 0 0">
-        每个章节都会下载为独立 CBZ：下载目录/作品名/章节名.cbz。
-      </p>
+      <p class="muted small" style="margin: 0 0 12px">当前登录：{{ auth.user?.username }}</p>
+      <div class="field" style="margin-bottom: 10px">
+        <span>当前密码</span>
+        <input v-model="currentPassword" class="input" type="password" autocomplete="current-password" />
+      </div>
+      <div class="field" style="margin-bottom: 10px">
+        <span>新密码</span>
+        <input v-model="newPassword" class="input" type="password" autocomplete="new-password" />
+      </div>
+      <div class="field">
+        <span>确认新密码</span>
+        <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" />
+      </div>
     </section>
   </template>
 </template>

@@ -50,6 +50,16 @@ type Server struct {
 	assets    fs.FS
 }
 
+// settings mirrors the persisted values in the settings table.
+type settings struct {
+	RepoURL               string
+	ScanInterval          time.Duration
+	MaxChapterConcurrency int
+	MaxPageConcurrency    int
+	Proxy                 string
+	CookieSecure          bool
+}
+
 type Options struct {
 	Config    config.Config
 	Store     *store.Store
@@ -78,10 +88,48 @@ func New(options Options) *Server {
 	}
 }
 
+func (s *Server) loadSettings(ctx context.Context) settings {
+	current := settings{
+		RepoURL:               s.cfg.SourceRepo,
+		ScanInterval:          s.cfg.ScanInterval,
+		MaxChapterConcurrency: s.cfg.MaxChapterConcurrency,
+		MaxPageConcurrency:    s.cfg.MaxPageConcurrency,
+		Proxy:                 "",
+		CookieSecure:          s.cfg.CookieSecure,
+	}
+	if value, err := s.store.Setting(ctx, "source_repo"); err == nil && strings.TrimSpace(value) != "" {
+		current.RepoURL = strings.TrimSpace(value)
+	}
+	if value, err := s.store.Setting(ctx, "scan_interval"); err == nil && value != "" {
+		if parsed, err := time.ParseDuration(value); err == nil && parsed > 0 {
+			current.ScanInterval = parsed
+		}
+	}
+	if value, err := s.store.Setting(ctx, "max_chapter_concurrency"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1 {
+			current.MaxChapterConcurrency = parsed
+		}
+	}
+	if value, err := s.store.Setting(ctx, "max_page_concurrency"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1 {
+			current.MaxPageConcurrency = parsed
+		}
+	}
+	if value, err := s.store.Setting(ctx, "proxy"); err == nil {
+		current.Proxy = strings.TrimSpace(value)
+	}
+	if value, err := s.store.Setting(ctx, "cookie_secure"); err == nil && value != "" {
+		current.CookieSecure = value == "true"
+	}
+	return current
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("GET /api/auth/setup", s.handleSetup)
+	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 
@@ -114,14 +162,52 @@ func (s *Server) Handler() http.Handler {
 	return withRecovery(mux, s.logger)
 }
 
-// EnsureDefaultUser creates the bootstrap administrator when the users table is
-// still empty.
-func (s *Server) EnsureDefaultUser(ctx context.Context) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(s.cfg.AdminPassword), bcrypt.DefaultCost)
+func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	count, err := s.store.CountUsers(r.Context())
 	if err != nil {
-		return err
+		writeError(w, http.StatusInternalServerError, "无法读取用户状态")
+		return
 	}
-	return s.store.EnsureUser(ctx, s.cfg.AdminUser, string(hash))
+	writeJSON(w, http.StatusOK, map[string]any{"setupRequired": count == 0})
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	username := strings.TrimSpace(payload.Username)
+	if username == "" || len(payload.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "用户名不能为空，密码至少需要 8 个字符")
+		return
+	}
+	count, err := s.store.CountUsers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法读取用户状态")
+		return
+	}
+	if count > 0 {
+		writeError(w, http.StatusConflict, "系统已完成初始化，请使用已有账号登录")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法保存密码")
+		return
+	}
+	if err := s.store.CreateUser(r.Context(), username, string(hash)); err != nil {
+		if errors.Is(err, store.ErrUsernameTaken) {
+			writeError(w, http.StatusConflict, "用户名已存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "无法创建用户")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "user": map[string]any{"username": username}})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -659,24 +745,126 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"scanInterval":          s.cfg.ScanInterval.String(),
 		"maxChapterConcurrency": s.cfg.MaxChapterConcurrency,
 		"maxPageConcurrency":    s.cfg.MaxPageConcurrency,
+		"proxy":                 s.proxySetting(r.Context()),
+		"cookieSecure":          s.cookieSecure(r.Context()),
 	})
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		RepoURL string `json:"repoUrl"`
+		RepoURL               string  `json:"repoUrl"`
+		ScanInterval          string  `json:"scanInterval"`
+		MaxChapterConcurrency int     `json:"maxChapterConcurrency"`
+		MaxPageConcurrency    int     `json:"maxPageConcurrency"`
+		Proxy                 *string `json:"proxy"`
+		CookieSecure          bool    `json:"cookieSecure"`
+		CurrentPassword       string  `json:"currentPassword"`
+		NewPassword           string  `json:"newPassword"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+
 	if strings.TrimSpace(payload.RepoURL) != "" {
+		if _, err := url.ParseRequestURI(strings.TrimSpace(payload.RepoURL)); err != nil {
+			writeError(w, http.StatusBadRequest, "拓展仓库地址必须是有效的 URL")
+			return
+		}
 		if err := s.store.SetSetting(r.Context(), "source_repo", strings.TrimSpace(payload.RepoURL)); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "repoUrl": s.sourceRepo(r.Context())})
+
+	if strings.TrimSpace(payload.ScanInterval) != "" {
+		interval, err := time.ParseDuration(strings.TrimSpace(payload.ScanInterval))
+		if err != nil || interval < time.Minute || interval > 24*time.Hour {
+			writeError(w, http.StatusBadRequest, "订阅扫描间隔必须在 1m 到 24h 之间，例如 30m")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "scan_interval", interval.String()); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.scheduler.SetInterval(interval)
+	}
+
+	if payload.MaxChapterConcurrency != 0 {
+		if payload.MaxChapterConcurrency < 1 || payload.MaxChapterConcurrency > 8 {
+			writeError(w, http.StatusBadRequest, "章节并发必须在 1 到 8 之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "max_chapter_concurrency", strconv.Itoa(payload.MaxChapterConcurrency)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if payload.MaxPageConcurrency != 0 {
+		if payload.MaxPageConcurrency < 1 || payload.MaxPageConcurrency > 16 {
+			writeError(w, http.StatusBadRequest, "图片并发必须在 1 到 16 之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "max_page_concurrency", strconv.Itoa(payload.MaxPageConcurrency)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if payload.Proxy != nil {
+		rawProxy := strings.TrimSpace(*payload.Proxy)
+		if err := s.setProxy(rawProxy); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "proxy", rawProxy); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if err := s.store.SetSetting(r.Context(), "cookie_secure", strconv.FormatBool(payload.CookieSecure)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if payload.NewPassword != "" {
+		user, ok := userFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "无法识别当前用户")
+			return
+		}
+		if len(payload.NewPassword) < 8 {
+			writeError(w, http.StatusBadRequest, "新密码至少需要 8 个字符")
+			return
+		}
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(payload.CurrentPassword)) != nil {
+			writeError(w, http.StatusUnauthorized, "当前密码不正确")
+			return
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(payload.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.store.UpdateUserPassword(r.Context(), user.ID, string(hash)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	current := s.loadSettings(r.Context())
+	s.engine.SetConcurrency(current.MaxChapterConcurrency, current.MaxPageConcurrency)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                    true,
+		"repoUrl":               current.RepoURL,
+		"scanInterval":          current.ScanInterval.String(),
+		"maxChapterConcurrency": current.MaxChapterConcurrency,
+		"maxPageConcurrency":    current.MaxPageConcurrency,
+		"proxy":                 current.Proxy,
+		"cookieSecure":          current.CookieSecure,
+	})
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -790,6 +978,22 @@ func (s *Server) sourceRepo(ctx context.Context) string {
 		return value
 	}
 	return s.cfg.SourceRepo
+}
+
+func (s *Server) proxySetting(ctx context.Context) string {
+	value, _ := s.store.Setting(ctx, "proxy")
+	return strings.TrimSpace(value)
+}
+
+func (s *Server) cookieSecure(ctx context.Context) bool {
+	if value, err := s.store.Setting(ctx, "cookie_secure"); err == nil && value != "" {
+		return value == "true"
+	}
+	return s.cfg.CookieSecure
+}
+
+func (s *Server) setProxy(raw string) error {
+	return source.SetHTTPClientProxy(s.registry.Client(), raw)
 }
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {

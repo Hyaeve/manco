@@ -58,8 +58,16 @@ func run(logger *log.Logger) error {
 	}
 	defer repository.Close()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	box := secret.New(cfg.Secret)
 	client := source.NewHTTPClient()
+	if rawProxy, err := repository.Setting(ctx, "proxy"); err == nil {
+		if err := source.SetHTTPClientProxy(client, rawProxy); err != nil {
+			logger.Printf("manco: apply proxy: %v", err)
+		}
+	}
 	registry := sources.NewRegistry(client, box, repository)
 	engine := downloader.NewEngine(registry, repository, cfg.DownloadDir, cfg.MaxChapterConcurrency, cfg.MaxPageConcurrency, logger)
 	scanner := scheduler.New(registry, repository, downloadQueue{store: repository, engine: engine}, cfg.ScanInterval, logger)
@@ -78,11 +86,6 @@ func run(logger *log.Logger) error {
 		Logger:    logger,
 		Assets:    assets,
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := server.EnsureDefaultUser(ctx); err != nil {
-		return err
-	}
 	_ = repository.CleanupSessions(ctx, time.Now())
 	if err := repository.RequeueRunningJobs(ctx); err != nil {
 		return err

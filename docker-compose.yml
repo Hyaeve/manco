@@ -1,32 +1,13 @@
 services:
   manco:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # Pulled from GitHub Container Registry; `docker compose build` re-tags
-    # this same name locally when you want to build from source.
     image: ghcr.io/hyaeve/manco:latest
-    container_name: manco
-    # Target platform for the NAS / x86_64 host.
-    platform: linux/amd64
-    restart: unless-stopped
+    container_name: Manco
+    network_mode: bridge
     ports:
-      - "15600:15600"
-    environment:
-      MANCO_ADDR: ":15600"
-      MANCO_ADMIN_USER: "${MANCO_ADMIN_USER:-admin}"
-      MANCO_ADMIN_PASSWORD: "${MANCO_ADMIN_PASSWORD:-manco-admin}"
-      # Leave empty to auto-generate data/.secret on first start.
-      MANCO_SECRET: "${MANCO_SECRET:-}"
-      MANCO_DATA_DIR: "/app/data"
-      MANCO_DOWNLOAD_DIR: "/app/downloads"
-      MANCO_SOURCE_REPO: "https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json"
-      MANCO_SCAN_INTERVAL: "30m"
-      MANCO_MAX_CHAPTER_CONCURRENCY: "2"
-      MANCO_MAX_PAGE_CONCURRENCY: "4"
-      TZ: "Asia/Shanghai"
+      - 15600:15600
     volumes:
-      # On the NAS these paths are relative to
-      # /vol4/1000/Backups/Develop/Manco
       - ./data:/app/data
       - ./downloads:/app/downloads
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

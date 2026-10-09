@@ -2,20 +2,69 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+type proxyFunc func(*http.Request) (*url.URL, error)
+
+// ProxyController keeps the active proxy function in an atomic slot so it can
+// be changed from the settings page while download requests are in flight.
+type ProxyController struct {
+	current atomic.Value
+}
+
+func NewProxyController() *ProxyController {
+	controller := &ProxyController{}
+	controller.current.Store(proxyFunc(http.ProxyFromEnvironment))
+	return controller
+}
+
+func (c *ProxyController) Proxy(request *http.Request) (*url.URL, error) {
+	return c.current.Load().(proxyFunc)(request)
+}
+
+// Set updates the proxy resolver. An empty value falls back to the standard
+// HTTP(S)_PROXY / NO_PROXY environment variables. Only http and https proxies
+// are supported because those are the schemes understood by Go's HTTP client.
+func (c *ProxyController) Set(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		c.current.Store(proxyFunc(http.ProxyFromEnvironment))
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("代理只支持 http:// 或 https://")
+	}
+	if parsed.Host == "" {
+		return errors.New("代理地址缺少主机名")
+	}
+	c.current.Store(proxyFunc(http.ProxyURL(parsed)))
+	return nil
+}
+
+type proxyTransport struct {
+	*http.Transport
+	proxy *ProxyController
+}
+
 func NewHTTPClient() *http.Client {
+	controller := NewProxyController()
 	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
+		Proxy:                 controller.Proxy,
 		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          64,
@@ -24,7 +73,24 @@ func NewHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &http.Client{Transport: transport, Timeout: 60 * time.Second}
+	return &http.Client{
+		Transport: &proxyTransport{Transport: transport, proxy: controller},
+		Timeout:   60 * time.Second,
+	}
+}
+
+// SetHTTPClientProxy changes the proxy used by a client created with
+// NewHTTPClient. It reports an error for clients that do not carry a runtime
+// ProxyController.
+func SetHTTPClientProxy(client *http.Client, raw string) error {
+	if client == nil {
+		return errors.New("HTTP client is nil")
+	}
+	transport, ok := client.Transport.(*proxyTransport)
+	if !ok {
+		return errors.New("HTTP client does not support runtime proxy configuration")
+	}
+	return transport.proxy.Set(raw)
 }
 
 func FetchText(ctx context.Context, client *http.Client, address string, headers map[string]string) (string, error) {

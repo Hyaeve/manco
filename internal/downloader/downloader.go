@@ -47,6 +47,22 @@ type Engine struct {
 	started bool
 }
 
+// SetConcurrency applies a settings update. New chapters and page requests
+// use the new limits immediately; already running requests finish first.
+func (e *Engine) SetConcurrency(chapters, pages int) {
+	if chapters < 1 {
+		chapters = 1
+	}
+	if pages < 1 {
+		pages = 1
+	}
+	e.mu.Lock()
+	e.maxChapterConcurrency = chapters
+	e.maxPageConcurrency = pages
+	e.mu.Unlock()
+	e.Notify()
+}
+
 // Jobs is the subset of the store used by the downloader.
 type Jobs interface {
 	CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error)
@@ -118,13 +134,25 @@ func (e *Engine) Cancel(id int64) bool {
 	return ok
 }
 
+func (e *Engine) concurrency() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.maxChapterConcurrency
+}
+
+func (e *Engine) pageConcurrency() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.maxPageConcurrency
+}
+
 func (e *Engine) loop(ctx context.Context) {
 	defer func() {
 		e.mu.Lock()
 		e.started = false
 		e.mu.Unlock()
 	}()
-	semaphore := make(chan struct{}, e.maxChapterConcurrency)
+	semaphore := make(chan struct{}, e.concurrency())
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -247,7 +275,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		err   error
 	}
 	results := make(chan fetched, len(pages))
-	semaphore := make(chan struct{}, e.maxPageConcurrency)
+	semaphore := make(chan struct{}, e.pageConcurrency())
 	var wait sync.WaitGroup
 	for index, page := range pages {
 		index, page := index, page
