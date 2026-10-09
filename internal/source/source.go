@@ -51,7 +51,7 @@ func AccountFromModel(box *secret.Box, stored model.SourceAccount) (Account, err
 type Source interface {
 	Info() model.SourceInfo
 	Search(ctx context.Context, account Account, query string, page int) (model.SearchResult, error)
-	Browse(ctx context.Context, account Account, kind string, page int) (model.SearchResult, error)
+	Browse(ctx context.Context, account Account, options model.BrowseOptions, page int) (model.SearchResult, error)
 	Detail(ctx context.Context, account Account, comicID string) (model.Comic, error)
 	Chapters(ctx context.Context, account Account, comicID string) ([]model.Chapter, error)
 	Pages(ctx context.Context, account Account, comicID string, chapter model.Chapter) ([]model.Page, error)

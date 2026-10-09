@@ -412,9 +412,17 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	options := model.BrowseOptions{
+		Category: strings.TrimSpace(r.URL.Query().Get("category")),
+		Sort:     strings.TrimSpace(r.URL.Query().Get("sort")),
+		State:    strings.TrimSpace(r.URL.Query().Get("state")),
+		Region:   strings.TrimSpace(r.URL.Query().Get("region")),
+	}
+	if options.Category == "" {
+		options.Category = strings.TrimSpace(r.URL.Query().Get("kind"))
+	}
 	page := intParam(r, "page", 1)
-	result, err := item.Browse(r.Context(), account, kind, page)
+	result, err := item.Browse(r.Context(), account, options, page)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

@@ -31,6 +31,24 @@ type Source struct {
 	client *http.Client
 }
 
+var picaCategories = []string{
+	"短篇", "同人", "全彩", "生肉", "長篇", "純愛", "CG雜圖", "非人類",
+	"耽美花園", "強暴", "Cosplay", "NTR", "人妻", "Fate", "妹妹系", "姐姐系",
+	"單行本", "後宮閃光", "百合花園", "艦隊收藏", "扶他樂園", "重口地帶", "禁書目錄",
+	"偽娘哲學", "英語 ENG", "SM", "東方", "性轉換", "足の恋", "Love Live",
+	"碧藍幻想", "歐美", "WEBTOON", "圓神領域", "SAO 刀劍神域", "嗶咔漢化",
+	"大家都在看", "大濕推薦", "那年今天", "官方都在看",
+}
+
+func categoryFilterOptions() []model.FilterOption {
+	options := make([]model.FilterOption, 0, len(picaCategories)+1)
+	options = append(options, model.FilterOption{Value: "", Label: "全部"})
+	for _, category := range picaCategories {
+		options = append(options, model.FilterOption{Value: category, Label: category})
+	}
+	return options
+}
+
 func New(client *http.Client) *Source { return &Source{client: client} }
 
 func (s *Source) Info() model.SourceInfo {
@@ -42,6 +60,18 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  true,
 		CanSearch:   true,
 		CanBrowse:   true,
+		Filters: []model.FilterGroup{
+			{Key: "category", Label: "分类", Options: categoryFilterOptions()},
+			{
+				Key: "sort", Label: "排序", Default: "dd",
+				Options: []model.FilterOption{
+					{Value: "dd", Label: "新到旧"},
+					{Value: "da", Label: "旧到新"},
+					{Value: "ld", Label: "最多喜欢"},
+					{Value: "vd", Label: "最多观看"},
+				},
+			},
+		},
 	}
 }
 
@@ -79,13 +109,14 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 	return s.parseComicPage(response, page)
 }
 
-func (s *Source) Browse(ctx context.Context, account source.Account, kind string, page int) (model.SearchResult, error) {
+func (s *Source) Browse(ctx context.Context, account source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
-	query := url.Values{"page": {strconv.Itoa(page)}, "s": {"dd"}}
-	if strings.TrimSpace(kind) != "" && kind != "latest" {
-		query.Set("c", kind)
+	query := url.Values{"page": {strconv.Itoa(page)}, "s": {source.FirstNonEmpty(options.Sort, "dd")}}
+	category := strings.TrimSpace(options.Category)
+	if category != "" && category != "latest" {
+		query.Set("c", category)
 	}
 	var response map[string]any
 	if err := s.request(ctx, account, http.MethodGet, "/comics", query, nil, &response); err != nil {

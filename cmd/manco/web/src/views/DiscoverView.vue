@@ -1,165 +1,226 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { nextTick, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import { BookOpen, ChevronLeft, ChevronRight, ImageOff, Loader2, Search } from 'lucide-vue-next'
 import { api } from '../api'
 
 const route = useRoute()
-const router = useRouter()
-const sources = ref([])
-const sourceId = ref('')
-const query = ref('')
-const page = ref(1)
-const items = ref([])
-const hasMore = ref(false)
-const loading = ref(false)
-const error = ref('')
-const mode = ref('browse')
+const columns = ref([])
+const columnElements = new Map()
 
-const currentSource = computed(() => sources.value.find((item) => item.id === sourceId.value) || null)
+function sourceFilters(source) {
+  const values = {}
+  for (const group of source.filters || []) {
+    values[group.key] = group.default ?? group.options?.[0]?.value ?? ''
+  }
+  return values
+}
+
+function setColumnElement(id, element) {
+  if (element) {
+    columnElements.set(id, element)
+    return
+  }
+  columnElements.delete(id)
+}
 
 onMounted(async () => {
   try {
     const payload = await api.sources()
-    sources.value = payload.items || []
-    const requested = typeof route.query.source === 'string' ? route.query.source : ''
-    sourceId.value = sources.value.some((item) => item.id === requested)
-      ? requested
-      : sources.value[0]?.id || ''
-    await load()
+    columns.value = (payload.items || []).map((source) => ({
+      source,
+      query: '',
+      mode: 'browse',
+      page: 1,
+      items: [],
+      hasMore: false,
+      loading: false,
+      error: '',
+      filters: sourceFilters(source),
+    }))
+    await Promise.all(columns.value.map((column) => load(column)))
+    await focusRequestedSource()
   } catch (err) {
-    error.value = err.message
+    columns.value = [
+      {
+        source: { id: 'error', name: '漫画源加载失败', canSearch: false, filters: [] },
+        query: '',
+        mode: 'browse',
+        page: 1,
+        items: [],
+        hasMore: false,
+        loading: false,
+        error: err.message,
+        filters: {},
+      },
+    ]
   }
-})
-
-watch(sourceId, async () => {
-  page.value = 1
-  query.value = ''
-  mode.value = 'browse'
-  await load()
 })
 
 watch(
   () => route.query.source,
-  (value) => {
-    if (typeof value === 'string' && value && value !== sourceId.value) {
-      sourceId.value = value
-    }
+  async () => {
+    await focusRequestedSource()
   },
 )
 
-async function load() {
-  if (!sourceId.value) return
-  loading.value = true
-  error.value = ''
+async function focusRequestedSource() {
+  const sourceId = typeof route.query.source === 'string' ? route.query.source : ''
+  if (!sourceId) return
+  await nextTick()
+  columnElements.get(sourceId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+async function load(column) {
+  if (!column.source.id || column.source.id === 'error') return
+  column.loading = true
+  column.error = ''
   try {
     const result =
-      mode.value === 'search' && query.value.trim()
-        ? await api.search(sourceId.value, query.value.trim(), page.value)
-        : await api.browse(sourceId.value, '', page.value)
-    items.value = result.items || []
-    hasMore.value = Boolean(result.hasMore)
+      column.mode === 'search' && column.query.trim()
+        ? await api.search(column.source.id, column.query.trim(), column.page)
+        : await api.browse(column.source.id, column.filters, column.page)
+    column.items = result.items || []
+    column.hasMore = Boolean(result.hasMore)
   } catch (err) {
-    items.value = []
-    hasMore.value = false
-    error.value = err.message
+    column.items = []
+    column.hasMore = false
+    column.error = err.message
   } finally {
-    loading.value = false
+    column.loading = false
   }
 }
 
-async function submitSearch() {
-  if (!query.value.trim()) {
-    mode.value = 'browse'
-    page.value = 1
-    await load()
-    return
-  }
-  mode.value = 'search'
-  page.value = 1
-  await load()
+async function submitSearch(column) {
+  column.page = 1
+  column.mode = column.query.trim() ? 'search' : 'browse'
+  await load(column)
 }
 
-async function changePage(delta) {
-  const next = page.value + delta
+async function changeFilter(column) {
+  column.query = ''
+  column.mode = 'browse'
+  column.page = 1
+  await load(column)
+}
+
+async function changePage(column, delta) {
+  const next = column.page + delta
   if (next < 1) return
-  page.value = next
-  await load()
+  column.page = next
+  await load(column)
 }
 
 function cover(item) {
   return api.imageUrl(item.cover, item.sourceId)
 }
-
-function openQuery() {
-  router.replace({ name: 'discover', query: sourceId.value ? { source: sourceId.value } : {} })
-}
 </script>
 
 <template>
-  <div class="toolbar">
-    <label class="field" style="flex: 0 0 180px">
-      <span>漫画源</span>
-      <select v-model="sourceId" class="select" @change="openQuery">
-        <option v-for="item in sources" :key="item.id" :value="item.id">{{ item.name }}</option>
-      </select>
-    </label>
-    <label class="field search-input">
-      <span>搜索关键词</span>
-      <input
-        v-model="query"
-        class="input"
-        placeholder="输入漫画名后回车"
-        @keyup.enter="submitSearch"
-      />
-    </label>
-    <div class="field">
-      <span>&nbsp;</span>
-      <button class="btn" type="button" :disabled="loading || !sourceId" @click="submitSearch">
-        <Loader2 v-if="loading" :size="16" class="spin" />
-        <Search v-else :size="16" />
-        搜索
-      </button>
-    </div>
-  </div>
-
-  <div v-if="error" class="alert error">{{ error }}</div>
-  <div v-else-if="currentSource && !currentSource.canSearch" class="alert info">
-    当前漫画源不支持搜索，已切换为浏览模式。
-  </div>
-
-  <div v-if="!loading && !items.length" class="card empty">
-    <ImageOff :size="26" />
-    <p>没有找到作品，换个关键词或漫画源试试。</p>
-  </div>
-
-  <div v-else class="comic-grid">
-    <RouterLink
-      v-for="item in items"
-      :key="`${item.sourceId}-${item.id}`"
-      class="comic-card"
-      :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+  <div class="discover-board">
+    <section
+      v-for="column in columns"
+      :key="column.source.id"
+      :ref="(element) => setColumnElement(column.source.id, element)"
+      class="source-column"
     >
-      <div class="comic-cover">
-        <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
-        <span v-else class="cover-fallback"><BookOpen :size="28" /></span>
-      </div>
-      <div class="comic-body">
-        <span class="comic-title">{{ item.title }}</span>
-        <span class="comic-meta">{{ item.author || '未知作者' }}</span>
-      </div>
-    </RouterLink>
-  </div>
+      <header class="source-column-head">
+        <div>
+          <h2>{{ column.source.name }}</h2>
+          <p>{{ column.source.description }}</p>
+        </div>
+        <span class="badge primary">{{ column.items.length }} 项</span>
+      </header>
 
-  <div class="inline" style="justify-content: center; margin-top: 20px">
-    <button class="btn secondary small" type="button" :disabled="page <= 1 || loading" @click="changePage(-1)">
-      <ChevronLeft :size="15" />
-      上一页
-    </button>
-    <span class="muted small">第 {{ page }} 页</span>
-    <button class="btn secondary small" type="button" :disabled="!hasMore || loading" @click="changePage(1)">
-      下一页
-      <ChevronRight :size="15" />
-    </button>
+      <div class="source-column-tools">
+        <div class="source-search">
+          <input
+            v-model="column.query"
+            class="input"
+            :disabled="!column.source.canSearch || column.loading"
+            placeholder="搜索作品"
+            @keyup.enter="submitSearch(column)"
+          />
+          <button
+            class="btn small"
+            type="button"
+            :disabled="!column.source.canSearch || column.loading"
+            :aria-label="`搜索 ${column.source.name}`"
+            @click="submitSearch(column)"
+          >
+            <Loader2 v-if="column.loading" :size="15" class="spin" />
+            <Search v-else :size="15" />
+          </button>
+        </div>
+
+        <div v-if="column.source.filters?.length" class="source-filter-grid">
+          <label v-for="group in column.source.filters" :key="group.key" class="field compact">
+            <span>{{ group.label }}</span>
+            <select
+              v-model="column.filters[group.key]"
+              class="select"
+              :disabled="column.loading"
+              @change="changeFilter(column)"
+            >
+              <option v-for="option in group.options" :key="`${group.key}-${option.value}`" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div v-if="column.error" class="alert error">{{ column.error }}</div>
+
+      <div v-if="column.loading && !column.items.length" class="source-loading">
+        <Loader2 :size="22" class="spin" />
+        <span>正在加载</span>
+      </div>
+
+      <div v-else-if="!column.items.length" class="source-empty">
+        <ImageOff :size="24" />
+        <span>没有作品</span>
+      </div>
+
+      <div v-else class="source-comic-grid">
+        <RouterLink
+          v-for="item in column.items"
+          :key="`${item.sourceId}-${item.id}`"
+          class="comic-card source-comic-card"
+          :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+        >
+          <div class="comic-cover">
+            <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+            <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
+          </div>
+          <div class="comic-body">
+            <span class="comic-title">{{ item.title }}</span>
+            <span class="comic-meta">{{ item.author || '未知作者' }}</span>
+          </div>
+        </RouterLink>
+      </div>
+
+      <div class="source-pagination">
+        <button
+          class="btn secondary small"
+          type="button"
+          :disabled="column.page <= 1 || column.loading"
+          @click="changePage(column, -1)"
+        >
+          <ChevronLeft :size="15" />
+          上一页
+        </button>
+        <span class="muted small">第 {{ column.page }} 页</span>
+        <button
+          class="btn secondary small"
+          type="button"
+          :disabled="!column.hasMore || column.loading"
+          @click="changePage(column, 1)"
+        >
+          下一页
+          <ChevronRight :size="15" />
+        </button>
+      </div>
+    </section>
   </div>
 </template>

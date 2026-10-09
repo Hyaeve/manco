@@ -2,6 +2,7 @@ package baozimh
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -38,6 +39,49 @@ var defaultSites = []string{
 	"https://www.bzmgcn.com",
 }
 
+var baoziCategoryOptions = []model.FilterOption{
+	{Value: "", Label: "全部"},
+	{Value: "lianai", Label: "恋爱"},
+	{Value: "chunai", Label: "纯爱"},
+	{Value: "gufeng", Label: "古风"},
+	{Value: "yineng", Label: "异能"},
+	{Value: "xuanyi", Label: "悬疑"},
+	{Value: "juqing", Label: "剧情"},
+	{Value: "kehuan", Label: "科幻"},
+	{Value: "qihuan", Label: "奇幻"},
+	{Value: "xuanhuan", Label: "玄幻"},
+	{Value: "chuanyue", Label: "穿越"},
+	{Value: "mouxian", Label: "冒险"},
+	{Value: "tuili", Label: "推理"},
+	{Value: "wuxia", Label: "武侠"},
+	{Value: "gedou", Label: "格斗"},
+	{Value: "zhanzheng", Label: "战争"},
+	{Value: "rexie", Label: "热血"},
+	{Value: "gaoxiao", Label: "搞笑"},
+	{Value: "danuzhu", Label: "大女主"},
+	{Value: "dushi", Label: "都市"},
+	{Value: "zongcai", Label: "总裁"},
+	{Value: "hougong", Label: "后宫"},
+	{Value: "richang", Label: "日常"},
+	{Value: "hanman", Label: "韩漫"},
+	{Value: "shaonian", Label: "少年"},
+	{Value: "qita", Label: "其它"},
+}
+
+var baoziStateOptions = []model.FilterOption{
+	{Value: "", Label: "全部"},
+	{Value: "serial", Label: "连载中"},
+	{Value: "pub", Label: "已完结"},
+}
+
+var baoziRegionOptions = []model.FilterOption{
+	{Value: "", Label: "全部"},
+	{Value: "cn", Label: "国漫"},
+	{Value: "kr", Label: "韩漫"},
+	{Value: "jp", Label: "日漫"},
+	{Value: "en", Label: "美漫"},
+}
+
 var (
 	comicPattern   = regexp.MustCompile(`/comic/([A-Za-z0-9_\-]+)`)
 	chapterPattern = regexp.MustCompile(`/comic/chapter/([A-Za-z0-9_\-]+)`)
@@ -53,6 +97,11 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
+		Filters: []model.FilterGroup{
+			{Key: "category", Label: "题材", Options: baoziCategoryOptions},
+			{Key: "region", Label: "地区", Options: baoziRegionOptions},
+			{Key: "state", Label: "状态", Options: baoziStateOptions},
+		},
 	}
 }
 
@@ -71,13 +120,77 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 	return parseComics(html, base, page), nil
 }
 
-func (s *Source) Browse(ctx context.Context, account source.Account, kind string, page int) (model.SearchResult, error) {
+func parseAmpComicList(raw string, page int) (model.SearchResult, error) {
+	var payload struct {
+		Items []struct {
+			ComicID  string `json:"comic_id"`
+			Name     string `json:"name"`
+			Author   string `json:"author"`
+			TopicImg string `json:"topic_img"`
+		} `json:"items"`
+		Total int `json:"total"`
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return model.SearchResult{}, err
+	}
+	items := make([]model.Comic, 0, len(payload.Items))
+	for _, item := range payload.Items {
+		comicID := strings.TrimSpace(item.ComicID)
+		if comicID == "" {
+			continue
+		}
+		cover := strings.TrimSpace(item.TopicImg)
+		if cover != "" && !strings.HasPrefix(cover, "http") {
+			cover = "https://static-tw.baozimh.com/cover/" + strings.TrimLeft(cover, "/")
+		}
+		items = append(items, model.Comic{
+			SourceID: sourceID,
+			ID:       comicID,
+			Title:    source.FirstNonEmpty(strings.TrimSpace(item.Name), comicID),
+			Cover:    cover,
+			Author:   strings.TrimSpace(item.Author),
+		})
+	}
+	limit := payload.Limit
+	if limit <= 0 {
+		limit = 36
+	}
+	return model.SearchResult{
+		Items:   items,
+		Page:    page,
+		Total:   payload.Total,
+		HasMore: len(items) >= limit && (payload.Total == 0 || payload.Total > page*limit),
+	}, nil
+}
+
+func (s *Source) Browse(ctx context.Context, account source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
+	category := source.FirstNonEmpty(strings.TrimSpace(options.Category), "all")
+	if category == "latest" {
+		category = "all"
+	}
+	region := source.FirstNonEmpty(strings.TrimSpace(options.Region), "all")
+	state := source.FirstNonEmpty(strings.TrimSpace(options.State), "all")
+	apiValues := url.Values{
+		"filter": {"*"},
+		"region": {region},
+		"type":   {category},
+		"state":  {state},
+		"limit":  {"36"},
+		"page":   {strconv.Itoa(page)},
+	}
+	if raw, _, err := s.get(ctx, account, "/api/bzmhq/amp_comic_list", apiValues); err == nil {
+		if result, parseErr := parseAmpComicList(raw, page); parseErr == nil {
+			return result, nil
+		}
+	}
+
 	path := "/list"
-	if strings.TrimSpace(kind) != "" && kind != "latest" {
-		path = "/list/" + url.PathEscape(kind)
+	if category != "all" {
+		path = "/list/" + url.PathEscape(category)
 	}
 	values := url.Values{}
 	if page > 1 {

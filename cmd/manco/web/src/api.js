@@ -37,8 +37,15 @@ export const api = {
   deleteAccount: (id) => request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'DELETE' }),
   search: (id, query, page = 1) =>
     request(`/api/sources/${encodeURIComponent(id)}/search?q=${encodeURIComponent(query)}&page=${page}`),
-  browse: (id, kind = '', page = 1) =>
-    request(`/api/sources/${encodeURIComponent(id)}/browse?kind=${encodeURIComponent(kind)}&page=${page}`),
+  browse: (id, filters = {}, page = 1) => {
+    const params = new URLSearchParams({ page: String(page) })
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== null && String(value) !== '') {
+        params.set(key, String(value))
+      }
+    }
+    return request(`/api/sources/${encodeURIComponent(id)}/browse?${params.toString()}`)
+  },
   comic: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}`),
 

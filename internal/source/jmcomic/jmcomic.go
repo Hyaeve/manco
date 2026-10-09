@@ -23,6 +23,26 @@ type Source struct {
 	client *http.Client
 }
 
+var jmCategoryOptions = []model.FilterOption{
+	{Value: "", Label: "全部"},
+	{Value: "doujin", Label: "同人"},
+	{Value: "single", Label: "单本"},
+	{Value: "short", Label: "短篇"},
+	{Value: "another", Label: "其他类"},
+	{Value: "hanman", Label: "韩漫"},
+	{Value: "meiman", Label: "美漫"},
+	{Value: "another_cosplay", Label: "Cosplay"},
+	{Value: "3D", Label: "3D"},
+	{Value: "禁漫漢化組", Label: "禁漫汉化组"},
+}
+
+var jmSortOptions = []model.FilterOption{
+	{Value: "mr", Label: "最新"},
+	{Value: "mv", Label: "最多观看"},
+	{Value: "tf", Label: "最多喜欢"},
+	{Value: "mp", Label: "最多图片"},
+}
+
 func New(client *http.Client) *Source { return &Source{client: client} }
 
 const (
@@ -65,6 +85,10 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
+		Filters: []model.FilterGroup{
+			{Key: "category", Label: "分类", Options: jmCategoryOptions},
+			{Key: "sort", Label: "排序", Default: "mr", Options: jmSortOptions},
+		},
 	}
 }
 
@@ -83,14 +107,17 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 	return parseSearch(html, base, page)
 }
 
-func (s *Source) Browse(ctx context.Context, account source.Account, kind string, page int) (model.SearchResult, error) {
+func (s *Source) Browse(ctx context.Context, account source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
-	order := source.FirstNonEmpty(strings.TrimSpace(kind), "mr")
 	values := url.Values{
 		"page":  {strconv.Itoa(page)},
-		"order": {order},
+		"order": {source.FirstNonEmpty(strings.TrimSpace(options.Sort), "mr")},
+	}
+	category := strings.TrimSpace(options.Category)
+	if category != "" && category != "0" {
+		values.Set("category", category)
 	}
 	html, base, err := s.get(ctx, account, "/albums", values)
 	if err != nil {

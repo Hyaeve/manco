@@ -42,7 +42,23 @@ func (r *Registry) List() []model.SourceInfo {
 	for _, item := range r.byID {
 		items = append(items, item.Info())
 	}
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	order := map[string]int{"picacg": 0, "jmcomic": 1, "baozimh": 2}
+	sort.SliceStable(items, func(i, j int) bool {
+		left, leftOK := order[items[i].ID]
+		right, rightOK := order[items[j].ID]
+		if leftOK || rightOK {
+			if !leftOK {
+				return false
+			}
+			if !rightOK {
+				return true
+			}
+			if left != right {
+				return left < right
+			}
+		}
+		return items[i].ID < items[j].ID
+	})
 	return items
 }
 

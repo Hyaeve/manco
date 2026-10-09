@@ -122,7 +122,7 @@ func (s *staticSource) Search(context.Context, source.Account, string, int) (mod
 	return model.SearchResult{}, nil
 }
 
-func (s *staticSource) Browse(context.Context, source.Account, string, int) (model.SearchResult, error) {
+func (s *staticSource) Browse(context.Context, source.Account, model.BrowseOptions, int) (model.SearchResult, error) {
 	return model.SearchResult{}, nil
 }
 

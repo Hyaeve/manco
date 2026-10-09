@@ -69,13 +69,33 @@ type Stats struct {
 }
 
 type SourceInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Homepage    string `json:"homepage"`
-	NeedsLogin  bool   `json:"needsLogin"`
-	CanSearch   bool   `json:"canSearch"`
-	CanBrowse   bool   `json:"canBrowse"`
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Homepage    string        `json:"homepage"`
+	NeedsLogin  bool          `json:"needsLogin"`
+	CanSearch   bool          `json:"canSearch"`
+	CanBrowse   bool          `json:"canBrowse"`
+	Filters     []FilterGroup `json:"filters,omitempty"`
+}
+
+type FilterOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type FilterGroup struct {
+	Key     string         `json:"key"`
+	Label   string         `json:"label"`
+	Default string         `json:"default,omitempty"`
+	Options []FilterOption `json:"options"`
+}
+
+type BrowseOptions struct {
+	Category string
+	Sort     string
+	State    string
+	Region   string
 }
 
 type Comic struct {

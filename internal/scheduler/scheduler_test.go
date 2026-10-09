@@ -58,7 +58,7 @@ func (s *stubChapters) Search(context.Context, source.Account, string, int) (mod
 	return model.SearchResult{}, nil
 }
 
-func (s *stubChapters) Browse(context.Context, source.Account, string, int) (model.SearchResult, error) {
+func (s *stubChapters) Browse(context.Context, source.Account, model.BrowseOptions, int) (model.SearchResult, error) {
 	return model.SearchResult{}, nil
 }
 
