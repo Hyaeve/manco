@@ -7,6 +7,7 @@ services:
       - 15600:15600
     volumes:
       - ./data:/app/data
+      - ./config:/app/config
       # 在系统设置里选择/填写自定义下载位置后，按需添加你的宿主机下载目录映射。
     environment:
       - TZ=Asia/Shanghai

@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/hyaeve/manco/internal/api"
 	"github.com/hyaeve/manco/internal/config"
+	"github.com/hyaeve/manco/internal/configstore"
+	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
@@ -60,6 +63,18 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	}
 	defer repository.Close()
 
+	configFiles, err := configstore.New(cfg.ConfigDir)
+	if err != nil {
+		return err
+	}
+	if err := configFiles.Restore(context.Background(), repository); err != nil {
+		return err
+	}
+	discoverCache, err := diskcache.Open(filepath.Join(cfg.DataDir, "discover-cache.json"), 30*time.Minute)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -83,6 +98,8 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	server := api.New(api.Options{
 		Config:    cfg,
 		Store:     repository,
+		Configs:   configFiles,
+		Cache:     discoverCache,
 		Box:       box,
 		Registry:  registry,
 		Engine:    engine,

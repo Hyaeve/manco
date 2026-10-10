@@ -338,7 +338,7 @@ function filterOptions(group) {
     </div>
     <div v-else-if="!sources.length" class="card empty">
       <ImageOff :size="26" />
-      <span>{{ activeKind === 'comic' ? '所有漫画源均已在资源库中隐藏' : '暂无可用书籍源' }}</span>
+      <span>{{ activeKind === 'comic' ? '所有漫画源均已在资源仓库中隐藏' : '暂无可用书籍源' }}</span>
     </div>
 
     <section v-else-if="activeSource && activePanel" class="source-page">

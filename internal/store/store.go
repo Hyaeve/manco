@@ -124,6 +124,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS extension_repositories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'json',
+            url TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            icon TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            catalog_json TEXT NOT NULL DEFAULT '[]',
+            last_sync_at DATETIME,
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`,
 		`CREATE TABLE IF NOT EXISTS settings (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL,
@@ -436,7 +450,75 @@ func (s *Store) DeleteCustomSource(ctx context.Context, id string) error {
 	return err
 }
 
+func (s *Store) UpsertExtensionRepository(ctx context.Context, item model.ExtensionRepository) (model.ExtensionRepository, error) {
+	if len(item.Catalog) == 0 {
+		item.Catalog = json.RawMessage(`[]`)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO extension_repositories(id, name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			kind = excluded.kind,
+			url = excluded.url,
+			description = excluded.description,
+			icon = excluded.icon,
+			enabled = excluded.enabled,
+			catalog_json = excluded.catalog_json,
+			last_sync_at = excluded.last_sync_at,
+			last_error = excluded.last_error,
+			updated_at = CURRENT_TIMESTAMP`,
+		item.ID, item.Name, item.Kind, item.URL, item.Description, item.Icon, item.Enabled, string(item.Catalog), item.LastSyncAt, item.LastError)
+	if err != nil {
+		return model.ExtensionRepository{}, err
+	}
+	return s.ExtensionRepository(ctx, item.ID)
+}
+
+func (s *Store) ExtensionRepository(ctx context.Context, id string) (model.ExtensionRepository, error) {
+	return scanExtensionRepository(s.db.QueryRowContext(ctx, `SELECT id, name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories WHERE id = ?`, id))
+}
+
+func (s *Store) ListExtensionRepositories(ctx context.Context) ([]model.ExtensionRepository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []model.ExtensionRepository
+	for rows.Next() {
+		item, err := scanExtensionRepository(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func scanExtensionRepository(row rowScanner) (model.ExtensionRepository, error) {
+	var item model.ExtensionRepository
+	var catalog string
+	err := row.Scan(&item.ID, &item.Name, &item.Kind, &item.URL, &item.Description, &item.Icon, &item.Enabled, &catalog, &item.LastSyncAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.ExtensionRepository{}, ErrNotFound
+	}
+	if err == nil {
+		if strings.TrimSpace(catalog) == "" {
+			catalog = "[]"
+		}
+		item.Catalog = json.RawMessage(catalog)
+	}
+	return item, err
+}
+
+func (s *Store) DeleteExtensionRepository(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM extension_repositories WHERE id = ?`, id)
+	return err
+}
+
 func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
+
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO subscriptions(source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -490,6 +572,56 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 }
 
 const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at FROM subscriptions`
+
+func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription, error) {
+	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subscriptions []model.Subscription
+	for rows.Next() {
+		sub, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, sub)
+	}
+	return subscriptions, rows.Err()
+}
+
+// ImportSubscription restores a complete subscription snapshot from the
+// mounted /app/config directory, including polling baseline and archive state.
+func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(source_id, comic_id) DO UPDATE SET
+			title = excluded.title,
+			cover = excluded.cover,
+			author = excluded.author,
+			enabled = excluded.enabled,
+			auto_download = excluded.auto_download,
+			cron_expr = excluded.cron_expr,
+			download_dir = excluded.download_dir,
+			convert_to_simplified = excluded.convert_to_simplified,
+			last_chapter_id = excluded.last_chapter_id,
+			last_chapter_title = excluded.last_chapter_title,
+			last_chapter_order = excluded.last_chapter_order,
+			comic_status = excluded.comic_status,
+			last_new_chapter_at = excluded.last_new_chapter_at,
+			last_checked_at = excluded.last_checked_at,
+			disabled_at = excluded.disabled_at,
+			completed_at = excluded.completed_at,
+			archived_at = excluded.archived_at,
+			archive_reason = excluded.archive_reason,
+			updated_at = CURRENT_TIMESTAMP`,
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason)
+	if err != nil {
+		return model.Subscription{}, err
+	}
+	return s.SubscriptionByComic(ctx, sub.SourceID, sub.ComicID)
+}
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
@@ -720,6 +852,23 @@ func (s *Store) Stats(ctx context.Context) (model.Stats, error) {
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.CompletedJobs)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.LibraryItems)
 	return stats, nil
+}
+
+func (s *Store) ListSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings ORDER BY key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		values[key] = value
+	}
+	return values, rows.Err()
 }
 
 func (s *Store) Setting(ctx context.Context, key string) (string, error) {

@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 type Config struct {
 	Addr                  string
 	DataDir               string
+	ConfigDir             string
 	DownloadDir           string
 	DBPath                string
 	Secret                string
@@ -28,8 +30,9 @@ func Load() (Config, error) {
 	cfg := Config{
 		Addr:                  env("MANCO_ADDR", ":15600"),
 		DataDir:               env("MANCO_DATA_DIR", "data"),
+		ConfigDir:             env("MANCO_CONFIG_DIR", "config"),
 		DownloadDir:           env("MANCO_DOWNLOAD_DIR", "downloads"),
-		SourceRepo:            env("MANCO_SOURCE_REPO", "https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json"),
+		SourceRepo:            env("MANCO_SOURCE_REPO", ""),
 		ScanInterval:          durationEnv("MANCO_SCAN_INTERVAL", 30*time.Minute),
 		MaxChapterConcurrency: intEnv("MANCO_MAX_CHAPTER_CONCURRENCY", 2),
 		MaxPageConcurrency:    intEnv("MANCO_MAX_PAGE_CONCURRENCY", 4),
@@ -44,6 +47,9 @@ func Load() (Config, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create data directory: %w", err)
 	}
+	if err := os.MkdirAll(cfg.ConfigDir, 0o755); err != nil {
+		return Config{}, fmt.Errorf("create config directory: %w", err)
+	}
 	if err := os.MkdirAll(cfg.DownloadDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create download directory: %w", err)
 	}
@@ -52,7 +58,11 @@ func Load() (Config, error) {
 	if envSecret != "" {
 		cfg.Secret = envSecret
 	} else {
-		secret, err := loadOrCreateSecret(filepath.Join(cfg.DataDir, ".secret"))
+		secretPath := filepath.Join(cfg.DataDir, ".secret")
+		if _, err := os.Stat(secretPath); errors.Is(err, os.ErrNotExist) {
+			secretPath = filepath.Join(cfg.ConfigDir, "secret.key")
+		}
+		secret, err := loadOrCreateSecret(secretPath)
 		if err != nil {
 			return Config{}, err
 		}

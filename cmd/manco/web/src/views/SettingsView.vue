@@ -255,7 +255,7 @@ async function save(section, label) {
           <h2>关于 Manco</h2>
         </div>
       </div>
-      <p class="muted small" style="margin-top: 0">Manco 是漫画与书籍订阅下载工具，可从资源库中的来源订阅作品，按话打包为 CBZ 或章节文本并保存到本地。</p>
+      <p class="muted small" style="margin-top: 0">Manco 是漫画与书籍订阅下载工具，可从资源仓库中的来源订阅作品，按话打包为 CBZ 或章节文本并保存到本地。</p>
       <div class="about-grid">
         <div><span class="muted small">组件</span><strong>Go 后端 + Vue 3 前端</strong></div>
         <div><span class="muted small">容器端口</span><strong>15600</strong></div>

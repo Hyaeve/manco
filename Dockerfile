@@ -28,12 +28,13 @@ RUN apk add --no-cache ca-certificates tzdata
 ENV TZ=Asia/Shanghai \
     MANCO_ADDR=:15600 \
     MANCO_DATA_DIR=/app/data \
+    MANCO_CONFIG_DIR=/app/config \
     MANCO_DOWNLOAD_DIR=/app/downloads
 WORKDIR /app
 COPY --from=backend /out/manco /usr/local/bin/manco
-RUN mkdir -p /app/data /app/downloads
+RUN mkdir -p /app/data /app/config /app/downloads
 EXPOSE 15600
-VOLUME ["/app/data", "/app/downloads"]
+VOLUME ["/app/data", "/app/config", "/app/downloads"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -q -O /dev/null http://127.0.0.1:15600/ || exit 1
 ENTRYPOINT ["/usr/local/bin/manco"]

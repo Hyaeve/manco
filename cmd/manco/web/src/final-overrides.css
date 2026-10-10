@@ -1,0 +1,335 @@
+/* Final UI overrides for the resource warehouse, shell, notices and subscription cards. */
+.repository-toolbar {
+  margin-bottom: 16px;
+}
+
+.repository-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.repository-card {
+  padding: 0;
+  overflow: visible;
+}
+
+.repository-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.repository-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repository-toggle > svg {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  transition: transform 0.16s ease;
+}
+
+.repository-toggle > svg.rotated {
+  transform: rotate(180deg);
+}
+
+.repository-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border-radius: 8px;
+}
+
+.repository-title {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.repository-title small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.repository-error {
+  margin: 0;
+  padding: 10px 16px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+  border-top: 1px solid var(--border);
+}
+
+.extension-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.extension-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.extension-row:last-child {
+  border-bottom: 0;
+}
+
+.extension-row > img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.extension-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.extension-meta small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-card-actions,
+.source-title-line,
+.source-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-card-head {
+  align-items: flex-start;
+}
+
+.source-account-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.source-account-block .field {
+  margin: 0;
+}
+
+.repository-empty {
+  min-height: 280px;
+}
+
+/* Shell alignment and theme separation. */
+.topbar {
+  height: 56px;
+  padding-inline: 22px;
+}
+
+.main-shell {
+  grid-template-rows: 56px minmax(0, 1fr);
+}
+
+.breadcrumbs {
+  font-size: 13px;
+}
+
+.sidebar {
+  background: color-mix(in srgb, var(--surface-muted) 72%, var(--surface));
+  border-right: 1px solid var(--border);
+}
+
+.sidebar .nav-group {
+  min-height: 100%;
+}
+
+.sidebar nav button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 13px;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 16px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar nav button > svg {
+  flex: 0 0 22px;
+}
+
+.sidebar nav button:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.sidebar nav button.active {
+  color: var(--primary-strong);
+  background: var(--primary-soft);
+}
+
+.sidebar nav button.nav-bottom {
+  margin-top: auto;
+}
+
+.theme-cycle {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+/* Notice bubbles. */
+.toast-stack {
+  top: 58px;
+}
+
+.toast {
+  min-width: 240px;
+  max-width: min(420px, calc(100vw - 32px));
+  justify-content: center;
+  text-align: center;
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
+}
+
+.toast.success {
+  color: color-mix(in srgb, var(--success) 74%, var(--text));
+  background: color-mix(in srgb, var(--success) 11%, var(--surface));
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+}
+
+.toast.error {
+  color: color-mix(in srgb, var(--danger) 78%, var(--text));
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--border));
+}
+
+.toast.warning {
+  color: color-mix(in srgb, var(--warning) 82%, var(--text));
+  background: color-mix(in srgb, var(--warning) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--warning) 38%, var(--border));
+}
+
+.toast.info {
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  border-color: color-mix(in srgb, var(--primary) 26%, var(--border));
+}
+
+/* Subscription cards: three per row and no clipping for the menu. */
+.subscription-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.subscription-card {
+  min-height: 250px;
+  overflow: visible;
+}
+
+.subscription-card .subscription-main {
+  align-items: start;
+  padding: 38px 16px 14px;
+}
+
+.subscription-card .subscription-cover {
+  width: 112px;
+  flex-basis: 112px;
+  border-radius: 12px;
+}
+
+.subscription-card .subscription-title {
+  margin-top: 8px;
+}
+
+.subscription-card .subscription-meta {
+  padding-bottom: 50px;
+}
+
+.subscription-job-stats {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.subscription-tools {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.subscription-tools .icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+}
+
+.subscription-tools .subscription-menu {
+  position: relative;
+  right: auto;
+  bottom: auto;
+}
+
+.subscription-tools .subscription-actions {
+  right: 0;
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+@media (max-width: 1280px) {
+  .subscription-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .subscription-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

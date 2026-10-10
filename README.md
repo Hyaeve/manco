@@ -8,8 +8,10 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 ## 功能
 
 - 首次启动进入创建账号页；登录后可在「设置 → 账号设置」中修改用户名和密码。
-- 漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**。
-- 书籍源：**神凑轻小说**与 **Project Gutenberg**。「资源」页分为「漫画源 / 书籍源」两个标签，书籍按章节或整本下载为纯文本。
+- 默认漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**；默认书籍源包含**笔趣阁**及现有公开书籍源。
+- 书籍源：**笔趣阁**、**神凑轻小说**与 **Project Gutenberg**。「资源仓库」页分为「漫画源 / 书籍源 / 拓展仓库」三个栏目，书籍按章节或整本下载为纯文本。
+- 拓展仓库默认不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持同步、展开、删除和导入来源。Android/JVM 插件会明确标记为“仅登记”，不会伪装成可在 Go 后端直接执行的来源。
+- 探索发现浏览缓存写入 `/data/discover-cache.json`，默认 30 分钟内复用，切换页面时不会反复请求上游站点。
 - 「本地库」页面浏览已经配置或选择过的下载目录，可查看已下载的漫画 / 书籍、展开文件列表并下载或预览。
 - 「运行日志」支持原始文本与结构化列表切换，并记住上次选择；同一份日志也会输出到容器标准输出，可用 `docker logs -f Manco` 查看。
 - 支持搜索、浏览、作品详情、章节列表、勾选章节批量下载。
@@ -69,6 +71,7 @@ services:
       TZ: "Asia/Shanghai"
     volumes:
       - ./data:/app/data
+      - ./config:/app/config
       # 下载位置在「系统设置 → 下载设置」和订阅任务设置里选择/填写。
       # 需要自定义下载目录时，按需添加宿主机目录映射，例如：
       # - /vol4/1000/downloads/manco:/downloads
@@ -104,7 +107,8 @@ docker compose up -d
 
 | 容器路径 | 宿主机路径 | 说明 |
 | --- | --- | --- |
-| `/app/data` | `./data` | SQLite 数据库、会话、加密密钥 `.secret` |
+| `/app/data` | `./data` | SQLite 数据库、会话、探索发现缓存、加密密钥 `.secret` |
+| `/app/config` | `./config` | 系统设置、来源与账号、拓展仓库、订阅等模块化 JSON 配置 |
 | 自定义下载目录 | 按需映射 | 在「系统设置 → 下载设置」为订阅选择/填写容器内路径，如 `/downloads/manco` |
 
 ## 环境变量
@@ -114,6 +118,7 @@ docker compose up -d
 | `MANCO_ADDR` | `:15600` | 监听地址 |
 | `MANCO_SECRET` | 自动生成 `data/.secret` | 凭据加密密钥，建议显式设置并备份 |
 | `MANCO_DATA_DIR` | `data` | 数据目录 |
+| `MANCO_CONFIG_DIR` | `config` | 用户配置目录，Docker 中为 `/app/config` |
 | `MANCO_DOWNLOAD_DIR` | `downloads` | 下载目录 |
 | `MANCO_SOURCE_REPO` | Kototoro 拓展仓库 | 源清单参考地址 |
 | `MANCO_SCAN_INTERVAL` | `30m` | 无 Cron 数据的旧订阅兼容扫描间隔 |
@@ -123,7 +128,7 @@ docker compose up -d
 
 ## 漫画源配置
 
-登录后在「资源库」页面配置，页面分为「漫画源」与「书籍源」两个标签。包子、哔咔、禁漫三个默认源不可删除或改名；自定义源可通过 Kototoro 拓展仓库参考添加选择器适配，保存后会出现在探索发现中：
+登录后在「资源仓库」页面配置，页面分为「漫画源」「书籍源」「拓展仓库」三个栏目。包子、哔咔、禁漫、笔趣阁等默认源不可删除或改名；拓展仓库不再默认内置，用户可自行添加多个 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库，同步后导入可执行的配置来源：
 
 如果所在网络无法直连这些站点，先在「设置 → 网络代理」填入可用的 HTTP/HTTPS 代理，然后保存。
 

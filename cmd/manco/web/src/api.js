@@ -33,6 +33,15 @@ export const api = {
 
   sources: () => request('/api/sources'),
   sourceRepo: () => request('/api/source-repo'),
+  repositories: () => request('/api/repositories'),
+  createRepository: (payload) =>
+    request('/api/repositories', { method: 'POST', body: JSON.stringify(payload) }),
+  syncRepository: (id) =>
+    request(`/api/repositories/${encodeURIComponent(id)}/sync`, { method: 'POST' }),
+  deleteRepository: (id) =>
+    request(`/api/repositories/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  importRepositoryExtension: (repositoryId, extensionId) =>
+    request(`/api/repositories/${encodeURIComponent(repositoryId)}/extensions/${encodeURIComponent(extensionId)}`, { method: 'POST' }),
   createCustomSource: (payload) =>
     request('/api/custom-sources', { method: 'POST', body: JSON.stringify(payload) }),
   customSourceConfig: (id) => request(`/api/custom-sources/${encodeURIComponent(id)}`),

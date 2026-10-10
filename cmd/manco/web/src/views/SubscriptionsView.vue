@@ -8,9 +8,10 @@ import {
   FolderOpen,
   Languages,
   Loader2,
-  MoreVertical,
+  MoreHorizontal,
   Pencil,
   Power,
+  RefreshCcw,
   RefreshCw,
   Rss,
   Save,
@@ -71,7 +72,7 @@ async function load(silent = false) {
     items.value = subscriptions.items || []
     jobs.value = downloads.items || []
   } catch (err) {
-    if (!silent) notify(`订阅清单加载失败：${err.message}`, true)
+    if (!silent) notify(`订阅清单加载失败：${err.message}`, 'error')
   } finally {
     loading.value = false
   }
@@ -96,7 +97,7 @@ function openEditor(item) {
 async function saveEditor() {
   if (!editing.value) return
   if (!form.value.cronExpr.trim()) {
-    notify('Cron 表达式不能为空', true)
+    notify('Cron 表达式不能为空', 'warning')
     return
   }
   busy.value = editing.value.id
@@ -107,10 +108,10 @@ async function saveEditor() {
       convertToSimplified: Boolean(form.value.convertToSimplified),
     })
     Object.assign(editing.value, updated)
-    notify(`已更新《${editing.value.title}》的订阅任务`)
+    notify(`已更新《${editing.value.title}》的订阅任务`, 'success')
     editorOpen.value = false
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = 0
   }
@@ -122,9 +123,9 @@ async function toggleEnabled(item) {
   try {
     const updated = await api.updateSubscription(item.id, { enabled: !item.enabled })
     Object.assign(item, updated)
-    notify(`《${item.title}》已${item.enabled ? '启用' : '禁用'}`)
+    notify(`《${item.title}》已${item.enabled ? '启用' : '禁用'}`, 'success')
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = 0
   }
@@ -136,9 +137,9 @@ async function archive(item) {
   try {
     await api.archiveSubscription(item.id)
     items.value = items.value.filter((row) => row.id !== item.id)
-    notify(`《${item.title}》已归档`)
+    notify(`《${item.title}》已归档`, 'success')
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = 0
   }
@@ -151,9 +152,9 @@ async function remove(item) {
   try {
     await api.deleteSubscription(item.id)
     items.value = items.value.filter((row) => row.id !== item.id)
-    notify(`《${item.title}》已删除`)
+    notify(`《${item.title}》已删除`, 'success')
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = 0
   }
@@ -170,6 +171,27 @@ function sourceIcon(item) {
 function chapterCount(item) {
   if (item.chapterCount) return item.chapterCount
   return jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId).length
+}
+
+function jobStats(item) {
+  const related = jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId)
+  return {
+    success: related.filter((job) => job.status === 'success').length,
+    failed: related.filter((job) => job.status === 'failed').length,
+  }
+}
+
+async function checkUpdate(item) {
+  busy.value = item.id
+  try {
+    await api.checkSubscription(item.id)
+    notify(`《${item.title}》已检查更新`, 'success')
+    await load(true)
+  } catch (err) {
+    notify(`检查更新失败：${err.message}`, 'error')
+  } finally {
+    busy.value = 0
+  }
 }
 </script>
 
@@ -224,26 +246,35 @@ function chapterCount(item) {
             <FolderOpen :size="14" />
             <span>{{ item.downloadDir || '默认下载目录' }}</span>
           </div>
+          <div class="subscription-job-stats">
+            <span class="success-text">成功 {{ jobStats(item).success }}</span>
+            <span class="danger-text">失败 {{ jobStats(item).failed }}</span>
+          </div>
         </div>
       </div>
-      <div class="subscription-menu">
-        <button class="btn ghost icon subscription-more" type="button" aria-label="更多操作" @click="toggleMenu(item, $event)">
+      <div class="subscription-tools">
+        <button class="btn ghost icon" type="button" aria-label="检查更新" title="检查更新" @click="checkUpdate(item)">
           <Loader2 v-if="busy === item.id" :size="18" class="spin" />
-          <MoreVertical v-else :size="18" />
+          <RefreshCcw v-else :size="18" />
         </button>
-        <div v-if="openMenu === item.id" class="dropdown-panel subscription-actions" @click.stop>
-          <button class="dropdown-item" type="button" @click="openEditor(item)">
-            <Pencil :size="15" /> 编辑
+        <div class="subscription-menu">
+          <button class="btn ghost icon subscription-more" type="button" aria-label="更多操作" @click="toggleMenu(item, $event)">
+            <MoreHorizontal :size="19" />
           </button>
-          <button class="dropdown-item" type="button" @click="toggleEnabled(item)">
-            <Power :size="15" /> {{ item.enabled ? '禁用' : '启用' }}
-          </button>
-          <button class="dropdown-item" type="button" @click="archive(item)">
-            <Archive :size="15" /> 归档
-          </button>
-          <button class="dropdown-item danger" type="button" @click="remove(item)">
-            <Trash2 :size="15" /> 删除
-          </button>
+          <div v-if="openMenu === item.id" class="dropdown-panel subscription-actions" @click.stop>
+            <button class="dropdown-item" type="button" @click="openEditor(item)">
+              <Pencil :size="15" /> 编辑
+            </button>
+            <button class="dropdown-item" type="button" @click="toggleEnabled(item)">
+              <Power :size="15" /> {{ item.enabled ? '禁用' : '启用' }}
+            </button>
+            <button class="dropdown-item" type="button" @click="archive(item)">
+              <Archive :size="15" /> 归档
+            </button>
+            <button class="dropdown-item danger" type="button" @click="remove(item)">
+              <Trash2 :size="15" /> 删除
+            </button>
+          </div>
         </div>
       </div>
     </article>

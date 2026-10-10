@@ -29,10 +29,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/hyaeve/manco/internal/config"
+	"github.com/hyaeve/manco/internal/configstore"
 	"github.com/hyaeve/manco/internal/cronutil"
+	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/repository"
 	"github.com/hyaeve/manco/internal/scheduler"
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
@@ -51,6 +54,8 @@ var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
 type Server struct {
 	cfg       config.Config
 	store     *store.Store
+	configs   *configstore.Files
+	cache     *diskcache.Cache
 	box       *secret.Box
 	registry  *sources.Registry
 	engine    *downloader.Engine
@@ -81,6 +86,8 @@ type Settings struct {
 type Options struct {
 	Config    config.Config
 	Store     *store.Store
+	Configs   *configstore.Files
+	Cache     *diskcache.Cache
 	Box       *secret.Box
 	Registry  *sources.Registry
 	Engine    *downloader.Engine
@@ -98,6 +105,8 @@ func New(options Options) *Server {
 	return &Server{
 		cfg:       options.Config,
 		store:     options.Store,
+		configs:   options.Configs,
+		cache:     options.Cache,
 		box:       options.Box,
 		registry:  options.Registry,
 		engine:    options.Engine,
@@ -216,6 +225,11 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
 	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
+	mux.HandleFunc("GET /api/repositories", s.requireAuth(s.handleListRepositories))
+	mux.HandleFunc("POST /api/repositories", s.requireAuth(s.handleCreateRepository))
+	mux.HandleFunc("POST /api/repositories/{id}/sync", s.requireAuth(s.handleSyncRepository))
+	mux.HandleFunc("DELETE /api/repositories/{id}", s.requireAuth(s.handleDeleteRepository))
+	mux.HandleFunc("POST /api/repositories/{id}/extensions/{extensionId}", s.requireAuth(s.handleImportRepositoryExtension))
 	mux.HandleFunc("POST /api/custom-sources", s.requireAuth(s.handleCreateCustomSource))
 	mux.HandleFunc("GET /api/custom-sources/{id}", s.requireAuth(s.handleGetCustomSource))
 	mux.HandleFunc("PUT /api/custom-sources/{id}", s.requireAuth(s.handleUpdateCustomSource))
@@ -362,6 +376,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	type accountView struct {
 		SourceID  string    `json:"sourceId"`
 		Username  string    `json:"username,omitempty"`
+		Password  string    `json:"password,omitempty"`
 		HomeURL   string    `json:"homeUrl,omitempty"`
 		HasToken  bool      `json:"hasToken"`
 		HasCookie bool      `json:"hasCookie"`
@@ -371,9 +386,11 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	stored, err := s.store.ListSourceAccounts(r.Context())
 	if err == nil {
 		for _, account := range stored {
+			plainPassword, _ := s.box.Decrypt(account.SecretCipher)
 			accounts[account.SourceID] = accountView{
 				SourceID:  account.SourceID,
 				Username:  account.Username,
+				Password:  plainPassword,
 				HomeURL:   account.HomeURL,
 				HasToken:  account.TokenCipher != "",
 				HasCookie: account.CookieCipher != "",
@@ -439,6 +456,190 @@ func (s *Server) handleSourceRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"url": address, "items": payload})
+}
+
+func repositoryView(item model.ExtensionRepository) model.ExtensionRepository {
+	item.Error = item.LastError
+	if item.LastError != "" {
+		item.Status = "error"
+	} else if item.LastSyncAt != nil || len(item.Catalog) > 0 {
+		item.Status = "ok"
+	} else {
+		item.Status = "pending"
+	}
+	if len(item.Catalog) > 0 {
+		_ = json.Unmarshal(item.Catalog, &item.Extensions)
+	}
+	return item
+}
+
+func (s *Server) handleListRepositories(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListExtensionRepositories(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for index := range items {
+		items[index] = repositoryView(items[index])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "kinds": repository.SupportedKinds()})
+}
+
+func (s *Server) handleCreateRepository(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name        string `json:"name"`
+		Kind        string `json:"kind"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+		Icon        string `json:"icon"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.URL = strings.TrimSpace(payload.URL)
+	if payload.URL == "" {
+		writeError(w, http.StatusBadRequest, "仓库地址不能为空")
+		return
+	}
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		name = "拓展仓库"
+	}
+	item := model.ExtensionRepository{
+		ID:          newConfigID("repo", name+payload.URL),
+		Name:        name,
+		Kind:        repository.NormalizeKind(payload.Kind),
+		URL:         payload.URL,
+		Description: strings.TrimSpace(payload.Description),
+		Icon:        strings.TrimSpace(payload.Icon),
+		Enabled:     true,
+		Catalog:     json.RawMessage(`[]`),
+	}
+	saved, err := s.store.UpsertExtensionRepository(r.Context(), item)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	synced, err := s.syncRepository(r.Context(), saved)
+	if err != nil {
+		saved.LastError = err.Error()
+		_, _ = s.store.UpsertExtensionRepository(r.Context(), saved)
+	} else {
+		saved = synced
+	}
+	_ = s.configs.PersistRepositories(r.Context(), s.store)
+	writeJSON(w, http.StatusCreated, repositoryView(saved))
+}
+
+func (s *Server) handleSyncRepository(w http.ResponseWriter, r *http.Request) {
+	item, err := s.store.ExtensionRepository(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "拓展仓库不存在")
+		return
+	}
+	synced, err := s.syncRepository(r.Context(), item)
+	if err != nil {
+		item.LastError = err.Error()
+		_, _ = s.store.UpsertExtensionRepository(r.Context(), item)
+		_ = s.configs.PersistRepositories(r.Context(), s.store)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	_ = s.configs.PersistRepositories(r.Context(), s.store)
+	var items []model.RepositoryExtension
+	_ = json.Unmarshal(synced.Catalog, &items)
+	writeJSON(w, http.StatusOK, map[string]any{"repository": repositoryView(synced), "items": items})
+}
+
+func (s *Server) syncRepository(ctx context.Context, item model.ExtensionRepository) (model.ExtensionRepository, error) {
+	items, err := repository.Sync(ctx, s.registry.Client(), item)
+	if err != nil {
+		return model.ExtensionRepository{}, err
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return model.ExtensionRepository{}, err
+	}
+	now := time.Now()
+	item.Catalog = raw
+	item.LastSyncAt = &now
+	item.LastError = ""
+	return s.store.UpsertExtensionRepository(ctx, item)
+}
+
+func (s *Server) handleDeleteRepository(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if err := s.store.DeleteExtensionRepository(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.configs.PersistRepositories(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.Request) {
+	repo, err := s.store.ExtensionRepository(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "拓展仓库不存在")
+		return
+	}
+	var catalog []model.RepositoryExtension
+	if err := json.Unmarshal(repo.Catalog, &catalog); err != nil {
+		writeError(w, http.StatusBadRequest, "仓库清单尚未同步")
+		return
+	}
+	var selected *model.RepositoryExtension
+	for index := range catalog {
+		if catalog[index].ID == r.PathValue("extensionId") {
+			selected = &catalog[index]
+			break
+		}
+	}
+	if selected == nil {
+		writeError(w, http.StatusNotFound, "仓库扩展不存在")
+		return
+	}
+	if !selected.Installable || len(selected.Config) == 0 || strings.TrimSpace(selected.Homepage) == "" {
+		writeError(w, http.StatusBadRequest, "该扩展没有可直接导入的选择器配置；JAR/Mihon 插件需要兼容运行时")
+		return
+	}
+	baseID := strings.TrimSpace(selected.PackageName)
+	if baseID == "" {
+		baseID = selected.Name
+	}
+	id := "ext-" + repository.Slug(baseID)
+	item := model.CustomSource{
+		ID:          id,
+		Name:        selected.Name,
+		Kind:        selected.Kind,
+		Description: selected.Description,
+		Homepage:    selected.Homepage,
+		Icon:        selected.Icon,
+		RepoURL:     repo.URL,
+		Config:      selected.Config,
+		Enabled:     true,
+	}
+	if _, err := generic.New(s.registry.Client(), item); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	saved, err := s.store.UpsertCustomSource(r.Context(), item)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.registry.ReloadCustomSources(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, map[string]any{"source": saved})
+}
+
+func newConfigID(prefix, value string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(value))))
+	return prefix + "-" + hex.EncodeToString(sum[:6])
 }
 
 func (s *Server) handleCreateCustomSource(w http.ResponseWriter, r *http.Request) {
@@ -531,6 +732,7 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, adapter.Info())
 }
 
@@ -552,6 +754,7 @@ func (s *Server) handleDeleteCustomSource(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -635,6 +838,7 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 		"hidden":             hidden[id],
 		"disabledCategories": s.disabledCategories(r.Context())[id],
 	})
+	_ = s.configs.PersistSettings(r.Context(), s.store)
 }
 
 func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
@@ -720,6 +924,7 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "connected": account.Token != "" || account.Cookie != ""})
 }
 
@@ -728,6 +933,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -742,11 +948,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := intParam(r, "page", 1)
+	cacheKey := "search:" + r.URL.RequestURI()
+	if raw, storedAt, ok := s.cache.Get(cacheKey); ok {
+		writeCachedJSON(w, raw, storedAt)
+		return
+	}
 	result, err := item.Search(r.Context(), account, query, page)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -765,11 +977,17 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		options.Category = strings.TrimSpace(r.URL.Query().Get("kind"))
 	}
 	page := intParam(r, "page", 1)
+	cacheKey := "browse:" + r.URL.RequestURI()
+	if raw, storedAt, ok := s.cache.Get(cacheKey); ok {
+		writeCachedJSON(w, raw, storedAt)
+		return
+	}
 	result, err := item.Browse(r.Context(), account, options, page)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -813,6 +1031,7 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	if items == nil {
 		items = []model.Subscription{}
 	}
+	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -889,6 +1108,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, saved)
 }
 
@@ -950,6 +1170,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	updated, _ := s.store.Subscription(r.Context(), id)
+	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -967,6 +1188,7 @@ func (s *Server) handleArchiveSubscription(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1109,6 +1331,7 @@ func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -1997,6 +2220,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	s.engine.SetDownloadPolicy(current.BatchSize, current.BatchIntervalMinutes, current.ConvertToSimplified)
 	response := s.settingsResponse(r.Context(), responseUsername)
 	response["ok"] = true
+	_ = s.configs.PersistSettings(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -2290,6 +2514,19 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeCachedJSON(w http.ResponseWriter, raw json.RawMessage, storedAt time.Time) {
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		writeError(w, http.StatusInternalServerError, "缓存数据损坏")
+		return
+	}
+	if object, ok := payload.(map[string]any); ok {
+		object["cached"] = true
+		object["cachedAt"] = storedAt.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {

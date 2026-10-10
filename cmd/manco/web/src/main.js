@@ -4,6 +4,7 @@ import App from './App.vue'
 import { router } from './router'
 import './styles.css'
 import './shell.css'
+import './final-overrides.css'
 
 const app = createApp(App)
 app.use(createPinia())

@@ -1,17 +1,19 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
-  BookOpenCheck,
-  ExternalLink,
+  Boxes,
+  Check,
+  ChevronDown,
   Eye,
   EyeOff,
   KeyRound,
   Loader2,
-  Pencil,
+  PackagePlus,
   Plus,
   RefreshCw,
   Save,
   Server,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   X,
@@ -22,44 +24,28 @@ import PasswordInput from '../components/PasswordInput.vue'
 import SitePicker from '../components/SitePicker.vue'
 
 const sources = ref([])
+const repositories = ref([])
 const accounts = ref({})
-const repoUrl = ref('')
-const repoInfo = ref(null)
 const loading = ref(true)
 const busy = ref('')
 const activeKind = ref('comic')
-const editorOpen = ref(false)
-const editorMode = ref('create')
-const repoBusy = ref(false)
+const repositoryOpen = ref(false)
 const categoryOpen = ref(false)
 const categorySource = ref(null)
 const categorySelection = ref([])
-
+const expandedRepositories = ref({})
 const forms = reactive({})
-const editor = reactive({
-  id: '',
-  name: '',
-  kind: 'comic',
-  description: '',
-  homepage: '',
-  icon: '',
-  repoUrl: '',
-  searchUrl: '',
-  browseUrl: '',
-  itemSelector: '',
-  titleSelector: '',
-  coverSelector: '',
-  linkSelector: '',
-  detailTitleSelector: '',
-  authorSelector: '',
-  descriptionSelector: '',
-  chapterSelector: '',
-  chapterTitleSelector: '',
-  chapterLinkSelector: '',
-  pageImageSelector: '',
-  contentSelector: '',
-  allowedHosts: '',
-})
+const repositoryForm = reactive({ name: '', url: '', kind: 'json' })
+
+const repositoryKinds = [
+  { value: 'json', label: 'JSON 清单' },
+  { value: 'jar', label: 'JAR 拓展' },
+  { value: 'mihon', label: 'Mihon' },
+  { value: 'aniyomi', label: 'Aniyomi' },
+  { value: 'ireader', label: 'iReader' },
+  { value: 'cloudstream', label: 'CloudStream' },
+  { value: 'tsundoku', label: 'Tsundoku' },
+]
 
 const comicSources = computed(() => sources.value.filter((item) => (item.kind || 'comic') === 'comic'))
 const bookSources = computed(() => sources.value.filter((item) => item.kind === 'book'))
@@ -70,42 +56,29 @@ onMounted(load)
 async function load() {
   loading.value = true
   try {
-    const payload = await api.sources()
-    sources.value = payload.items || []
-    accounts.value = payload.accounts || {}
-    repoUrl.value = payload.repoUrl || ''
+    const [sourcePayload, repositoryPayload] = await Promise.all([api.sources(), api.repositories()])
+    sources.value = sourcePayload.items || []
+    accounts.value = sourcePayload.accounts || {}
+    repositories.value = repositoryPayload.items || []
     for (const item of sources.value) {
       const account = accounts.value[item.id] || {}
       if (!forms[item.id]) {
         forms[item.id] = reactive({
           username: account.username || '',
-          password: '',
+          password: account.password || '',
           cookie: '',
           homeUrl: account.homeUrl || '',
         })
+      } else {
+        forms[item.id].username = account.username || ''
+        if (account.password) forms[item.id].password = account.password
+        forms[item.id].homeUrl = account.homeUrl || ''
       }
     }
   } catch (err) {
-    notify(`资源库加载失败：${err.message}`, true)
+    notify(`资源仓库加载失败：${err.message}`, 'error')
   } finally {
     loading.value = false
-  }
-}
-
-async function loadRepo() {
-  repoBusy.value = true
-  try {
-    const payload = await api.sourceRepo()
-    const raw = payload.items
-    const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : []
-    repoInfo.value = list.find((entry) => entry && typeof entry === 'object') || null
-    if (repoInfo.value) {
-      notify(`已读取 Kototoro 拓展仓库：${repoInfo.value.name || '未命名'}${repoInfo.value.version ? ` · v${repoInfo.value.version}` : ''}`)
-    }
-  } catch (err) {
-    notify(`读取仓库失败：${err.message}`, true)
-  } finally {
-    repoBusy.value = false
   }
 }
 
@@ -122,15 +95,20 @@ function isBuiltin(item) {
   return item.builtin || ['picacg', 'jmcomic', 'baozimh', 'biquge'].includes(item.id)
 }
 
+function categoryFilters(item) {
+  return (item.filters || []).filter((group) => group.key !== 'sort' && group.key !== 'ranking')
+}
+
 function openCategory(item) {
-  if (!item.filters?.length) {
+  const groups = categoryFilters(item)
+  if (!groups.length) {
     notify(`${item.name} 暂无可配置分类`)
     return
   }
   categorySource.value = item
-  categorySelection.value = item.filters
+  categorySelection.value = groups
     .flatMap((group) => group.options || [])
-    .filter((option) => option.disabled && option.value)
+    .filter((option) => option.value && !option.disabled)
     .map((option) => String(option.value))
   categoryOpen.value = true
 }
@@ -147,166 +125,99 @@ async function saveCategories() {
   if (!item) return
   busy.value = item.id
   try {
-    const result = await api.updateSource(item.id, { disabledCategories: categorySelection.value })
+    const allValues = categoryFilters(item)
+      .flatMap((group) => group.options || [])
+      .map((option) => String(option.value))
+      .filter(Boolean)
+    const selected = new Set(categorySelection.value)
+    const disabledCategories = allValues.filter((value) => !selected.has(value))
+    const result = await api.updateSource(item.id, { disabledCategories })
     const disabled = new Set(result.disabledCategories || [])
     item.filters = (item.filters || []).map((group) => ({
       ...group,
       options: (group.options || []).map((option) => ({ ...option, disabled: disabled.has(String(option.value)) })),
     }))
     categoryOpen.value = false
-    notify(`${item.name} 的分类显示设置已保存`)
+    notify(`${item.name} 的分类显示设置已保存`, 'success')
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = ''
   }
 }
 
-function openCreate(kind) {
-  editorMode.value = 'create'
-  Object.assign(editor, {
-    id: '',
-    name: '',
-    kind,
-    description: '',
-    homepage: '',
-    icon: '',
-    repoUrl: repoUrl.value || '',
-    searchUrl: '',
-    browseUrl: '',
-    itemSelector: '',
-    titleSelector: '',
-    coverSelector: '',
-    linkSelector: '',
-    detailTitleSelector: '',
-    authorSelector: '',
-    descriptionSelector: '',
-    chapterSelector: '',
-    chapterTitleSelector: '',
-    chapterLinkSelector: '',
-    pageImageSelector: '',
-    contentSelector: '',
-    allowedHosts: '',
-  })
-  editorOpen.value = true
-  if (!repoInfo.value) loadRepo()
+function openRepository() {
+  Object.assign(repositoryForm, { name: '', url: '', kind: 'json' })
+  repositoryOpen.value = true
 }
 
-async function openEdit(item) {
-  if (isBuiltin(item)) return
-  editorMode.value = 'edit'
-  busy.value = item.id
+async function createRepository() {
+  if (!repositoryForm.name.trim() || !repositoryForm.url.trim()) {
+    notify('仓库名称和地址不能为空', 'warning')
+    return
+  }
+  busy.value = 'repository-create'
   try {
-    const payload = await api.customSourceConfig(item.id)
-    const cfg = payload.config || {}
-    Object.assign(editor, {
-      id: payload.id || item.id,
-      name: payload.name || item.name,
-      kind: payload.kind || item.kind || 'comic',
-      description: payload.description || item.description || '',
-      homepage: payload.homepage || item.homepage || '',
-      icon: payload.icon || item.icon || '',
-      repoUrl: payload.repoUrl || repoUrl.value || '',
-      searchUrl: cfg.searchUrl || '',
-      browseUrl: cfg.browseUrl || '',
-      itemSelector: cfg.itemSelector || '',
-      titleSelector: cfg.titleSelector || '',
-      coverSelector: cfg.coverSelector || '',
-      linkSelector: cfg.linkSelector || '',
-      detailTitleSelector: cfg.detailTitleSelector || '',
-      authorSelector: cfg.authorSelector || '',
-      descriptionSelector: cfg.descriptionSelector || '',
-      chapterSelector: cfg.chapterSelector || '',
-      chapterTitleSelector: cfg.chapterTitleSelector || '',
-      chapterLinkSelector: cfg.chapterLinkSelector || '',
-      pageImageSelector: cfg.pageImageSelector || '',
-      contentSelector: cfg.contentSelector || '',
-      allowedHosts: (cfg.allowedHosts || []).join(', '),
+    const created = await api.createRepository({
+      name: repositoryForm.name.trim(),
+      url: repositoryForm.url.trim(),
+      kind: repositoryForm.kind,
     })
-    editorOpen.value = true
+    repositories.value = [...repositories.value.filter((item) => item.id !== created.id), created]
+    repositoryOpen.value = false
+    notify(`${created.name} 已添加，正在同步来源清单`, 'success')
+    await syncRepository(created)
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = ''
   }
 }
 
-function buildConfig() {
-  const config = {}
-  const mapping = {
-    searchUrl: editor.searchUrl,
-    browseUrl: editor.browseUrl,
-    itemSelector: editor.itemSelector,
-    titleSelector: editor.titleSelector,
-    coverSelector: editor.coverSelector,
-    linkSelector: editor.linkSelector,
-    detailTitleSelector: editor.detailTitleSelector,
-    authorSelector: editor.authorSelector,
-    descriptionSelector: editor.descriptionSelector,
-    chapterSelector: editor.chapterSelector,
-    chapterTitleSelector: editor.chapterTitleSelector,
-    chapterLinkSelector: editor.chapterLinkSelector,
-    pageImageSelector: editor.pageImageSelector,
-    contentSelector: editor.contentSelector,
+async function syncRepository(item) {
+  busy.value = `repository-${item.id}`
+  try {
+    const result = await api.syncRepository(item.id)
+    const index = repositories.value.findIndex((row) => row.id === item.id)
+    if (index >= 0) repositories.value[index] = result.repository || item
+    expandedRepositories.value[item.id] = true
+    notify(`${item.name} 已同步 ${result.items?.length || 0} 个来源`, 'success')
+  } catch (err) {
+    notify(`${item.name} 同步失败：${err.message}`, 'error')
+  } finally {
+    busy.value = ''
   }
-  for (const [key, value] of Object.entries(mapping)) {
-    if (String(value || '').trim()) config[key] = String(value).trim()
-  }
-  const hosts = String(editor.allowedHosts || '')
-    .split(/[\s,]+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-  if (hosts.length) config.allowedHosts = hosts
-  return config
 }
 
-async function saveEditor() {
-  if (!editor.id.trim() || !editor.name.trim() || !editor.homepage.trim()) {
-    notify('源 ID、名称和首页地址不能为空', true)
-    return
-  }
-  const config = buildConfig()
-  if (!config.searchUrl && !config.itemSelector) {
-    notify('至少填写“搜索地址”或“列表项选择器”其中之一', true)
-    return
-  }
-  busy.value = editor.id
-  const payload = {
-    id: editor.id.trim().toLowerCase(),
-    name: editor.name.trim(),
-    kind: editor.kind,
-    description: editor.description.trim(),
-    homepage: editor.homepage.trim(),
-    icon: editor.icon.trim(),
-    repoUrl: editor.repoUrl.trim(),
-    config,
-    enabled: true,
-  }
+async function removeRepository(item) {
+  if (!window.confirm(`确定删除拓展仓库「${item.name}」吗？`)) return
+  busy.value = `repository-${item.id}`
   try {
-    if (editorMode.value === 'create') {
-      await api.createCustomSource(payload)
-    } else {
-      await api.updateCustomSource(editor.id.trim().toLowerCase(), payload)
+    await api.deleteRepository(item.id)
+    repositories.value = repositories.value.filter((row) => row.id !== item.id)
+    notify(`${item.name} 已删除`, 'success')
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function importExtension(repository, extension) {
+  if (!extension.installable) {
+    notify('该来源为 Android/JVM 插件，当前版本仅登记清单，不能直接执行', 'warning')
+    return
+  }
+  busy.value = `extension-${extension.id}`
+  try {
+    const result = await api.importRepositoryExtension(repository.id, extension.id)
+    const source = result.source
+    if (source && !sources.value.some((item) => item.id === source.id)) {
+      sources.value = [...sources.value, source]
     }
-    notify(`${payload.name} 已保存，可在探索发现中浏览。`)
-    editorOpen.value = false
-    await load()
+    notify(`${extension.name} 已加入资源来源`, 'success')
   } catch (err) {
-    notify(err.message, true)
-  } finally {
-    busy.value = ''
-  }
-}
-
-async function removeCustom(item) {
-  if (!window.confirm(`确定删除自定义源「${item.name}」吗？`)) return
-  busy.value = item.id
-  try {
-    await api.deleteCustomSource(item.id)
-    sources.value = sources.value.filter((row) => row.id !== item.id)
-    notify(`${item.name} 已删除。`)
-  } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = ''
   }
@@ -323,12 +234,11 @@ async function save(item, login) {
       homeUrl: form.homeUrl,
       login: Boolean(login),
     })
-    notify(`${item.name} 凭据已保存。`)
-    form.password = ''
+    notify(`${item.name} 凭据已保存`, 'success')
     form.cookie = ''
     await load()
   } catch (err) {
-    notify(`${item.name}：${err.message}`, true)
+    notify(`${item.name}：${err.message}`, 'error')
   } finally {
     busy.value = ''
   }
@@ -339,9 +249,9 @@ async function toggleHidden(item) {
   try {
     const result = await api.updateSource(item.id, { hidden: !item.hidden })
     item.hidden = Boolean(result.hidden)
-    notify(item.hidden ? `${item.name} 已从探索发现隐藏。` : `${item.name} 已显示在探索发现。`)
+    notify(item.hidden ? `${item.name} 已从探索发现隐藏` : `${item.name} 已显示在探索发现`, 'success')
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = ''
   }
@@ -356,10 +266,10 @@ async function disconnect(item) {
     form.username = ''
     form.password = ''
     form.cookie = ''
-    notify(`${item.name} 的凭据已清除。`)
+    notify(`${item.name} 的凭据已清除`, 'success')
     await load()
   } catch (err) {
-    notify(err.message, true)
+    notify(err.message, 'error')
   } finally {
     busy.value = ''
   }
@@ -367,39 +277,7 @@ async function disconnect(item) {
 </script>
 
 <template>
-
-  <div class="card card-pad" style="margin-bottom: 18px">
-    <div class="inline">
-      <span class="stat-icon"><BookOpenCheck :size="18" /></span>
-      <div style="flex: 1; min-width: 220px">
-        <strong>Kototoro 拓展仓库</strong>
-        <p class="muted small" style="margin: 2px 0 0">
-          以 Kototoro 拓展仓库为源清单参考，用 Go 选择器适配器安全地接入站点；默认源为内置实现，保持不可删改。
-        </p>
-      </div>
-      <a v-if="repoUrl" class="btn secondary small" :href="repoUrl" target="_blank" rel="noreferrer">
-        <ExternalLink :size="14" />
-        仓库
-      </a>
-      <button class="btn secondary small" type="button" :disabled="repoBusy" @click="loadRepo">
-        <Loader2 v-if="repoBusy" :size="14" class="spin" />
-        <BookOpenCheck v-else :size="14" />
-        读取仓库
-      </button>
-      <button class="btn secondary small" type="button" :disabled="loading" @click="load">
-        <RefreshCw :size="14" :class="{ spin: loading }" />
-        刷新
-      </button>
-    </div>
-    <div v-if="repoInfo" class="repo-meta">
-      <span class="badge primary">{{ repoInfo.name || 'Kototoro Parsers' }}</span>
-      <span v-if="repoInfo.version" class="badge">v{{ repoInfo.version }}</span>
-      <span v-if="repoInfo.pkg" class="muted small mono">{{ repoInfo.pkg }}</span>
-    </div>
-    <p v-else-if="repoUrl" class="muted small" style="margin: 10px 0 0; word-break: break-all">{{ repoUrl }}</p>
-  </div>
-
-  <div class="toolbar">
+  <div class="toolbar repository-toolbar">
     <div class="segmented" role="tablist" aria-label="资源类型">
       <button type="button" :class="{ active: activeKind === 'comic' }" @click="activeKind = 'comic'">
         漫画源
@@ -409,170 +287,204 @@ async function disconnect(item) {
         书籍源
         <span class="segmented-count">{{ bookSources.length }}</span>
       </button>
+      <button type="button" :class="{ active: activeKind === 'repository' }" @click="activeKind = 'repository'">
+        拓展仓库
+        <span class="segmented-count">{{ repositories.length }}</span>
+      </button>
     </div>
     <span class="spacer" />
-    <button class="btn small" type="button" @click="openCreate(activeKind)">
+    <button v-if="activeKind === 'repository'" class="btn small" type="button" @click="openRepository">
       <Plus :size="15" />
-      添加{{ activeKind === 'book' ? '书籍源' : '漫画源' }}
+      添加仓库
+    </button>
+    <button v-else class="btn secondary small" type="button" :disabled="loading" @click="load">
+      <RefreshCw :size="15" :class="{ spin: loading }" />
+      刷新
     </button>
   </div>
 
   <div v-if="loading && !sources.length" class="empty">
     <Loader2 :size="22" class="spin" />
-    <span>加载资源</span>
+    <span>加载资源仓库</span>
   </div>
-  <div v-else class="source-grid">
-    <section
-      v-for="item in visibleSources"
-      :key="item.id"
-      class="card card-pad source-card"
-      :class="{ 'source-card-hidden': item.hidden }"
-      @click="openCategory(item)"
-    >
-      <div class="section-head" style="margin-bottom: 8px" @click.stop>
-        <div class="inline">
-          <img v-if="item.icon" class="source-favicon" :src="item.icon" alt="" />
-          <Server v-else :size="17" />
-          <h2>{{ item.name }}</h2>
-          <span v-if="isBuiltin(item)" class="badge">默认</span>
-          <span v-else class="badge primary">自定义</span>
-        </div>
-        <div class="inline">
-          <span v-if="connected(item.id)" class="badge success">已连接</span>
-          <span v-else-if="item.needsLogin" class="badge">未连接</span>
-          <button
-            v-if="item.filters?.length"
-            class="btn secondary small"
-            type="button"
-            :disabled="busy === item.id"
-            @click="openCategory(item)"
-          >
-            <SlidersHorizontal :size="14" />
-            分类
-          </button>
-          <button class="btn secondary small" type="button" :disabled="busy === item.id" @click="toggleHidden(item)">
-            <Loader2 v-if="busy === item.id" :size="14" class="spin" />
-            <EyeOff v-else-if="!item.hidden" :size="14" />
-            <Eye v-else :size="14" />
-            {{ item.hidden ? '显示' : '隐藏' }}
-          </button>
-          <button
-            v-if="!isBuiltin(item)"
-            class="btn secondary small"
-            type="button"
-            :disabled="busy === item.id"
-            @click="openEdit(item)"
-          >
-            <Pencil :size="14" />
-            编辑
-          </button>
-          <button
-            v-if="!isBuiltin(item)"
-            class="btn danger small"
-            type="button"
-            :disabled="busy === item.id"
-            @click="removeCustom(item)"
-          >
-            <Trash2 :size="14" />
-          </button>
-        </div>
-      </div>
-      <p class="muted small source-card-summary" style="margin-top: 0" @click.stop>{{ item.description || item.homepage }}</p>
-      <div class="tag-list" @click.stop>
-        <span v-if="item.needsLogin" class="badge warning">需要登录</span>
-        <span class="badge" :class="item.canSearch ? 'primary' : ''">{{ item.canSearch ? '支持搜索' : '不支持搜索' }}</span>
-        <span class="badge" :class="item.canBrowse ? 'primary' : ''">{{ item.canBrowse ? '支持浏览' : '不支持浏览' }}</span>
-        <span v-if="item.hidden" class="badge">已隐藏</span>
-      </div>
-      <a v-if="item.homepage && !isBuiltin(item)" class="muted small" :href="item.homepage" target="_blank" rel="noreferrer" @click.stop>
-        {{ item.homepage }}
-      </a>
 
-      <div v-if="forms[item.id] && isBuiltin(item)" class="source-account-block" @click.stop>
-        <template v-if="item.id === 'picacg'">
-          <label class="field" style="margin-bottom: 10px">
-            <span>账号（邮箱或用户名）</span>
-            <input v-model="forms[item.id].username" class="input" autocomplete="username" placeholder="pica@example.com" />
-          </label>
-          <label class="field" style="margin-bottom: 12px">
-            <span>密码</span>
-            <PasswordInput v-model="forms[item.id].password" autocomplete="current-password" />
-          </label>
-        </template>
-        <template v-else-if="item.id === 'jmcomic' || item.id === 'baozimh'">
-          <label class="field" style="margin-bottom: 10px">
-            <span>网站地址（可选内置镜像，也可自定义）</span>
-            <SitePicker
-              v-model="forms[item.id].homeUrl"
-              :options="item.sites || []"
-              :placeholder="item.homepage"
-            />
-          </label>
-          <label class="field" style="margin-bottom: 12px">
-            <span>Cookie（可选，用于通过校验）</span>
-            <textarea v-model="forms[item.id].cookie" class="textarea" placeholder="粘贴浏览器中的 Cookie" />
-          </label>
-        </template>
-        <p v-else class="muted small">该内置书籍源无需额外凭据。</p>
-
-        <div v-if="item.needsLogin || item.id === 'jmcomic' || item.id === 'baozimh'" class="inline">
-          <button
-            v-if="item.id === 'picacg'"
-            class="btn small"
-            type="button"
-            :disabled="busy === item.id"
-            @click="save(item, true)"
-          >
-            <Loader2 v-if="busy === item.id" :size="14" class="spin" />
-            <KeyRound v-else :size="14" />
-            登录并保存
-          </button>
-          <button v-else class="btn small" type="button" :disabled="busy === item.id" @click="save(item, false)">
-            <Loader2 v-if="busy === item.id" :size="14" class="spin" />
-            <Save v-else :size="14" />
-            保存凭据
-          </button>
-          <button
-            v-if="item.id === 'picacg'"
-            class="btn secondary small"
-            type="button"
-            :disabled="busy === item.id"
-            @click="save(item, false)"
-          >
-            <Save :size="14" />
-            仅保存账号
-          </button>
-          <button
-            v-if="accountOf(item.id)"
-            class="btn danger small"
-            type="button"
-            :disabled="busy === item.id"
-            @click="disconnect(item)"
-          >
-            <Trash2 :size="14" />
-            清除
-          </button>
-          <span v-if="accountOf(item.id)?.updatedAt" class="muted small">
-            更新于 {{ new Date(accountOf(item.id).updatedAt).toLocaleString() }}
-          </span>
+  <template v-else-if="activeKind !== 'repository'">
+    <div v-if="!visibleSources.length" class="card empty">
+      <Server :size="24" />
+      <p>暂无{{ activeKind === 'book' ? '书籍' : '漫画' }}来源</p>
+    </div>
+    <div v-else class="source-grid">
+      <section
+        v-for="item in visibleSources"
+        :key="item.id"
+        class="card card-pad source-card"
+        :class="{ 'source-card-hidden': item.hidden }"
+      >
+        <div class="section-head source-card-head">
+          <div class="source-title-line">
+            <img v-if="item.icon" class="source-favicon" :src="item.icon" alt="" />
+            <Server v-else :size="18" />
+            <h2>{{ item.name }}</h2>
+            <span v-if="isBuiltin(item)" class="badge">默认</span>
+            <span v-else class="badge primary">拓展</span>
+          </div>
+          <div class="source-card-actions">
+            <span v-if="connected(item.id)" class="badge success">已连接</span>
+            <span v-else-if="item.needsLogin" class="badge">未连接</span>
+            <button
+              v-if="categoryFilters(item).length"
+              class="btn secondary small"
+              type="button"
+              :disabled="busy === item.id"
+              @click="openCategory(item)"
+            >
+              <SlidersHorizontal :size="14" />
+              分类
+            </button>
+            <button class="btn secondary small" type="button" :disabled="busy === item.id" @click="toggleHidden(item)">
+              <Loader2 v-if="busy === item.id" :size="14" class="spin" />
+              <EyeOff v-else-if="!item.hidden" :size="14" />
+              <Eye v-else :size="14" />
+              {{ item.hidden ? '显示' : '隐藏' }}
+            </button>
+          </div>
         </div>
-      </div>
-    </section>
-  </div>
+        <p class="muted small source-card-summary">{{ item.description || item.homepage }}</p>
+        <div class="tag-list">
+          <span v-if="item.needsLogin" class="badge warning">需要登录</span>
+          <span class="badge" :class="item.canSearch ? 'primary' : ''">{{ item.canSearch ? '支持搜索' : '不支持搜索' }}</span>
+          <span class="badge" :class="item.canBrowse ? 'primary' : ''">{{ item.canBrowse ? '支持浏览' : '不支持浏览' }}</span>
+          <span v-if="item.hidden" class="badge">已隐藏</span>
+        </div>
+
+        <div v-if="forms[item.id] && (item.needsLogin || item.id === 'jmcomic' || item.id === 'baozimh')" class="source-account-block">
+          <template v-if="item.id === 'picacg'">
+            <label class="field">
+              <span>账号（邮箱或用户名）</span>
+              <input v-model="forms[item.id].username" class="input" autocomplete="username" placeholder="pica@example.com" />
+            </label>
+            <label class="field">
+              <span>密码</span>
+              <PasswordInput v-model="forms[item.id].password" autocomplete="current-password" />
+            </label>
+          </template>
+          <template v-else>
+            <label class="field">
+              <span>网站地址（内置备用地址可选，也可自定义）</span>
+              <SitePicker v-model="forms[item.id].homeUrl" :options="item.sites || []" :placeholder="item.homepage" />
+            </label>
+            <label class="field">
+              <span>Cookie（可选，用于通过站点校验）</span>
+              <textarea v-model="forms[item.id].cookie" class="textarea" placeholder="粘贴浏览器中的 Cookie" />
+            </label>
+          </template>
+          <div class="source-account-actions">
+            <button
+              v-if="item.id === 'picacg'"
+              class="btn small"
+              type="button"
+              :disabled="busy === item.id"
+              @click="save(item, true)"
+            >
+              <Loader2 v-if="busy === item.id" :size="14" class="spin" />
+              <KeyRound v-else :size="14" />
+              登录并保存
+            </button>
+            <button v-else class="btn small" type="button" :disabled="busy === item.id" @click="save(item, false)">
+              <Loader2 v-if="busy === item.id" :size="14" class="spin" />
+              <Save v-else :size="14" />
+              保存凭据
+            </button>
+            <button v-if="accountOf(item.id)" class="btn danger small" type="button" :disabled="busy === item.id" @click="disconnect(item)">
+              <Trash2 :size="14" />
+              清除
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </template>
+
+  <template v-else>
+    <div v-if="!repositories.length" class="card empty repository-empty">
+      <Boxes :size="28" />
+      <p>还没有拓展仓库。添加 Kototoro、Mihon 或其他兼容仓库后即可在这里同步来源。</p>
+      <button class="btn small" type="button" @click="openRepository">
+        <Plus :size="15" />
+        添加第一个仓库
+      </button>
+    </div>
+    <div v-else class="repository-list">
+      <article v-for="repository in repositories" :key="repository.id" class="card repository-card">
+        <header class="repository-head">
+          <button class="repository-toggle" type="button" @click="expandedRepositories[repository.id] = !expandedRepositories[repository.id]">
+            <ChevronDown :size="18" :class="{ rotated: expandedRepositories[repository.id] }" />
+            <span class="repository-icon"><Boxes :size="20" /></span>
+            <span class="repository-title">
+              <strong>{{ repository.name }}</strong>
+              <small>{{ repository.url }}</small>
+            </span>
+          </button>
+          <div class="repository-actions">
+            <span class="badge">{{ repository.kind || 'json' }}</span>
+            <span class="badge" :class="repository.status === 'ok' ? 'success' : repository.status === 'error' ? 'danger' : ''">
+              {{ repository.status === 'ok' ? `${repository.extensions?.length || 0} 个来源` : repository.status === 'error' ? '同步失败' : '待同步' }}
+            </span>
+            <button class="btn secondary small" type="button" :disabled="busy === `repository-${repository.id}`" @click="syncRepository(repository)">
+              <Loader2 v-if="busy === `repository-${repository.id}`" :size="14" class="spin" />
+              <RefreshCw v-else :size="14" />
+              同步
+            </button>
+            <button class="btn danger small" type="button" :disabled="busy === `repository-${repository.id}`" @click="removeRepository(repository)">
+              <Trash2 :size="14" />
+            </button>
+          </div>
+        </header>
+        <p v-if="repository.error" class="repository-error">{{ repository.error }}</p>
+        <div v-if="expandedRepositories[repository.id]" class="extension-list">
+          <div v-if="!repository.extensions?.length" class="empty compact">同步后在这里显示仓库来源。</div>
+          <article v-for="extension in repository.extensions || []" :key="extension.id" class="extension-row">
+            <img v-if="extension.icon" :src="extension.icon" alt="" />
+            <PackagePlus v-else :size="19" />
+            <div class="extension-meta">
+              <strong>{{ extension.name }}</strong>
+              <small>
+                {{ extension.packageName || extension.kind }}<template v-if="extension.version"> · v{{ extension.version }}</template>
+              </small>
+            </div>
+            <span class="badge">{{ extension.kind }}</span>
+            <span v-if="extension.pluginType" class="badge">{{ extension.pluginType }}</span>
+            <button
+              class="btn small"
+              type="button"
+              :class="{ secondary: !extension.installable }"
+              :disabled="busy === `extension-${extension.id}`"
+              @click="importExtension(repository, extension)"
+            >
+              <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
+              <Check v-else-if="extension.installable" :size="14" />
+              <ShieldCheck v-else :size="14" />
+              {{ extension.installable ? '添加来源' : '仅登记' }}
+            </button>
+          </article>
+        </div>
+      </article>
+    </div>
+  </template>
 
   <div v-if="categoryOpen" class="modal-backdrop" @click.self="categoryOpen = false">
     <div class="modal">
       <div class="modal-head">
         <div>
           <h2>分类显示设置</h2>
-          <p class="muted small">{{ categorySource?.name }} · 勾选后不在探索发现显示</p>
+          <p class="muted small">{{ categorySource?.name }} · 默认全部加入探索发现，取消勾选后排除</p>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭" @click="categoryOpen = false">
           <X :size="18" />
         </button>
       </div>
       <div class="modal-body">
-        <section v-for="group in categorySource?.filters || []" :key="group.key" class="settings-block">
+        <section v-for="group in categoryFilters(categorySource || {})" :key="group.key" class="settings-block">
           <h3>{{ group.label }}</h3>
           <div class="category-picker-grid">
             <label v-for="option in group.options || []" :key="`${group.key}-${option.value}`" class="category-toggle">
@@ -597,124 +509,39 @@ async function disconnect(item) {
     </div>
   </div>
 
-  <div v-if="editorOpen" class="modal-backdrop" @click.self="editorOpen = false">
-    <div class="modal modal-lg">
+  <div v-if="repositoryOpen" class="modal-backdrop" @click.self="repositoryOpen = false">
+    <div class="modal">
       <div class="modal-head">
         <div>
-          <h2>{{ editorMode === 'create' ? '添加自定义源' : '编辑自定义源' }}</h2>
-          <p class="muted small">使用选择器描述站点结构，保存后即可在探索发现中浏览。</p>
+          <h2>添加拓展仓库</h2>
+          <p class="muted small">填入服务器可访问的仓库清单地址，添加后会自动同步来源。</p>
         </div>
-        <button class="btn ghost icon" type="button" aria-label="关闭" @click="editorOpen = false">
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="repositoryOpen = false">
           <X :size="18" />
         </button>
       </div>
       <div class="modal-body">
-        <div class="settings-grid">
-          <label class="field">
-            <span>源 ID</span>
-            <input v-model="editor.id" class="input" :disabled="editorMode === 'edit'" placeholder="example-comic" />
-          </label>
-          <label class="field">
-            <span>名称</span>
-            <input v-model="editor.name" class="input" placeholder="示例漫画" />
-          </label>
-          <label class="field">
-            <span>类型</span>
-            <select v-model="editor.kind" class="input">
-              <option value="comic">漫画源</option>
-              <option value="book">书籍源</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>首页地址</span>
-            <input v-model="editor.homepage" class="input" placeholder="https://example.com" />
-          </label>
-          <label class="field">
-            <span>图标地址（可选）</span>
-            <input v-model="editor.icon" class="input" placeholder="https://example.com/favicon.ico" />
-          </label>
-          <label class="field">
-            <span>拓展仓库地址（可选）</span>
-            <input v-model="editor.repoUrl" class="input" placeholder="https://raw.githubusercontent.com/.../index.min.json" />
-          </label>
-        </div>
         <label class="field">
-          <span>简介</span>
-          <input v-model="editor.description" class="input" placeholder="来源说明" />
+          <span>仓库名称</span>
+          <input v-model="repositoryForm.name" class="input" placeholder="Kototoro Parsers" />
         </label>
-
-        <details class="advanced-box" open>
-          <summary>选择器配置</summary>
-          <div class="settings-grid">
-            <label class="field">
-              <span>搜索地址（支持 {query} / {page} 占位）</span>
-              <input v-model="editor.searchUrl" class="input" placeholder="https://example.com/search?q={query}&page={page}" />
-            </label>
-            <label class="field">
-              <span>浏览地址（支持 {page} 占位）</span>
-              <input v-model="editor.browseUrl" class="input" placeholder="https://example.com/list?page={page}" />
-            </label>
-            <label class="field">
-              <span>列表项选择器</span>
-              <input v-model="editor.itemSelector" class="input" placeholder=".comic-item" />
-            </label>
-            <label class="field">
-              <span>标题选择器</span>
-              <input v-model="editor.titleSelector" class="input" placeholder=".title" />
-            </label>
-            <label class="field">
-              <span>封面选择器</span>
-              <input v-model="editor.coverSelector" class="input" placeholder="img" />
-            </label>
-            <label class="field">
-              <span>作品链接选择器</span>
-              <input v-model="editor.linkSelector" class="input" placeholder="a" />
-            </label>
-            <label class="field">
-              <span>详情标题选择器</span>
-              <input v-model="editor.detailTitleSelector" class="input" placeholder="h1" />
-            </label>
-            <label class="field">
-              <span>作者选择器</span>
-              <input v-model="editor.authorSelector" class="input" placeholder=".author" />
-            </label>
-            <label class="field">
-              <span>简介选择器</span>
-              <input v-model="editor.descriptionSelector" class="input" placeholder=".summary" />
-            </label>
-            <label class="field">
-              <span>章节项选择器</span>
-              <input v-model="editor.chapterSelector" class="input" placeholder=".chapter-item" />
-            </label>
-            <label class="field">
-              <span>章节标题选择器</span>
-              <input v-model="editor.chapterTitleSelector" class="input" placeholder="a" />
-            </label>
-            <label class="field">
-              <span>章节链接选择器</span>
-              <input v-model="editor.chapterLinkSelector" class="input" placeholder="a" />
-            </label>
-            <label class="field">
-              <span>阅读页图片选择器</span>
-              <input v-model="editor.pageImageSelector" class="input" placeholder=".reader img" />
-            </label>
-            <label class="field">
-              <span>书籍正文选择器</span>
-              <input v-model="editor.contentSelector" class="input" placeholder=".content" />
-            </label>
-            <label class="field">
-              <span>允许的图床域名（逗号分隔）</span>
-              <input v-model="editor.allowedHosts" class="input" placeholder="cdn.example.com" />
-            </label>
-          </div>
-        </details>
+        <label class="field">
+          <span>仓库地址</span>
+          <input v-model="repositoryForm.url" class="input" placeholder="https://example.com/index.min.json" />
+        </label>
+        <label class="field">
+          <span>仓库类型</span>
+          <select v-model="repositoryForm.kind" class="input">
+            <option v-for="kind in repositoryKinds" :key="kind.value" :value="kind.value">{{ kind.label }}</option>
+          </select>
+        </label>
       </div>
       <div class="modal-foot">
-        <button class="btn secondary" type="button" @click="editorOpen = false">取消</button>
-        <button class="btn" type="button" :disabled="busy === editor.id" @click="saveEditor">
-          <Loader2 v-if="busy === editor.id" :size="15" class="spin" />
-          <Save v-else :size="15" />
-          保存
+        <button class="btn secondary" type="button" @click="repositoryOpen = false">取消</button>
+        <button class="btn" type="button" :disabled="busy === 'repository-create'" @click="createRepository">
+          <Loader2 v-if="busy === 'repository-create'" :size="15" class="spin" />
+          <Plus v-else :size="15" />
+          添加并同步
         </button>
       </div>
     </div>

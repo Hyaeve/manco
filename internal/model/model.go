@@ -180,3 +180,37 @@ type CustomSource struct {
 	CreatedAt   time.Time       `json:"createdAt"`
 	UpdatedAt   time.Time       `json:"updatedAt"`
 }
+
+type ExtensionRepository struct {
+	ID          string                `json:"id"`
+	Name        string                `json:"name"`
+	Kind        string                `json:"kind"`
+	URL         string                `json:"url"`
+	Description string                `json:"description,omitempty"`
+	Icon        string                `json:"icon,omitempty"`
+	Enabled     bool                  `json:"enabled"`
+	Catalog     json.RawMessage       `json:"catalog,omitempty"`
+	Extensions  []RepositoryExtension `json:"extensions,omitempty"`
+	Status      string                `json:"status,omitempty"`
+	Error       string                `json:"error,omitempty"`
+	LastSyncAt  *time.Time            `json:"lastSyncAt,omitempty"`
+	LastError   string                `json:"lastError,omitempty"`
+	CreatedAt   time.Time             `json:"createdAt"`
+	UpdatedAt   time.Time             `json:"updatedAt"`
+}
+
+type RepositoryExtension struct {
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	PackageName string          `json:"packageName,omitempty"`
+	Version     string          `json:"version,omitempty"`
+	Kind        string          `json:"kind"`
+	PluginType  string          `json:"pluginType"`
+	Description string          `json:"description,omitempty"`
+	Homepage    string          `json:"homepage,omitempty"`
+	Icon        string          `json:"icon,omitempty"`
+	InstallURL  string          `json:"installUrl,omitempty"`
+	Installable bool            `json:"installable"`
+	Config      json.RawMessage `json:"config,omitempty"`
+	Raw         json.RawMessage `json:"raw,omitempty"`
+}

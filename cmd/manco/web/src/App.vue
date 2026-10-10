@@ -44,6 +44,7 @@ const themeOptions = [
   { id: 'dark', label: '夜间', icon: Moon },
   { id: 'system', label: '跟随系统', icon: Monitor },
 ]
+const activeTheme = computed(() => themeOptions.find((item) => item.id === theme.value) || themeOptions[2])
 
 const media = window.matchMedia('(prefers-color-scheme: dark)')
 
@@ -53,7 +54,7 @@ const navItems = [
   { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
   { name: 'downloads', label: '下载列表', to: '/downloads', icon: Download },
   { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
-  { name: 'sources', label: '资源库', to: '/sources', icon: Server },
+  { name: 'sources', label: '资源仓库', to: '/sources', icon: Server },
 ]
 const logsItem = { name: 'logs', label: '运行日志', to: '/logs', icon: ScrollText }
 const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }
@@ -66,7 +67,7 @@ const pageTitle = computed(() => {
   if (route.name === 'subscriptions') return '订阅清单'
   if (route.name === 'downloads') return '下载列表'
   if (route.name === 'local') return '本地库'
-  if (route.name === 'sources') return '资源库'
+  if (route.name === 'sources') return '资源仓库'
   if (route.name === 'settings') return '系统设置'
   if (route.name === 'logs') return '运行日志'
   return 'Manco'
@@ -82,8 +83,6 @@ function applyTheme() {
   document.documentElement.dataset.theme = resolved
   document.documentElement.dataset.themePreference = theme.value
 }
-
-
 
 watch(theme, (value) => {
   localStorage.setItem('manco-theme', value)
@@ -149,6 +148,11 @@ async function signOut() {
   router.push({ name: 'login' })
 }
 
+function cycleTheme() {
+  const index = themeOptions.findIndex((item) => item.id === theme.value)
+  theme.value = themeOptions[(index + 1) % themeOptions.length].id
+}
+
 function goSection(section) {
   router.push({ name: 'settings', query: { section } })
 }
@@ -174,32 +178,35 @@ function activityIcon(level) {
       </div>
       <nav aria-label="主导航">
         <div class="nav-group">
-          <RouterLink
+          <button
             v-for="item in navItems"
             :key="item.name"
-            :to="item.to"
+            type="button"
             :aria-current="route.name === item.name ? 'page' : undefined"
             :class="{ active: route.name === item.name }"
+            @click="router.push(item.to)"
           >
             <component :is="item.icon" :size="21" />
             <span>{{ item.label }}</span>
-          </RouterLink>
-          <RouterLink
-            :to="logsItem.to"
+          </button>
+          <button
+            type="button"
             :aria-current="route.name === logsItem.name ? 'page' : undefined"
             :class="{ active: route.name === logsItem.name, 'nav-bottom': true }"
+            @click="router.push(logsItem.to)"
           >
             <component :is="logsItem.icon" :size="21" />
             <span>{{ logsItem.label }}</span>
-          </RouterLink>
-          <RouterLink
-            :to="systemItem.to"
+          </button>
+          <button
+            type="button"
             :aria-current="route.name === systemItem.name ? 'page' : undefined"
             :class="{ active: route.name === systemItem.name }"
+            @click="router.push(systemItem.to)"
           >
             <component :is="systemItem.icon" :size="21" />
             <span>{{ systemItem.label }}</span>
-          </RouterLink>
+          </button>
         </div>
       </nav>
     </aside>
@@ -217,20 +224,15 @@ function activityIcon(level) {
           </template>
         </nav>
         <div class="topbar-actions">
-          <div class="theme-switch" role="group" aria-label="主题">
-            <button
-              v-for="option in themeOptions"
-              :key="option.id"
-              class="icon-btn"
-              :class="{ selected: theme === option.id }"
-              type="button"
-              :aria-label="`主题：${option.label}`"
-              :title="`主题：${option.label}`"
-              @click="theme = option.id"
-            >
-              <component :is="option.icon" :size="18" />
-            </button>
-          </div>
+          <button
+            class="icon-btn theme-cycle"
+            type="button"
+            :aria-label="`当前主题：${activeTheme.label}`"
+            :title="`主题：${activeTheme.label}（点击切换）`"
+            @click="cycleTheme"
+          >
+            <component :is="activeTheme.icon" :size="18" />
+          </button>
           <div class="topbar-menu notification-control" @click.stop>
             <button class="icon-btn notification-button" type="button" aria-label="活动通知" @click="toggleActivity">
               <Bell :size="20" />
@@ -295,11 +297,11 @@ function activityIcon(level) {
       v-for="notice in notices"
       :key="notice.id"
       class="toast"
-      :class="{ error: notice.error }"
-      :role="notice.error ? 'alert' : 'status'"
+      :class="notice.type || (notice.error ? 'error' : 'info')"
+      :role="notice.type === 'error' ? 'alert' : 'status'"
     >
       <span class="toast-symbol">
-        <X v-if="notice.error" :size="15" />
+        <X v-if="notice.type === 'error'" :size="15" />
         <CircleCheck v-else :size="15" />
       </span>
       <span>{{ notice.message }}</span>
