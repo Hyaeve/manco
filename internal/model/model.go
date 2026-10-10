@@ -25,49 +25,54 @@ type SourceAccount struct {
 }
 
 type Subscription struct {
-	ID               int64      `json:"id"`
-	SourceID         string     `json:"sourceId"`
-	ComicID          string     `json:"comicId"`
-	Title            string     `json:"title"`
-	Cover            string     `json:"cover"`
-	Author           string     `json:"author"`
-	Enabled          bool       `json:"enabled"`
-	AutoDownload     bool       `json:"autoDownload"`
-	CronExpr         string     `json:"cronExpr"`
-	LastChapterID    string     `json:"lastChapterId"`
-	LastChapterTitle string     `json:"lastChapterTitle"`
-	LastChapterOrder float64    `json:"lastChapterOrder"`
-	LastCheckedAt    *time.Time `json:"lastCheckedAt,omitempty"`
-	CreatedAt        time.Time  `json:"createdAt"`
-	UpdatedAt        time.Time  `json:"updatedAt"`
-	ComicStatus      string     `json:"comicStatus,omitempty"`
-	LastNewChapterAt *time.Time `json:"lastNewChapterAt,omitempty"`
-	DisabledAt       *time.Time `json:"disabledAt,omitempty"`
-	CompletedAt      *time.Time `json:"completedAt,omitempty"`
-	ArchivedAt       *time.Time `json:"archivedAt,omitempty"`
-	ArchiveReason    string     `json:"archiveReason,omitempty"`
+	DownloadDir         string     `json:"downloadDir"`
+	ConvertToSimplified bool       `json:"convertToSimplified"`
+	ID                  int64      `json:"id"`
+	SourceID            string     `json:"sourceId"`
+	ComicID             string     `json:"comicId"`
+	Title               string     `json:"title"`
+	Cover               string     `json:"cover"`
+	Author              string     `json:"author"`
+	Enabled             bool       `json:"enabled"`
+	AutoDownload        bool       `json:"autoDownload"`
+	CronExpr            string     `json:"cronExpr"`
+	LastChapterID       string     `json:"lastChapterId"`
+	LastChapterTitle    string     `json:"lastChapterTitle"`
+	LastChapterOrder    float64    `json:"lastChapterOrder"`
+	ChapterCount        int        `json:"chapterCount,omitempty"`
+	LastCheckedAt       *time.Time `json:"lastCheckedAt,omitempty"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
+	ComicStatus         string     `json:"comicStatus,omitempty"`
+	LastNewChapterAt    *time.Time `json:"lastNewChapterAt,omitempty"`
+	DisabledAt          *time.Time `json:"disabledAt,omitempty"`
+	CompletedAt         *time.Time `json:"completedAt,omitempty"`
+	ArchivedAt          *time.Time `json:"archivedAt,omitempty"`
+	ArchiveReason       string     `json:"archiveReason,omitempty"`
 }
 
 type DownloadJob struct {
-	ID             int64      `json:"id"`
-	SourceID       string     `json:"sourceId"`
-	ComicID        string     `json:"comicId"`
-	ComicTitle     string     `json:"comicTitle"`
-	ComicCover     string     `json:"comicCover"`
-	ChapterID      string     `json:"chapterId"`
-	ChapterTitle   string     `json:"chapterTitle"`
-	ChapterOrder   float64    `json:"chapterOrder"`
-	Status         string     `json:"status"`
-	TotalPages     int        `json:"totalPages"`
-	CompletedPages int        `json:"completedPages"`
-	FilePath       string     `json:"filePath,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	RetryCount     int        `json:"retryCount"`
-	NextRetryAt    *time.Time `json:"nextRetryAt,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
-	StartedAt      *time.Time `json:"startedAt,omitempty"`
-	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
+	DownloadDir         string     `json:"downloadDir"`
+	ConvertToSimplified bool       `json:"convertToSimplified"`
+	ID                  int64      `json:"id"`
+	SourceID            string     `json:"sourceId"`
+	ComicID             string     `json:"comicId"`
+	ComicTitle          string     `json:"comicTitle"`
+	ComicCover          string     `json:"comicCover"`
+	ChapterID           string     `json:"chapterId"`
+	ChapterTitle        string     `json:"chapterTitle"`
+	ChapterOrder        float64    `json:"chapterOrder"`
+	Status              string     `json:"status"`
+	TotalPages          int        `json:"totalPages"`
+	CompletedPages      int        `json:"completedPages"`
+	FilePath            string     `json:"filePath,omitempty"`
+	Error               string     `json:"error,omitempty"`
+	RetryCount          int        `json:"retryCount"`
+	NextRetryAt         *time.Time `json:"nextRetryAt,omitempty"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	UpdatedAt           time.Time  `json:"updatedAt"`
+	StartedAt           *time.Time `json:"startedAt,omitempty"`
+	FinishedAt          *time.Time `json:"finishedAt,omitempty"`
 }
 
 type Stats struct {
@@ -78,6 +83,8 @@ type Stats struct {
 }
 
 type SourceInfo struct {
+	Builtin     bool          `json:"builtin,omitempty"`
+	Editable    bool          `json:"editable,omitempty"`
 	ID          string        `json:"id"`
 	Name        string        `json:"name"`
 	Kind        string        `json:"kind,omitempty"`
@@ -156,4 +163,19 @@ type SearchResult struct {
 type ComicDetail struct {
 	Comic    Comic     `json:"comic"`
 	Chapters []Chapter `json:"chapters"`
+}
+
+type CustomSource struct {
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Kind        string          `json:"kind"`
+	Description string          `json:"description"`
+	Homepage    string          `json:"homepage"`
+	Icon        string          `json:"icon,omitempty"`
+	RepoURL     string          `json:"repoUrl,omitempty"`
+	Config      json.RawMessage `json:"config"`
+	Enabled     bool            `json:"enabled"`
+	Hidden      bool            `json:"hidden"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
 }

@@ -101,7 +101,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
-		Icon:        "https://www.google.com/s2/favicons?domain=baozimh.com&sz=64",
+		Icon:        "/source-icons/baozimh.svg",
 		Sites:       append([]string(nil), defaultSites...),
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "题材", Options: baoziCategoryOptions},

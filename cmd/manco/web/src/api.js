@@ -32,6 +32,14 @@ export const api = {
   me: () => request('/api/auth/me'),
 
   sources: () => request('/api/sources'),
+  sourceRepo: () => request('/api/source-repo'),
+  createCustomSource: (payload) =>
+    request('/api/custom-sources', { method: 'POST', body: JSON.stringify(payload) }),
+  customSourceConfig: (id) => request(`/api/custom-sources/${encodeURIComponent(id)}`),
+  updateCustomSource: (id, payload) =>
+    request(`/api/custom-sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteCustomSource: (id) =>
+    request(`/api/custom-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   updateSource: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   saveAccount: (id, payload) =>
@@ -58,6 +66,7 @@ export const api = {
   deleteSubscription: (id) => request(`/api/subscriptions/${id}`, { method: 'DELETE' }),
   checkSubscription: (id) => request(`/api/subscriptions/${id}/check`, { method: 'POST' }),
   downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
+  archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
 
   downloads: (limit = 200) => request(`/api/downloads?limit=${limit}`),
   createDownload: (payload) => request('/api/downloads', { method: 'POST', body: JSON.stringify(payload) }),
@@ -84,6 +93,8 @@ export const api = {
   saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   stats: () => request('/api/stats'),
   logs: (limit = 300) => request(`/api/logs?limit=${limit}`),
+  activity: () => request('/api/activity'),
+  downloadDirectories: () => request('/api/download-directories'),
 
   imageUrl: (url, sourceId, referer) => {
     if (!url) return ''

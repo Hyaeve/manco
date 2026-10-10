@@ -87,7 +87,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
-		Icon:        "https://www.google.com/s2/favicons?domain=18comic.vip&sz=64",
+		Icon:        "/source-icons/jmcomic.svg",
 		Sites:       append([]string(nil), defaultSites...),
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "分类", Options: jmCategoryOptions},

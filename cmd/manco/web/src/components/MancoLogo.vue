@@ -14,21 +14,22 @@ defineProps({
     :aria-label="title"
     xmlns="http://www.w3.org/2000/svg"
   >
-    <rect x="2" y="2" width="60" height="60" rx="15" fill="#111827" />
-    <path d="M8 18h5M7 26h6M8 34h5" stroke="#FACC15" stroke-width="2.5" stroke-linecap="round" />
-    <rect x="12" y="15" width="40" height="34" rx="5" fill="#F8FAFC" />
-    <path d="M32 15v34" stroke="#111827" stroke-width="2.5" />
-    <rect x="17" y="20" width="10" height="9" rx="2" fill="#FB7185" />
-    <rect x="37" y="20" width="10" height="9" rx="2" fill="#38BDF8" />
-    <rect x="17" y="35" width="10" height="9" rx="2" fill="#FACC15" />
-    <rect x="37" y="35" width="10" height="9" rx="2" fill="#A78BFA" />
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="#312E81" />
     <path
-      d="M42 6h14a5 5 0 0 1 5 5v9a5 5 0 0 1-5 5h-4l-5 4v-4h-5a5 5 0 0 1-5-5v-9a5 5 0 0 1 5-5Z"
-      fill="#FFFFFF"
-      stroke="#111827"
-      stroke-width="2"
+      d="M12.5 18.5c6.4-2.4 12.2-2 19.5 2.1v28.2c-7.3-4.1-13.1-4.5-19.5-2.1V18.5Z"
+      fill="#F8FAFC"
+    />
+    <path
+      d="M51.5 18.5c-6.4-2.4-12.2-2-19.5 2.1v28.2c7.3-4.1 13.1-4.5 19.5-2.1V18.5Z"
+      fill="#C7D2FE"
+    />
+    <path
+      d="M32 23.5v15M25.5 32.5 32 39l6.5-6.5"
+      fill="none"
+      stroke="#FBBF24"
+      stroke-width="4"
+      stroke-linecap="round"
       stroke-linejoin="round"
     />
-    <path d="M44 11h2.4l2.1 3.2 2.1-3.2H53v7h-2.2v-3.5l-1.8 2.7h-.8l-1.8-2.7V18H44Z" fill="#111827" />
   </svg>
 </template>

@@ -132,13 +132,15 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 				continue
 			}
 			_, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
-				SourceID:     subscription.SourceID,
-				ComicID:      subscription.ComicID,
-				ComicTitle:   subscription.Title,
-				ComicCover:   subscription.Cover,
-				ChapterID:    chapter.ID,
-				ChapterTitle: chapter.Title,
-				ChapterOrder: chapter.Order,
+				SourceID:            subscription.SourceID,
+				ComicID:             subscription.ComicID,
+				ComicTitle:          subscription.Title,
+				ComicCover:          subscription.Cover,
+				ChapterID:           chapter.ID,
+				ChapterTitle:        chapter.Title,
+				ChapterOrder:        chapter.Order,
+				DownloadDir:         subscription.DownloadDir,
+				ConvertToSimplified: subscription.ConvertToSimplified,
 			})
 			if err != nil {
 				s.logger.Printf("scheduler: queue %s/%s: %v", subscription.Title, chapter.Title, err)
@@ -201,13 +203,15 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 	}
 	newest := chapters[len(chapters)-1]
 	job, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
-		SourceID:     subscription.SourceID,
-		ComicID:      subscription.ComicID,
-		ComicTitle:   subscription.Title,
-		ComicCover:   subscription.Cover,
-		ChapterID:    newest.ID,
-		ChapterTitle: newest.Title,
-		ChapterOrder: newest.Order,
+		SourceID:            subscription.SourceID,
+		ComicID:             subscription.ComicID,
+		ComicTitle:          subscription.Title,
+		ComicCover:          subscription.Cover,
+		ChapterID:           newest.ID,
+		ChapterTitle:        newest.Title,
+		ChapterOrder:        newest.Order,
+		DownloadDir:         subscription.DownloadDir,
+		ConvertToSimplified: subscription.ConvertToSimplified,
 	})
 	if err != nil {
 		return model.DownloadJob{}, err

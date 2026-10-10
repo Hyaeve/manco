@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="包子漫画">
+  <path d="M12 30c0-13 9-21 20-21s20 8 20 21c0 13-9 23-20 23S12 43 12 30Z" fill="#f4c95d"/>
+  <path d="M18 26c4-8 23-11 30-1-5-1-10 1-13 5-4-4-10-6-17-4Z" fill="#fff3c4"/>
+  <path d="M23 37c5 3 13 3 18 0" fill="none" stroke="#b7791f" stroke-width="4" stroke-linecap="round"/>
+  <path d="M29 13c0-4 3-7 7-7 1 4-1 7-7 7Z" fill="#77b255"/>
+</svg>

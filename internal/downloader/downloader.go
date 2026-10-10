@@ -206,6 +206,22 @@ func (e *Engine) pageConcurrency() int {
 	return e.maxPageConcurrency
 }
 
+func (e *Engine) jobDownloadDir(job model.DownloadJob) (string, error) {
+	root := strings.TrimSpace(job.DownloadDir)
+	if root == "" {
+		root = e.downloadDir
+	}
+	root = filepath.Clean(root)
+	if !filepath.IsAbs(root) {
+		root = filepath.Join(e.downloadDir, root)
+	}
+	root = filepath.Clean(root)
+	if root == "." || root == string(filepath.Separator) || root == "" {
+		return "", errors.New("下载位置不安全")
+	}
+	return root, nil
+}
+
 func (e *Engine) loop(ctx context.Context) {
 	defer func() {
 		e.mu.Lock()
@@ -384,7 +400,11 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 	_ = e.store.UpdateDownloadJob(ctx, job.ID, "running", len(pages), 0, "", "")
 
-	tempDir := filepath.Join(e.downloadDir, ".tmp", fmt.Sprintf("job-%d", job.ID))
+	downloadRoot, err := e.jobDownloadDir(job)
+	if err != nil {
+		return err
+	}
+	tempDir := filepath.Join(downloadRoot, ".tmp", fmt.Sprintf("job-%d", job.ID))
 	if err := os.RemoveAll(tempDir); err != nil {
 		return err
 	}
@@ -475,7 +495,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
-	if e.convertToSimplified {
+	if job.ConvertToSimplified {
 		comicTitle = convertToSimplifiedText(comicTitle)
 		chapterTitle = convertToSimplifiedText(chapterTitle)
 		metadata.Title = convertToSimplifiedText(metadata.Title)
@@ -486,7 +506,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
-	comicDir := filepath.Join(e.downloadDir, SafeName(comicTitle))
+	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	e.metaMu.Lock()
 	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, len(pages))
 	e.metaMu.Unlock()
@@ -588,7 +608,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	} else {
 		e.logger.Printf("downloader: book detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
 	}
-	if e.convertToSimplified {
+	if job.ConvertToSimplified {
 		text = convertToSimplifiedText(text)
 		comicTitle = convertToSimplifiedText(comicTitle)
 		chapterTitle = convertToSimplifiedText(chapterTitle)
@@ -596,7 +616,11 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		metadata.Author = convertToSimplifiedText(metadata.Author)
 		metadata.Description = convertToSimplifiedText(metadata.Description)
 	}
-	comicDir := filepath.Join(e.downloadDir, SafeName(comicTitle))
+	downloadRoot, err := e.jobDownloadDir(job)
+	if err != nil {
+		return err
+	}
+	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return err
 	}

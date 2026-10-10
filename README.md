@@ -10,8 +10,8 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 - 首次启动进入创建账号页；登录后可在「设置 → 账号设置」中修改用户名和密码。
 - 漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**。
 - 书籍源：**神凑轻小说**与 **Project Gutenberg**。「资源」页分为「漫画源 / 书籍源」两个标签，书籍按章节或整本下载为纯文本。
-- 「本地库」页面直接浏览容器 `downloads` 目录，可查看已下载的漫画 / 书籍、展开文件列表并下载或预览。
-- 「系统日志」支持原始文本与结构化列表切换，并记住上次选择；同一份日志也会输出到容器标准输出，可用 `docker logs -f Manco` 查看。
+- 「本地库」页面浏览已经配置或选择过的下载目录，可查看已下载的漫画 / 书籍、展开文件列表并下载或预览。
+- 「运行日志」支持原始文本与结构化列表切换，并记住上次选择；同一份日志也会输出到容器标准输出，可用 `docker logs -f Manco` 查看。
 - 支持搜索、浏览、作品详情、章节列表、勾选章节批量下载。
 - 发现页分为「漫画源 / 书籍源」两个标签，源标签与搜索框位于同一行，各源筛选条件会按浏览器持久化。
 - 封面网格每页加载 30 项，使用虚拟列表只渲染可视行；支持输入页码快速跳转；进入作品详情再返回会恢复到原来的源、页码与滚动位置。
@@ -69,7 +69,9 @@ services:
       TZ: "Asia/Shanghai"
     volumes:
       - ./data:/app/data
-      - ./downloads:/app/downloads
+      # 下载位置在「系统设置 → 下载设置」和订阅任务设置里选择/填写。
+      # 需要自定义下载目录时，按需添加宿主机目录映射，例如：
+      # - /vol4/1000/downloads/manco:/downloads
 ```
 
 ```bash
@@ -103,7 +105,7 @@ docker compose up -d
 | 容器路径 | 宿主机路径 | 说明 |
 | --- | --- | --- |
 | `/app/data` | `./data` | SQLite 数据库、会话、加密密钥 `.secret` |
-| `/app/downloads` | `./downloads` | 下载的 CBZ 文件 |
+| 自定义下载目录 | 按需映射 | 在「系统设置 → 下载设置」为订阅选择/填写容器内路径，如 `/downloads/manco` |
 
 ## 环境变量
 
@@ -121,7 +123,7 @@ docker compose up -d
 
 ## 漫画源配置
 
-登录后在「资源」页面配置，页面分为「漫画源」与「书籍源」两个标签：
+登录后在「资源库」页面配置，页面分为「漫画源」与「书籍源」两个标签。包子、哔咔、禁漫三个默认源不可删除或改名；自定义源可通过 Kototoro 拓展仓库参考添加选择器适配，保存后会出现在探索发现中：
 
 如果所在网络无法直连这些站点，先在「设置 → 网络代理」填入可用的 HTTP/HTTPS 代理，然后保存。
 
@@ -147,10 +149,10 @@ docker compose up -d
 
 ## 订阅逻辑
 
-1. 在作品详情页点击「订阅追更」，当前最新章节会被记录为基线。
-2. 新订阅默认生成每周 Cron：星期和整点取自创建订阅的时间；可在订阅卡片中修改。
+1. 在作品详情页点击「订阅追更」，先在订阅任务设置窗口确认 Cron、下载位置与繁转简选项；当前最新章节会被记录为基线。
+2. 新订阅默认生成每周 Cron：星期和整点取自创建订阅的时间；可在订阅卡片三点菜单的「编辑」里修改。
 3. 发现比基线更新的章节时，自动创建下载任务，逐话打包 CBZ。
-4. 在「订阅」页可以开关「启用」（是否检查）与「自动下载」（检查但不自动下载）。
+4. 在「订阅清单」页可以通过卡片右下角三点菜单编辑、启用/禁用、归档或删除订阅。
 
 ## API 概览
 
@@ -170,14 +172,18 @@ docker compose up -d
 | `GET` | `/api/sources/{id}/search?q=&page=` | 搜索 |
 | `GET` | `/api/sources/{id}/browse?kind=&page=` | 浏览 |
 | `GET` | `/api/sources/{id}/comics/{comicId}` | 作品详情 + 章节 |
+| `GET` | `/api/source-repo` | 读取 Kototoro 拓展仓库清单 |
+| `GET/POST/PUT/DELETE` | `/api/custom-sources` … | 自定义源管理与配置 |
 | `GET/POST/PATCH/DELETE` | `/api/subscriptions` … | 订阅管理 |
 | `GET/POST/DELETE` | `/api/downloads` … | 下载任务 |
 | `GET` | `/api/library` | 本地 CBZ 资料库 |
-| `GET` | `/api/local` | 本地库（映射容器 `downloads`，含漫画与书籍） |
+| `GET` | `/api/local` | 本地库（扫描已配置的下载目录） |
 | `GET` | `/api/local/file?path=` | 读取 / 下载本地库中的单个文件 |
 | `GET/PUT` | `/api/settings` | 设置 |
 | `GET` | `/api/stats` | 统计 |
 | `GET` | `/api/logs?limit=` | 最近运行日志 |
+| `GET` | `/api/activity` | 顶部活动通知 |
+| `GET` | `/api/download-directories` | 可选的容器内下载目录 |
 | `GET` | `/api/proxy/image?url=&sourceId=` | 图片代理 |
 
 ## CI 与镜像发布

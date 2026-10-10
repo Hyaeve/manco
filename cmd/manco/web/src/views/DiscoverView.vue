@@ -7,9 +7,12 @@ import { readDiscoverNav, saveDiscoverNav } from '../stores/discover'
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v1'
 const PAGE_SIZE = 30
-const CARD_MIN = 158
-const GRID_GAP = 16
-const CARD_BODY = 88
+const CARD_MIN = 132
+const CARD_MAX = 176
+const GRID_GAP = 12
+const ROW_GAP = 14
+const CARD_BODY = 78
+const COVER_RATIO = 1.4143
 
 const route = useRoute()
 const router = useRouter()
@@ -96,16 +99,20 @@ const hasNextPage = computed(() => {
 
 const columns = computed(() => {
   const width = gridWidth.value
-  if (width <= 0) return 4
-  return Math.max(1, Math.floor((width + GRID_GAP) / (CARD_MIN + GRID_GAP)))
+  if (width <= 0) return 7
+  return Math.min(7, Math.max(1, Math.floor((width + GRID_GAP) / (CARD_MIN + GRID_GAP))))
 })
 
-const rowHeight = computed(() => {
+const cardWidth = computed(() => {
   const width = gridWidth.value
-  const usable = width > 0 ? width - (columns.value - 1) * GRID_GAP : CARD_MIN * columns.value
-  const cardWidth = usable > 0 ? usable / columns.value : CARD_MIN
-  return Math.round(cardWidth * 1.5) + CARD_BODY
+  if (width <= 0) return CARD_MIN
+  const usable = width - (columns.value - 1) * GRID_GAP
+  return Math.min(CARD_MAX, Math.max(0, usable / columns.value))
 })
+
+const rowHeight = computed(() =>
+  Math.round(cardWidth.value * COVER_RATIO) + CARD_BODY + ROW_GAP,
+)
 
 const rowCount = computed(() => Math.ceil(visibleItems.value.length / columns.value))
 const totalHeight = computed(() => rowCount.value * rowHeight.value)
@@ -151,9 +158,20 @@ async function loadSources() {
   }
 }
 
-onMounted(loadSources)
+onMounted(() => {
+  loadSources()
+  window.addEventListener('resize', handleViewportResize)
+})
+
+function handleViewportResize() {
+  if (!gridRef.value) return
+  gridWidth.value = Math.max(0, gridRef.value.clientWidth - 36)
+  viewportHeight.value = gridRef.value.clientHeight || viewportHeight.value
+  updateScroll()
+}
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleViewportResize)
   if (resizeObserver) resizeObserver.disconnect()
   if (scrollTimer) window.clearTimeout(scrollTimer)
 })
@@ -465,7 +483,7 @@ function cover(item) {
             v-for="row in virtualRows"
             :key="row.index"
             class="virtual-row source-comic-grid"
-            :style="{ transform: `translateY(${row.top}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }"
+            :style="{ transform: `translateY(${row.top}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0, ${CARD_MAX}px))` }"
           >
             <RouterLink
               v-for="item in row.items"
@@ -475,7 +493,7 @@ function cover(item) {
               @click="rememberPosition"
             >
               <div class="comic-cover">
-                <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+                <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
                 <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
               </div>
               <div class="comic-body">

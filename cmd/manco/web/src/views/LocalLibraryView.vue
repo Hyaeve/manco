@@ -5,6 +5,7 @@ import { api } from '../api'
 
 const items = ref([])
 const downloadDir = ref('')
+const downloadDirs = ref([])
 const loading = ref(true)
 const error = ref('')
 const query = ref('')
@@ -36,6 +37,7 @@ async function load() {
     const payload = await api.localLibrary()
     items.value = payload.items || []
     downloadDir.value = payload.downloadDir || ''
+    downloadDirs.value = payload.downloadDirs || []
   } catch (err) {
     error.value = err.message
   } finally {
@@ -110,7 +112,7 @@ function fileSize(bytes) {
 
   <div v-if="downloadDir" class="alert info inline">
     <HardDrive :size="16" />
-    <span>本地目录：{{ downloadDir }}</span>
+    <span>本地目录：{{ downloadDirs.length ? downloadDirs.join('、') : downloadDir }}</span>
     <span class="spacer" />
     <span class="muted small">共 {{ items.length }} 部作品 / {{ fileSize(totalSize) }}</span>
   </div>

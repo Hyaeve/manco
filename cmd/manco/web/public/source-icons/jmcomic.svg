@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="JMComic">
+  <path d="M9 10h17v44H9z" fill="#d71920"/>
+  <path d="M38 10h17v44H38z" fill="#202020"/>
+  <path d="M15 20h5v24h-5zM25 20h3l7 15V20h5v24h-4l-8-16v16h-3z" fill="#fff"/>
+  <path d="M44 20h6l3 24h-5l-1-13-2 8h-2l-2-8-1 13h-5l3-24z" fill="#fff"/>
+</svg>

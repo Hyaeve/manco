@@ -34,6 +34,7 @@ import (
 	"github.com/hyaeve/manco/internal/scheduler"
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
+	"github.com/hyaeve/manco/internal/source/generic"
 	"github.com/hyaeve/manco/internal/sources"
 	"github.com/hyaeve/manco/internal/store"
 )
@@ -210,6 +211,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
+	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
+	mux.HandleFunc("POST /api/custom-sources", s.requireAuth(s.handleCreateCustomSource))
+	mux.HandleFunc("GET /api/custom-sources/{id}", s.requireAuth(s.handleGetCustomSource))
+	mux.HandleFunc("PUT /api/custom-sources/{id}", s.requireAuth(s.handleUpdateCustomSource))
+	mux.HandleFunc("DELETE /api/custom-sources/{id}", s.requireAuth(s.handleDeleteCustomSource))
 	mux.HandleFunc("PATCH /api/sources/{id}", s.requireAuth(s.handleUpdateSource))
 	mux.HandleFunc("PUT /api/sources/{id}/account", s.requireAuth(s.handleSaveAccount))
 	mux.HandleFunc("DELETE /api/sources/{id}/account", s.requireAuth(s.handleDeleteAccount))
@@ -224,6 +230,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.requireAuth(s.handleDeleteSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/check", s.requireAuth(s.handleCheckSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download", s.requireAuth(s.handleDownloadSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/archive", s.requireAuth(s.handleArchiveSubscription))
 
 	mux.HandleFunc("GET /api/downloads", s.requireAuth(s.handleListDownloads))
 	mux.HandleFunc("POST /api/downloads", s.requireAuth(s.handleCreateDownload))
@@ -237,6 +244,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
 	mux.HandleFunc("GET /api/logs", s.requireAuth(s.handleLogs))
+	mux.HandleFunc("GET /api/activity", s.requireAuth(s.handleActivity))
+	mux.HandleFunc("GET /api/download-directories", s.requireAuth(s.handleDownloadDirectories))
 	mux.HandleFunc("GET /api/proxy/image", s.requireAuth(s.handleImageProxy))
 
 	mux.HandleFunc("/", s.handleSPA)
@@ -389,6 +398,135 @@ func (s *Server) hiddenSources(ctx context.Context) map[string]bool {
 	}
 	_ = json.Unmarshal([]byte(value), &hidden)
 	return hidden
+}
+
+func (s *Server) handleSourceRepo(w http.ResponseWriter, r *http.Request) {
+	address := s.sourceRepo(r.Context())
+	text, err := source.FetchText(r.Context(), s.registry.Client(), address, nil)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "读取 Kototoro 拓展仓库失败: "+err.Error())
+		return
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(text), &payload); err != nil {
+		writeError(w, http.StatusBadGateway, "拓展仓库返回的不是有效 JSON")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"url": address, "items": payload})
+}
+
+func (s *Server) handleCreateCustomSource(w http.ResponseWriter, r *http.Request) {
+	s.saveCustomSource(w, r, "")
+}
+
+func (s *Server) handleUpdateCustomSource(w http.ResponseWriter, r *http.Request) {
+	s.saveCustomSource(w, r, strings.ToLower(strings.TrimSpace(r.PathValue("id"))))
+}
+
+func (s *Server) handleGetCustomSource(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	item, err := s.store.CustomSource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "自定义源不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID string) {
+	var payload struct {
+		ID          string          `json:"id"`
+		Name        string          `json:"name"`
+		Kind        string          `json:"kind"`
+		Description string          `json:"description"`
+		Homepage    string          `json:"homepage"`
+		Icon        string          `json:"icon"`
+		RepoURL     string          `json:"repoUrl"`
+		Config      json.RawMessage `json:"config"`
+		Enabled     *bool           `json:"enabled"`
+		Hidden      *bool           `json:"hidden"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id := strings.ToLower(strings.TrimSpace(source.FirstNonEmpty(pathID, payload.ID)))
+	if s.registry.IsBuiltin(id) {
+		writeError(w, http.StatusConflict, "默认资源源不可修改")
+		return
+	}
+	if id == "" || strings.TrimSpace(payload.Name) == "" || strings.TrimSpace(payload.Homepage) == "" {
+		writeError(w, http.StatusBadRequest, "源 ID、名称和首页地址不能为空")
+		return
+	}
+	if len(payload.Config) == 0 {
+		payload.Config = json.RawMessage(`{}`)
+	}
+	kind := source.KindOf(model.SourceInfo{Kind: payload.Kind})
+	enabled := true
+	hidden := false
+	if existing, err := s.store.CustomSource(r.Context(), id); err == nil {
+		enabled = existing.Enabled
+		hidden = existing.Hidden
+	}
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
+	}
+	if payload.Hidden != nil {
+		hidden = *payload.Hidden
+	}
+	item := model.CustomSource{
+		ID:          id,
+		Name:        strings.TrimSpace(payload.Name),
+		Kind:        kind,
+		Description: strings.TrimSpace(payload.Description),
+		Homepage:    strings.TrimRight(strings.TrimSpace(payload.Homepage), "/"),
+		Icon:        strings.TrimSpace(payload.Icon),
+		RepoURL:     strings.TrimSpace(payload.RepoURL),
+		Config:      payload.Config,
+		Enabled:     enabled,
+		Hidden:      hidden,
+	}
+	if _, err := generic.New(s.registry.Client(), item); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	saved, err := s.store.UpsertCustomSource(r.Context(), item)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.registry.ReloadCustomSources(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	adapter, err := s.registry.Get(saved.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, adapter.Info())
+}
+
+func (s *Server) handleDeleteCustomSource(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	if s.registry.IsBuiltin(id) {
+		writeError(w, http.StatusConflict, "默认资源源不可删除")
+		return
+	}
+	if _, err := s.store.CustomSource(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "自定义源不存在")
+		return
+	}
+	if err := s.store.DeleteCustomSource(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.registry.ReloadCustomSources(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
@@ -603,16 +741,18 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		SourceID     string  `json:"sourceId"`
-		ComicID      string  `json:"comicId"`
-		Title        string  `json:"title"`
-		Cover        string  `json:"cover"`
-		Author       string  `json:"author"`
-		AutoDownload *bool   `json:"autoDownload"`
-		Enabled      *bool   `json:"enabled"`
-		CronExpr     string  `json:"cronExpr"`
-		Baseline     string  `json:"baseline"`
-		LastOrder    float64 `json:"lastChapterOrder"`
+		SourceID            string  `json:"sourceId"`
+		ComicID             string  `json:"comicId"`
+		Title               string  `json:"title"`
+		Cover               string  `json:"cover"`
+		Author              string  `json:"author"`
+		AutoDownload        *bool   `json:"autoDownload"`
+		Enabled             *bool   `json:"enabled"`
+		CronExpr            string  `json:"cronExpr"`
+		DownloadDir         string  `json:"downloadDir"`
+		ConvertToSimplified *bool   `json:"convertToSimplified"`
+		Baseline            string  `json:"baseline"`
+		LastOrder           float64 `json:"lastChapterOrder"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -630,6 +770,15 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
 		return
 	}
+	downloadDir, err := s.cleanDownloadDir(payload.DownloadDir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	convertToSimplified := s.loadSettings(r.Context()).ConvertToSimplified
+	if payload.ConvertToSimplified != nil {
+		convertToSimplified = *payload.ConvertToSimplified
+	}
 	item, err := s.registry.Get(payload.SourceID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -644,17 +793,19 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 	subscription := model.Subscription{
-		SourceID:         payload.SourceID,
-		ComicID:          payload.ComicID,
-		Title:            source.FirstNonEmpty(payload.Title, payload.ComicID),
-		Cover:            payload.Cover,
-		Author:           payload.Author,
-		Enabled:          payload.Enabled == nil || *payload.Enabled,
-		AutoDownload:     payload.AutoDownload == nil || *payload.AutoDownload,
-		CronExpr:         cronExpr,
-		LastChapterID:    strings.TrimSpace(payload.Baseline),
-		LastChapterOrder: payload.LastOrder,
-		LastChapterTitle: "",
+		SourceID:            payload.SourceID,
+		ComicID:             payload.ComicID,
+		Title:               source.FirstNonEmpty(payload.Title, payload.ComicID),
+		Cover:               payload.Cover,
+		Author:              payload.Author,
+		Enabled:             payload.Enabled == nil || *payload.Enabled,
+		AutoDownload:        payload.AutoDownload == nil || *payload.AutoDownload,
+		CronExpr:            cronExpr,
+		DownloadDir:         downloadDir,
+		ConvertToSimplified: convertToSimplified,
+		LastChapterID:       strings.TrimSpace(payload.Baseline),
+		LastChapterOrder:    payload.LastOrder,
+		LastChapterTitle:    "",
 	}
 	saved, err := s.store.UpsertSubscription(r.Context(), subscription)
 	if err != nil {
@@ -676,9 +827,11 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	payload := struct {
-		Enabled      *bool   `json:"enabled"`
-		AutoDownload *bool   `json:"autoDownload"`
-		CronExpr     *string `json:"cronExpr"`
+		Enabled             *bool   `json:"enabled"`
+		AutoDownload        *bool   `json:"autoDownload"`
+		CronExpr            *string `json:"cronExpr"`
+		DownloadDir         *string `json:"downloadDir"`
+		ConvertToSimplified *bool   `json:"convertToSimplified"`
 	}{}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -687,6 +840,8 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	enabled := existing.Enabled
 	auto := existing.AutoDownload
 	cronExpr := existing.CronExpr
+	downloadDir := existing.DownloadDir
+	convertToSimplified := existing.ConvertToSimplified
 	if payload.Enabled != nil {
 		enabled = *payload.Enabled
 	}
@@ -703,12 +858,168 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	if err := s.store.UpdateSubscription(r.Context(), id, enabled, auto, cronExpr); err != nil {
+	if payload.DownloadDir != nil {
+		downloadDir, err = s.cleanDownloadDir(*payload.DownloadDir)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if payload.ConvertToSimplified != nil {
+		convertToSimplified = *payload.ConvertToSimplified
+	}
+	if err := s.store.UpdateSubscriptionConfig(r.Context(), id, enabled, auto, cronExpr, downloadDir, convertToSimplified); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	updated, _ := s.store.Subscription(r.Context(), id)
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleArchiveSubscription(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	if _, err := s.store.Subscription(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	if err := s.store.ArchiveSubscription(r.Context(), id, "manual"); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) cleanDownloadDir(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		value = s.cfg.DownloadDir
+	}
+	if strings.Contains(value, "..") {
+		return "", errors.New("下载位置不能包含 ..")
+	}
+	if !filepath.IsAbs(value) {
+		resolved, err := filepath.Abs(value)
+		if err != nil {
+			return "", errors.New("无法解析下载位置")
+		}
+		value = resolved
+	}
+	cleaned := filepath.Clean(value)
+	if cleaned == string(filepath.Separator) || cleaned == "." {
+		return "", errors.New("下载位置不能是容器根目录")
+	}
+	return cleaned, nil
+}
+
+func (s *Server) handleDownloadDirectories(w http.ResponseWriter, r *http.Request) {
+	defaultDir, err := s.cleanDownloadDir("")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	seen := map[string]bool{}
+	items := make([]map[string]any, 0)
+	add := func(path string, isDefault bool) {
+		path = strings.TrimSpace(path)
+		if path == "" || path == string(filepath.Separator) {
+			return
+		}
+		cleaned := filepath.Clean(path)
+		if seen[cleaned] {
+			return
+		}
+		seen[cleaned] = true
+		items = append(items, map[string]any{
+			"path":      cleaned,
+			"default":   isDefault || cleaned == defaultDir,
+			"available": directoryExists(cleaned),
+		})
+	}
+	add(defaultDir, true)
+	if raw, err := os.ReadFile("/proc/self/mountinfo"); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 5 {
+				continue
+			}
+			mountpoint := unescapeMountPath(fields[4])
+			if mountpoint == "" || mountpoint == "/" {
+				continue
+			}
+			skip := false
+			for _, prefix := range []string{"/proc", "/sys", "/dev", "/run", "/etc"} {
+				if mountpoint == prefix || strings.HasPrefix(mountpoint, prefix+"/") {
+					skip = true
+					break
+				}
+			}
+			if skip || !directoryExists(mountpoint) {
+				continue
+			}
+			add(mountpoint, false)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i]["path"].(string) < items[j]["path"].(string)
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "default": defaultDir})
+}
+
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func unescapeMountPath(value string) string {
+	replacer := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+	return replacer.Replace(value)
+}
+
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListDownloadJobs(r.Context(), 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type activityItem struct {
+		ID      int64     `json:"id"`
+		Message string    `json:"message"`
+		Level   string    `json:"level"`
+		Time    time.Time `json:"time"`
+	}
+	result := make([]activityItem, 0, len(items))
+	for _, job := range items {
+		level := "info"
+		switch job.Status {
+		case "completed":
+			level = "success"
+		case "failed", "canceled":
+			level = "error"
+		}
+		message := fmt.Sprintf("%s：%s", job.ComicTitle, job.ChapterTitle)
+		switch job.Status {
+		case "completed":
+			message += " 下载完成"
+		case "failed":
+			message += " 下载失败"
+		case "running":
+			message += " 下载中"
+		case "queued":
+			message += " 等待下载"
+		case "paused":
+			message += " 已暂停"
+		}
+		stamp := job.UpdatedAt
+		if job.FinishedAt != nil {
+			stamp = *job.FinishedAt
+		}
+		result = append(result, activityItem{ID: job.ID, Message: message, Level: level, Time: stamp})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
 
 func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
@@ -779,13 +1090,15 @@ func (s *Server) handleDownloadSubscription(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
-		SourceID     string          `json:"sourceId"`
-		ComicID      string          `json:"comicId"`
-		ComicTitle   string          `json:"comicTitle"`
-		ComicCover   string          `json:"comicCover"`
-		AutoDownload bool            `json:"autoDownload"`
-		Chapters     []model.Chapter `json:"chapters"`
-		Chapter      *model.Chapter  `json:"chapter"`
+		SourceID            string          `json:"sourceId"`
+		ComicID             string          `json:"comicId"`
+		ComicTitle          string          `json:"comicTitle"`
+		ComicCover          string          `json:"comicCover"`
+		DownloadDir         string          `json:"downloadDir"`
+		ConvertToSimplified *bool           `json:"convertToSimplified"`
+		AutoDownload        bool            `json:"autoDownload"`
+		Chapters            []model.Chapter `json:"chapters"`
+		Chapter             *model.Chapter  `json:"chapter"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -803,6 +1116,15 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	if title == "" {
 		title = payload.ComicID
 	}
+	downloadDir, err := s.cleanDownloadDir(payload.DownloadDir)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	convertToSimplified := s.loadSettings(r.Context()).ConvertToSimplified
+	if payload.ConvertToSimplified != nil {
+		convertToSimplified = *payload.ConvertToSimplified
+	}
 	created := make([]model.DownloadJob, 0, len(chapters))
 	queuedCount := 0
 	skippedCount := 0
@@ -811,13 +1133,15 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		saved, err := s.store.CreateDownloadJob(r.Context(), model.DownloadJob{
-			SourceID:     payload.SourceID,
-			ComicID:      payload.ComicID,
-			ComicTitle:   title,
-			ComicCover:   payload.ComicCover,
-			ChapterID:    chapter.ID,
-			ChapterTitle: source.FirstNonEmpty(chapter.Title, chapter.ID),
-			ChapterOrder: chapter.Order,
+			SourceID:            payload.SourceID,
+			ComicID:             payload.ComicID,
+			ComicTitle:          title,
+			ComicCover:          payload.ComicCover,
+			ChapterID:           chapter.ID,
+			ChapterTitle:        source.FirstNonEmpty(chapter.Title, chapter.ID),
+			ChapterOrder:        chapter.Order,
+			DownloadDir:         downloadDir,
+			ConvertToSimplified: convertToSimplified,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -872,7 +1196,8 @@ func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 	removeFile := r.URL.Query().Get("removeFile") == "true"
 	if removeFile {
 		if job, err := s.store.DownloadJob(r.Context(), id); err == nil && job.FilePath != "" {
-			if err := removeDownloadedFile(s.cfg.DownloadDir, job.FilePath); err != nil {
+			root := source.FirstNonEmpty(job.DownloadDir, s.cfg.DownloadDir)
+			if err := removeDownloadedFile(root, job.FilePath); err != nil {
 				s.logger.Printf("api: remove %s: %v", job.FilePath, err)
 			}
 		}
@@ -958,29 +1283,70 @@ type localItemEntry struct {
 	UpdatedAt   time.Time        `json:"updatedAt"`
 }
 
+func (s *Server) localRoots(ctx context.Context) []string {
+	seen := map[string]bool{}
+	roots := make([]string, 0, 4)
+	add := func(raw string) {
+		cleaned, err := s.cleanDownloadDir(raw)
+		if err != nil || seen[cleaned] {
+			return
+		}
+		seen[cleaned] = true
+		roots = append(roots, cleaned)
+	}
+	add("")
+	if subscriptions, err := s.store.ListSubscriptions(ctx); err == nil {
+		for _, item := range subscriptions {
+			if item.DownloadDir != "" {
+				add(item.DownloadDir)
+			}
+		}
+	}
+	if jobs, err := s.store.ListDownloadJobs(ctx, 500); err == nil {
+		for _, job := range jobs {
+			if job.DownloadDir != "" {
+				add(job.DownloadDir)
+			}
+		}
+	}
+	return roots
+}
+
+func localPath(root, rel string) string {
+	return strings.TrimRight(root, "/") + "|" + filepath.ToSlash(rel)
+}
+
 // handleLocalLibrary lists the download directory directly, so the local
 // library reflects the mounted downloads folder even for files that were not
 // produced by a recorded download job.
 func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
-	root := s.cfg.DownloadDir
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []localItemEntry{}, "downloadDir": root})
-		return
-	}
-	items := make([]localItemEntry, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+	roots := s.localRoots(r.Context())
+	items := make([]localItemEntry, 0, 16)
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
 			continue
 		}
-		item := s.scanLocalDir(root, entry.Name())
-		if len(item.Files) == 0 {
-			continue
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			item := s.scanLocalDir(root, entry.Name())
+			if len(item.Files) == 0 {
+				continue
+			}
+			item.Path = localPath(root, entry.Name())
+			if item.Cover != "" {
+				item.Cover = localPath(root, item.Cover)
+			}
+			for i := range item.Files {
+				item.Files[i].Path = localPath(root, item.Files[i].Path)
+			}
+			items = append(items, item)
 		}
-		items = append(items, item)
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "downloadDir": root})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "downloadDir": s.cfg.DownloadDir, "downloadDirs": roots})
 }
 
 func (s *Server) scanLocalDir(root, name string) localItemEntry {
@@ -1106,7 +1472,24 @@ func (s *Server) handleLocalFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "缺少 path 参数")
 		return
 	}
-	root, err := filepath.Abs(s.cfg.DownloadDir)
+	rootValue := s.cfg.DownloadDir
+	if rawRoot, rawRel, ok := strings.Cut(rel, "|"); ok {
+		rootValue = rawRoot
+		rel = rawRel
+	}
+	allowed := false
+	cleanedRoot := filepath.Clean(rootValue)
+	for _, candidate := range s.localRoots(r.Context()) {
+		if candidate == cleanedRoot {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "路径不在下载目录内")
+		return
+	}
+	root, err := filepath.Abs(cleanedRoot)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1753,7 +2136,7 @@ func removeDownloadedFile(root, file string) error {
 	if err != nil {
 		return err
 	}
-	if target != absoluteRoot && !strings.HasPrefix(target, absoluteRoot+string(filepath.Separator)) {
+	if absoluteRoot == string(filepath.Separator) || target == absoluteRoot || !strings.HasPrefix(target, absoluteRoot+string(filepath.Separator)) {
 		return errors.New("拒绝删除下载目录之外的文件")
 	}
 	return os.Remove(target)

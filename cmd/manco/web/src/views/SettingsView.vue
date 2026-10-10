@@ -1,11 +1,13 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
-import { Clock, Download, KeyRound, Loader2, Network, Save, ShieldCheck } from 'lucide-vue-next'
+import { Clock, Download, Info, KeyRound, Loader2, Network, Save, ShieldCheck } from 'lucide-vue-next'
 import { api } from '../api'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
 const loading = ref(true)
 const saving = ref('')
 const saveState = reactive({})
@@ -30,7 +32,13 @@ const form = reactive({
 
 const sourceLabels = { picacg: '哔咔漫画', jmcomic: '禁漫天堂', baozimh: '包子漫画' }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  const section = String(route.query.section || '')
+  if (section) {
+    window.setTimeout(() => document.getElementById(`settings-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60)
+  }
+})
 
 async function load() {
   loading.value = true
@@ -118,7 +126,7 @@ async function save(section, label) {
   </div>
 
   <div v-else class="settings-sections">
-    <section class="card card-pad">
+    <section id="settings-account" class="card card-pad">
       <div class="section-head">
         <div class="inline">
           <ShieldCheck :size="17" />
@@ -241,6 +249,22 @@ async function save(section, label) {
           保存下载设置
         </button>
         <span v-if="saveState.download" class="badge success">已保存</span>
+      </div>
+    </section>
+
+    <section id="settings-about" class="card card-pad">
+      <div class="section-head">
+        <div class="inline">
+          <Info :size="17" />
+          <h2>关于 Manco</h2>
+        </div>
+      </div>
+      <p class="muted small" style="margin-top: 0">Manco 是漫画与书籍订阅下载工具，可从资源库中的来源订阅作品，按话打包为 CBZ 或章节文本并保存到本地。</p>
+      <div class="about-grid">
+        <div><span class="muted small">组件</span><strong>Go 后端 + Vue 3 前端</strong></div>
+        <div><span class="muted small">容器端口</span><strong>15600</strong></div>
+        <div><span class="muted small">镜像</span><strong class="mono">ghcr.io/hyaeve/manco:latest</strong></div>
+        <div><span class="muted small">项目地址</span><a class="mono" href="https://github.com/Hyaeve/manco" target="_blank" rel="noreferrer">github.com/Hyaeve/manco</a></div>
       </div>
     </section>
 

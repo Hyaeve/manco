@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,6 +13,7 @@ import (
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/source/baozimh"
+	"github.com/hyaeve/manco/internal/source/generic"
 	"github.com/hyaeve/manco/internal/source/gutenberg"
 	"github.com/hyaeve/manco/internal/source/jmcomic"
 	"github.com/hyaeve/manco/internal/source/picacg"
@@ -20,10 +22,12 @@ import (
 )
 
 type Registry struct {
-	client *http.Client
-	box    *secret.Box
-	store  *store.Store
-	byID   map[string]source.Source
+	client   *http.Client
+	box      *secret.Box
+	store    *store.Store
+	byID     map[string]source.Source
+	builtins map[string]bool
+	custom   map[string]bool
 }
 
 func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) *Registry {
@@ -34,9 +38,19 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) 
 		shencou.New(client),
 		gutenberg.New(client),
 	}
-	registry := &Registry{client: client, box: box, store: repository, byID: make(map[string]source.Source, len(items))}
+	registry := &Registry{
+		client:   client,
+		box:      box,
+		store:    repository,
+		byID:     make(map[string]source.Source, len(items)),
+		builtins: map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "shencou": true, "gutenberg": true},
+		custom:   map[string]bool{},
+	}
 	for _, item := range items {
 		registry.byID[item.Info().ID] = item
+	}
+	if repository != nil {
+		_ = registry.ReloadCustomSources(context.Background())
 	}
 	return registry
 }
@@ -44,7 +58,10 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) 
 func (r *Registry) List() []model.SourceInfo {
 	items := make([]model.SourceInfo, 0, len(r.byID))
 	for _, item := range r.byID {
-		items = append(items, item.Info())
+		info := item.Info()
+		info.Builtin = r.builtins[info.ID]
+		info.Editable = r.custom[info.ID]
+		items = append(items, info)
 	}
 	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "shencou": 3, "gutenberg": 4}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -74,6 +91,40 @@ func (r *Registry) Register(item source.Source) {
 		return
 	}
 	r.byID[info.ID] = item
+}
+
+// ReloadCustomSources rebuilds the non-built-in part of the registry from the
+// database. Built-in adapters cannot be replaced by a custom source with the
+// same ID.
+func (r *Registry) ReloadCustomSources(ctx context.Context) error {
+	if r.store == nil {
+		return nil
+	}
+	for id := range r.custom {
+		delete(r.byID, id)
+	}
+	r.custom = map[string]bool{}
+	items, err := r.store.ListCustomSources(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		id := strings.ToLower(strings.TrimSpace(item.ID))
+		if id == "" || r.builtins[id] {
+			continue
+		}
+		adapter, err := generic.New(r.client, item)
+		if err != nil {
+			continue
+		}
+		r.byID[id] = adapter
+		r.custom[id] = true
+	}
+	return nil
+}
+
+func (r *Registry) IsBuiltin(id string) bool {
+	return r.builtins[strings.ToLower(strings.TrimSpace(id))]
 }
 
 func (r *Registry) Get(id string) (source.Source, error) {
@@ -143,6 +194,23 @@ func (r *Registry) AllowedImageHost(host string) bool {
 				}
 				if parsed, err := url.Parse(account.HomeURL); err == nil && strings.EqualFold(parsed.Hostname(), host) {
 					return true
+				}
+			}
+		}
+		items, err := r.store.ListCustomSources(context.Background())
+		if err == nil {
+			for _, item := range items {
+				if parsed, err := url.Parse(item.Homepage); err == nil && strings.EqualFold(parsed.Hostname(), host) {
+					return true
+				}
+				var config generic.Config
+				if json.Unmarshal(item.Config, &config) == nil {
+					for _, allowed := range config.AllowedHosts {
+						allowed = strings.ToLower(strings.TrimSpace(allowed))
+						if host == strings.TrimPrefix(allowed, ".") || strings.HasSuffix(host, "."+strings.TrimPrefix(allowed, ".")) {
+							return true
+						}
+					}
 				}
 			}
 		}

@@ -1,7 +1,19 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { BookOpen, ChevronLeft, Download, Loader2, Rss, Square, SquareCheck } from 'lucide-vue-next'
+import {
+  BookOpen,
+  CalendarClock,
+  ChevronLeft,
+  Download,
+  FolderOpen,
+  Languages,
+  Loader2,
+  Rss,
+  Square,
+  SquareCheck,
+  X,
+} from 'lucide-vue-next'
 import { api } from '../api'
 
 const route = useRoute()
@@ -18,9 +30,22 @@ const message = ref('')
 const error = ref('')
 const autoDownload = ref(true)
 
+const subscribeOpen = ref(false)
+const directories = ref([])
+const subForm = ref({
+  cronExpr: '',
+  downloadDir: '',
+  convertToSimplified: false,
+})
+
 const comic = computed(() => detail.value?.comic || null)
 const chapters = computed(() => detail.value?.chapters || [])
 const allSelected = computed(() => chapters.value.length > 0 && selected.value.size === chapters.value.length)
+
+function defaultCron() {
+  const now = new Date()
+  return `${now.getMinutes()} ${now.getHours()} * * ${now.getDay()}`
+}
 
 onMounted(async () => {
   try {
@@ -38,6 +63,17 @@ onMounted(async () => {
     isBook.value = false
   }
 })
+
+async function loadDirectories() {
+  try {
+    const payload = await api.downloadDirectories()
+    directories.value = payload.items || []
+    const preferred = directories.value.find((item) => item.default) || directories.value[0]
+    if (preferred && !subForm.value.downloadDir) subForm.value.downloadDir = preferred.path
+  } catch {
+    directories.value = []
+  }
+}
 
 function goBack() {
   if (window.history.state?.back) {
@@ -65,8 +101,24 @@ function cover() {
   return api.imageUrl(comic.value?.cover, sourceId)
 }
 
-async function subscribe() {
+async function openSubscribe() {
+  message.value = ''
+  error.value = ''
+  subForm.value = {
+    cronExpr: subForm.value.cronExpr || defaultCron(),
+    downloadDir: subForm.value.downloadDir,
+    convertToSimplified: Boolean(subForm.value.convertToSimplified),
+  }
+  await loadDirectories()
+  subscribeOpen.value = true
+}
+
+async function confirmSubscribe() {
   if (!comic.value) return
+  if (!subForm.value.cronExpr.trim()) {
+    error.value = 'Cron 表达式不能为空'
+    return
+  }
   busy.value = true
   error.value = ''
   message.value = ''
@@ -82,8 +134,12 @@ async function subscribe() {
       enabled: true,
       baseline: last?.id || '',
       lastChapterOrder: last?.order || 0,
+      cronExpr: subForm.value.cronExpr.trim(),
+      downloadDir: subForm.value.downloadDir.trim(),
+      convertToSimplified: Boolean(subForm.value.convertToSimplified),
     })
-    message.value = '订阅成功，新章节会自动进入下载队列。'
+    subscribeOpen.value = false
+    message.value = '订阅已创建，新章节会按检查计划自动进入下载队列。'
   } catch (err) {
     error.value = err.message
   } finally {
@@ -105,6 +161,8 @@ async function downloadSelected() {
       comicCover: comic.value.cover,
       autoDownload: autoDownload.value,
       chapters: picked,
+      downloadDir: subForm.value.downloadDir.trim(),
+      convertToSimplified: Boolean(subForm.value.convertToSimplified),
     })
     const queued = Number(result.queued || 0)
     const skipped = Number(result.skipped || 0)
@@ -196,7 +254,7 @@ async function downloadSelected() {
             <Download v-else :size="16" />
             下载所选章节（{{ selected.size }}）
           </button>
-          <button class="btn secondary" type="button" :disabled="busy" @click="subscribe">
+          <button class="btn secondary" type="button" :disabled="busy" @click="openSubscribe">
             <Rss :size="16" />
             订阅追更
           </button>
@@ -209,6 +267,49 @@ async function downloadSelected() {
           }}
         </p>
       </aside>
+    </div>
+  </div>
+
+  <div v-if="subscribeOpen" class="modal-backdrop" @click.self="subscribeOpen = false">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2>订阅任务设置</h2>
+          <p class="muted small">{{ comic?.title }}</p>
+        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="subscribeOpen = false">
+          <X :size="18" />
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="inline"><CalendarClock :size="14" /> Cron 检查周期</span>
+          <input v-model="subForm.cronExpr" class="input" placeholder="0 21 * * 5" />
+          <span class="muted small">默认按当前时间的整点生成每周检查周期，可改为任意 Cron 表达式。</span>
+        </label>
+        <label class="field">
+          <span class="inline"><FolderOpen :size="14" /> 下载位置</span>
+          <select v-model="subForm.downloadDir" class="input">
+            <option value="">使用默认下载目录</option>
+            <option v-for="dir in directories" :key="dir.path" :value="dir.path">
+              {{ dir.path }}{{ dir.default ? '（默认）' : '' }}
+            </option>
+          </select>
+          <input v-model="subForm.downloadDir" class="input" placeholder="也可手动填写容器内目录，如 /downloads/comics" style="margin-top: 8px" />
+        </label>
+        <label class="switch-row">
+          <input v-model="subForm.convertToSimplified" type="checkbox" />
+          <span><Languages :size="14" /> 下载时执行繁体转简体（不影响完成/失败记录）</span>
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button class="btn secondary" type="button" @click="subscribeOpen = false">取消</button>
+        <button class="btn" type="button" :disabled="busy" @click="confirmSubscribe">
+          <Loader2 v-if="busy" :size="15" class="spin" />
+          <Rss v-else :size="15" />
+          创建订阅
+        </button>
+      </div>
     </div>
   </div>
 </template>
