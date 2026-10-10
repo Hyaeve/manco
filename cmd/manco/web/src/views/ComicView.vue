@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import DirectoryPicker from '../components/DirectoryPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,7 +32,6 @@ const error = ref('')
 const autoDownload = ref(true)
 
 const subscribeOpen = ref(false)
-const directories = ref([])
 const subForm = ref({
   cronExpr: '',
   downloadDir: '',
@@ -64,16 +64,6 @@ onMounted(async () => {
   }
 })
 
-async function loadDirectories() {
-  try {
-    const payload = await api.downloadDirectories()
-    directories.value = payload.items || []
-    const preferred = directories.value.find((item) => item.default) || directories.value[0]
-    if (preferred && !subForm.value.downloadDir) subForm.value.downloadDir = preferred.path
-  } catch {
-    directories.value = []
-  }
-}
 
 function goBack() {
   if (window.history.state?.back) {
@@ -109,7 +99,6 @@ async function openSubscribe() {
     downloadDir: subForm.value.downloadDir,
     convertToSimplified: Boolean(subForm.value.convertToSimplified),
   }
-  await loadDirectories()
   subscribeOpen.value = true
 }
 
@@ -289,13 +278,8 @@ async function downloadSelected() {
         </label>
         <label class="field">
           <span class="inline"><FolderOpen :size="14" /> 下载位置</span>
-          <select v-model="subForm.downloadDir" class="input">
-            <option value="">使用默认下载目录</option>
-            <option v-for="dir in directories" :key="dir.path" :value="dir.path">
-              {{ dir.path }}{{ dir.default ? '（默认）' : '' }}
-            </option>
-          </select>
-          <input v-model="subForm.downloadDir" class="input" placeholder="也可手动填写容器内目录，如 /downloads/comics" style="margin-top: 8px" />
+          <DirectoryPicker v-model="subForm.downloadDir" />
+
         </label>
         <label class="switch-row">
           <input v-model="subForm.convertToSimplified" type="checkbox" />

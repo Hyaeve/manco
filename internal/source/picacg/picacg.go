@@ -61,7 +61,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  true,
 		CanSearch:   true,
 		CanBrowse:   true,
-		Icon:        "/source-icons/picacg.svg",
+		Icon:        "/source-icons/picacg.png",
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "分类", Options: categoryFilterOptions()},
 			{

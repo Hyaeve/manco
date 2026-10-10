@@ -1,37 +1,55 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Code2, ListTree, Loader2, RefreshCw, ScrollText } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Code2, Loader2, ListTree, RefreshCw, Search } from 'lucide-vue-next'
 import { api } from '../api'
+import RoundedSelect from '../components/RoundedSelect.vue'
+import ThinScroll from '../components/ThinScroll.vue'
+import { notify } from '../stores/notices'
 
 const LOG_MODE_KEY = 'manco.logs.mode.v1'
+const levels = [
+  { value: 'all', label: '全部级别' },
+  { value: 'info', label: '信息' },
+  { value: 'warning', label: '警告' },
+  { value: 'error', label: '错误' },
+]
 
 const lines = ref([])
 const entries = ref([])
-const loading = ref(true)
-const error = ref('')
+const loading = ref(false)
 const autoRefresh = ref(true)
 const mode = ref(window.localStorage.getItem(LOG_MODE_KEY) === 'structured' ? 'structured' : 'raw')
-const scroller = ref(null)
+const level = ref('all')
+const query = ref('')
 let timer = null
 
+const filtered = computed(() => {
+  const keyword = query.value.trim().toLowerCase()
+  let rows = entries.value
+  if (level.value !== 'all') rows = rows.filter((entry) => entry.level === level.value)
+  if (keyword) {
+    rows = rows.filter((entry) => `${entry.time} ${entry.level} ${entry.message}`.toLowerCase().includes(keyword))
+  }
+  return rows
+})
+
+const rawText = computed(() => {
+  const keyword = query.value.trim().toLowerCase()
+  const rows = lines.value.filter((line) => !keyword || line.toLowerCase().includes(keyword))
+  return rows.length ? rows.join('\n') : '暂无匹配日志。'
+})
+
 async function load() {
-  error.value = ''
+  loading.value = true
   try {
     const payload = await api.logs(500)
     lines.value = payload.lines || []
-    entries.value = payload.items || lines.value.map((line) => ({ level: 'info', message: line, raw: line, time: '' }))
-    await nextTick()
-    scrollToBottom()
+    entries.value = payload.items || []
   } catch (err) {
-    error.value = err.message
+    notify(`运行日志加载失败：${err.message}`, true)
   } finally {
     loading.value = false
   }
-}
-
-function scrollToBottom() {
-  const element = scroller.value
-  if (element) element.scrollTop = element.scrollHeight
 }
 
 function resetTimer() {
@@ -39,9 +57,7 @@ function resetTimer() {
     clearInterval(timer)
     timer = null
   }
-  if (autoRefresh.value) {
-    timer = setInterval(load, 5000)
-  }
+  if (autoRefresh.value) timer = setInterval(load, 5000)
 }
 
 watch(autoRefresh, () => {
@@ -49,9 +65,7 @@ watch(autoRefresh, () => {
   if (autoRefresh.value) load()
 })
 
-watch(mode, (value) => {
-  window.localStorage.setItem(LOG_MODE_KEY, value)
-})
+watch(mode, (value) => window.localStorage.setItem(LOG_MODE_KEY, value))
 
 onMounted(() => {
   load()
@@ -61,52 +75,53 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
-
-const hasLines = computed(() => lines.value.length > 0)
 </script>
 
 <template>
-  <div v-if="error" class="alert error">{{ error }}</div>
-  <div class="card card-pad">
-    <div class="section-head" style="margin-bottom: 10px">
-      <div class="inline">
-        <ScrollText :size="17" />
-        <h2>系统日志</h2>
-      </div>
-      <div class="inline">
-        <div class="segmented">
-          <button type="button" :class="{ active: mode === 'raw' }" @click="mode = 'raw'">
-            <Code2 :size="14" />
-            原始
-          </button>
-          <button type="button" :class="{ active: mode === 'structured' }" @click="mode = 'structured'">
-            <ListTree :size="14" />
-            结构化
-          </button>
-        </div>
-        <label class="inline small">
-          <input v-model="autoRefresh" type="checkbox" />
-          <span>自动刷新</span>
-        </label>
-        <button class="btn secondary small" type="button" :disabled="loading" @click="load">
-          <RefreshCw :size="14" :class="{ spin: loading }" />
-          刷新
+  <section class="log-panel" aria-label="运行日志">
+    <div class="log-toolbar">
+      <div class="segmented" role="tablist" aria-label="日志视图">
+        <button type="button" :class="{ active: mode === 'raw' }" @click="mode = 'raw'">
+          <Code2 :size="14" />
+          原始
+        </button>
+        <button type="button" :class="{ active: mode === 'structured' }" @click="mode = 'structured'">
+          <ListTree :size="14" />
+          结构化
         </button>
       </div>
+      <RoundedSelect v-model="level" label="日志级别" :options="levels" />
+      <label class="search-field log-search">
+        <Search :size="16" />
+        <input v-model="query" aria-label="搜索日志" placeholder="搜索日志..." />
+      </label>
+      <label class="inline small auto-refresh">
+        <input v-model="autoRefresh" type="checkbox" />
+        <span>自动刷新</span>
+      </label>
+      <button class="btn secondary small" type="button" :disabled="loading" @click="load">
+        <RefreshCw :size="14" :class="{ spin: loading }" />
+        刷新
+      </button>
     </div>
 
-    <div v-if="loading && !hasLines" class="empty">
-      <Loader2 :size="22" class="spin" />
-      <span>加载日志</span>
+    <div class="log-list-shell">
+      <ThinScroll class="log-scroll" :thickness="1">
+        <div v-if="loading && !entries.length" class="empty">
+          <Loader2 :size="22" class="spin" />
+          <span>加载日志</span>
+        </div>
+        <pre v-else-if="mode === 'raw'" class="log-view">{{ rawText }}</pre>
+        <div v-else class="log-list">
+          <div v-if="!filtered.length" class="empty">暂无匹配日志。</div>
+          <article v-for="(entry, index) in filtered" :key="`${entry.time}-${index}`" class="log-entry">
+            <time class="log-time">{{ entry.time || '--' }}</time>
+            <span class="log-level" :class="entry.level">{{ entry.level }}</span>
+            <span class="log-message">{{ entry.message }}</span>
+          </article>
+        </div>
+      </ThinScroll>
     </div>
-    <pre v-else-if="mode === 'raw'" ref="scroller" class="log-view">{{ hasLines ? lines.join('\n') : '暂无日志。' }}</pre>
-    <div v-else ref="scroller" class="log-list">
-      <div v-if="!entries.length" class="empty">暂无日志。</div>
-      <article v-for="(entry, index) in entries" :key="`${entry.time}-${index}`" class="log-entry">
-        <time class="log-time">{{ entry.time || '--' }}</time>
-        <span class="log-level" :class="entry.level">{{ entry.level }}</span>
-        <span class="log-message">{{ entry.message }}</span>
-      </article>
-    </div>
-  </div>
+    <footer class="log-foot">{{ filtered.length }} 条记录 · 最近 500 行</footer>
+  </section>
 </template>

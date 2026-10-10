@@ -70,7 +70,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
-		Icon:        "https://www.google.com/s2/favicons?domain=wowenku.com&sz=64",
+		Icon:        "/source-icons/shencou.png",
 		Sites:       append([]string(nil), defaultSites...),
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "文库", Options: categoryOptions},

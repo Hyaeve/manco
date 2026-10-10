@@ -2,6 +2,7 @@
 package api
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,7 +46,7 @@ const (
 	sessionTTL    = 30 * 24 * time.Hour
 )
 
-var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh"}
+var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
 
 type Server struct {
 	cfg       config.Config
@@ -123,11 +125,13 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 			"picacg":  s.cfg.MaxChapterConcurrency,
 			"jmcomic": s.cfg.MaxChapterConcurrency,
 			"baozimh": s.cfg.MaxChapterConcurrency,
+			"biquge":  s.cfg.MaxChapterConcurrency,
 		},
 		StaleDays: map[string]int{
 			"picacg":  0,
 			"jmcomic": 0,
 			"baozimh": 0,
+			"biquge":  0,
 		},
 	}
 	if value, err := s.store.Setting(ctx, "source_repo"); err == nil && strings.TrimSpace(value) != "" {
@@ -240,6 +244,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/library", s.requireAuth(s.handleLibrary))
 	mux.HandleFunc("GET /api/local", s.requireAuth(s.handleLocalLibrary))
 	mux.HandleFunc("GET /api/local/file", s.requireAuth(s.handleLocalFile))
+	mux.HandleFunc("GET /api/local/cbz", s.requireAuth(s.handleLocalCBZ))
+	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
 	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
 	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
@@ -376,16 +382,26 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    s.filteredSourceList(hidden),
+		"items":    s.filteredSourceList(hidden, s.disabledCategories(r.Context())),
 		"accounts": accounts,
 		"repoUrl":  s.sourceRepo(r.Context()),
 	})
 }
 
-func (s *Server) filteredSourceList(hidden map[string]bool) []model.SourceInfo {
+func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string][]string) []model.SourceInfo {
 	items := s.registry.List()
 	for index := range items {
 		items[index].Hidden = hidden[items[index].ID]
+		blocked := map[string]bool{}
+		for _, value := range disabled[items[index].ID] {
+			blocked[value] = true
+		}
+		for groupIndex := range items[index].Filters {
+			for optionIndex := range items[index].Filters[groupIndex].Options {
+				option := &items[index].Filters[groupIndex].Options[optionIndex]
+				option.Disabled = blocked[option.Value]
+			}
+		}
 	}
 	return items
 }
@@ -398,6 +414,16 @@ func (s *Server) hiddenSources(ctx context.Context) map[string]bool {
 	}
 	_ = json.Unmarshal([]byte(value), &hidden)
 	return hidden
+}
+
+func (s *Server) disabledCategories(ctx context.Context) map[string][]string {
+	disabled := map[string][]string{}
+	value, err := s.store.Setting(ctx, "disabled_categories")
+	if err != nil || strings.TrimSpace(value) == "" {
+		return disabled
+	}
+	_ = json.Unmarshal([]byte(value), &disabled)
+	return disabled
 }
 
 func (s *Server) handleSourceRepo(w http.ResponseWriter, r *http.Request) {
@@ -536,28 +562,79 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Hidden bool `json:"hidden"`
+		Hidden             *bool     `json:"hidden"`
+		DisabledCategories *[]string `json:"disabledCategories"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if payload.Hidden == nil && payload.DisabledCategories == nil {
+		writeError(w, http.StatusBadRequest, "没有可更新的资源设置")
+		return
+	}
 	hidden := s.hiddenSources(r.Context())
-	if payload.Hidden {
-		hidden[id] = true
-	} else {
-		delete(hidden, id)
+	if payload.Hidden != nil {
+		if *payload.Hidden {
+			hidden[id] = true
+		} else {
+			delete(hidden, id)
+		}
+		payloadJSON, err := json.Marshal(hidden)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "hidden_sources", string(payloadJSON)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
-	payloadJSON, err := json.Marshal(hidden)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if payload.DisabledCategories != nil {
+		adapter, err := s.registry.Get(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		valid := map[string]bool{}
+		for _, group := range adapter.Info().Filters {
+			for _, option := range group.Options {
+				if option.Value != "" {
+					valid[option.Value] = true
+				}
+			}
+		}
+		normalized := make([]string, 0, len(*payload.DisabledCategories))
+		seen := map[string]bool{}
+		for _, value := range *payload.DisabledCategories {
+			value = strings.TrimSpace(value)
+			if value == "" || !valid[value] || seen[value] {
+				continue
+			}
+			seen[value] = true
+			normalized = append(normalized, value)
+		}
+		disabled := s.disabledCategories(r.Context())
+		if len(normalized) == 0 {
+			delete(disabled, id)
+		} else {
+			disabled[id] = normalized
+		}
+		raw, err := json.Marshal(disabled)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "disabled_categories", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
-	if err := s.store.SetSetting(r.Context(), "hidden_sources", string(payloadJSON)); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "hidden": payload.Hidden})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                 true,
+		"hidden":             hidden[id],
+		"disabledCategories": s.disabledCategories(r.Context())[id],
+	})
 }
 
 func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
@@ -1464,6 +1541,123 @@ func applyComicMeta(path string, item *localItemEntry) {
 			item.ComicID = value
 		}
 	}
+}
+
+func (s *Server) resolveLocalTarget(ctx context.Context, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("缺少 path 参数")
+	}
+	rootValue := s.cfg.DownloadDir
+	relative := value
+	if rawRoot, rawRelative, ok := strings.Cut(value, "|"); ok {
+		rootValue = rawRoot
+		relative = rawRelative
+	}
+	cleanedRoot := filepath.Clean(rootValue)
+	allowed := false
+	for _, candidate := range s.localRoots(ctx) {
+		if candidate == cleanedRoot {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", errors.New("路径不在下载目录内")
+	}
+	root, err := filepath.Abs(cleanedRoot)
+	if err != nil {
+		return "", err
+	}
+	target, err := filepath.Abs(filepath.Join(root, filepath.FromSlash(relative)))
+	if err != nil {
+		return "", err
+	}
+	within, err := filepath.Rel(root, target)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(os.PathSeparator)) {
+		return "", errors.New("路径不在下载目录内")
+	}
+	return target, nil
+}
+
+func isImageArchiveEntry(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif":
+		return true
+	default:
+		return false
+	}
+}
+
+// handleLocalCBZ lists image entries from a downloaded chapter archive.
+func (s *Server) handleLocalCBZ(w http.ResponseWriter, r *http.Request) {
+	target, err := s.resolveLocalTarget(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	archive, err := zip.OpenReader(target)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取 CBZ 文件: "+err.Error())
+		return
+	}
+	defer archive.Close()
+	type entry struct {
+		Name string `json:"name"`
+		Size uint64 `json:"size"`
+	}
+	items := make([]entry, 0, len(archive.File))
+	for _, file := range archive.File {
+		if file.FileInfo().IsDir() || !isImageArchiveEntry(file.Name) || strings.Contains(file.Name, "..") {
+			continue
+		}
+		items = append(items, entry{Name: file.Name, Size: file.UncompressedSize64})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleLocalCBZFile streams one image entry without extracting the archive.
+func (s *Server) handleLocalCBZFile(w http.ResponseWriter, r *http.Request) {
+	target, err := s.resolveLocalTarget(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entryName := strings.TrimSpace(r.URL.Query().Get("entry"))
+	if entryName == "" || strings.Contains(entryName, "..") || !isImageArchiveEntry(entryName) {
+		writeError(w, http.StatusBadRequest, "无效的 CBZ 条目")
+		return
+	}
+	archive, err := zip.OpenReader(target)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取 CBZ 文件: "+err.Error())
+		return
+	}
+	defer archive.Close()
+	for _, file := range archive.File {
+		if file.Name != entryName || file.FileInfo().IsDir() {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		defer reader.Close()
+		contentType := mime.TypeByExtension(strings.ToLower(path.Ext(entryName)))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Header().Set("Content-Length", strconv.FormatUint(file.UncompressedSize64, 10))
+		if r.URL.Query().Get("download") == "1" {
+			w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(entryName)+"\"")
+		}
+		_, _ = io.Copy(w, io.LimitReader(reader, 128<<20))
+		return
+	}
+	writeError(w, http.StatusNotFound, "CBZ 条目不存在")
 }
 
 func (s *Server) handleLocalFile(w http.ResponseWriter, r *http.Request) {

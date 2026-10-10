@@ -87,7 +87,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
-		Icon:        "/source-icons/jmcomic.svg",
+		Icon:        "/source-icons/jmcomic.png",
 		Sites:       append([]string(nil), defaultSites...),
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "分类", Options: jmCategoryOptions},

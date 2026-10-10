@@ -100,8 +100,9 @@ type SourceInfo struct {
 }
 
 type FilterOption struct {
-	Value string `json:"value"`
-	Label string `json:"label"`
+	Value    string `json:"value"`
+	Label    string `json:"label"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 type FilterGroup struct {

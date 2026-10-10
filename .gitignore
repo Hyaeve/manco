@@ -9,7 +9,7 @@ cmd/manco/web/node_modules/
 cmd/manco/web/dist/
 
 # Local smoke-test scratch space
-/.smoke/
+/.smoke*/
 
 # Local-only AI change log — deliberately kept out of the repository
 /AGENTS.md

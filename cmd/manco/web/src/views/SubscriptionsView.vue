@@ -5,14 +5,11 @@ import {
   Archive,
   BookOpen,
   CalendarClock,
-  CircleCheck,
-  Download,
   FolderOpen,
   Languages,
   Loader2,
   MoreVertical,
   Pencil,
-  Play,
   Power,
   RefreshCw,
   Rss,
@@ -21,15 +18,14 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import DirectoryPicker from '../components/DirectoryPicker.vue'
+import { notify } from '../stores/notices'
 
 const items = ref([])
 const jobs = ref([])
 const sources = ref({})
-const directories = ref([])
 const loading = ref(true)
 const busy = ref(0)
-const error = ref('')
-const message = ref('')
 const openMenu = ref(0)
 const editorOpen = ref(false)
 const editing = ref(null)
@@ -45,7 +41,6 @@ const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 
 
 onMounted(async () => {
   await load()
-  await loadDirectories()
   timer = window.setInterval(() => {
     if (hasActive.value) load(true)
   }, 5000)
@@ -67,7 +62,7 @@ async function load(silent = false) {
   try {
     const [subscriptions, downloads, sourcePayload] = await Promise.all([
       api.subscriptions(),
-      api.downloads(300),
+      api.downloads(500),
       Object.keys(sources.value).length ? Promise.resolve({ items: [] }) : api.sources().catch(() => ({ items: [] })),
     ])
     for (const source of sourcePayload.items || []) {
@@ -75,20 +70,10 @@ async function load(silent = false) {
     }
     items.value = subscriptions.items || []
     jobs.value = downloads.items || []
-    if (silent) error.value = ''
   } catch (err) {
-    if (!silent) error.value = err.message
+    if (!silent) notify(`订阅清单加载失败：${err.message}`, true)
   } finally {
     loading.value = false
-  }
-}
-
-async function loadDirectories() {
-  try {
-    const payload = await api.downloadDirectories()
-    directories.value = payload.items || []
-  } catch {
-    directories.value = []
   }
 }
 
@@ -111,12 +96,10 @@ function openEditor(item) {
 async function saveEditor() {
   if (!editing.value) return
   if (!form.value.cronExpr.trim()) {
-    error.value = 'Cron 表达式不能为空'
+    notify('Cron 表达式不能为空', true)
     return
   }
   busy.value = editing.value.id
-  error.value = ''
-  message.value = ''
   try {
     const updated = await api.updateSubscription(editing.value.id, {
       cronExpr: form.value.cronExpr.trim(),
@@ -124,10 +107,10 @@ async function saveEditor() {
       convertToSimplified: Boolean(form.value.convertToSimplified),
     })
     Object.assign(editing.value, updated)
-    message.value = `已更新《${editing.value.title}》的订阅设置。`
+    notify(`已更新《${editing.value.title}》的订阅任务`)
     editorOpen.value = false
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = 0
   }
@@ -136,14 +119,12 @@ async function saveEditor() {
 async function toggleEnabled(item) {
   openMenu.value = 0
   busy.value = item.id
-  error.value = ''
-  message.value = ''
   try {
     const updated = await api.updateSubscription(item.id, { enabled: !item.enabled })
     Object.assign(item, updated)
-    message.value = `《${item.title}》已${item.enabled ? '启用' : '停用'}。`
+    notify(`《${item.title}》已${item.enabled ? '启用' : '禁用'}`)
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = 0
   }
@@ -152,49 +133,12 @@ async function toggleEnabled(item) {
 async function archive(item) {
   openMenu.value = 0
   busy.value = item.id
-  error.value = ''
-  message.value = ''
   try {
     await api.archiveSubscription(item.id)
     items.value = items.value.filter((row) => row.id !== item.id)
-    message.value = `《${item.title}》已归档。`
+    notify(`《${item.title}》已归档`)
   } catch (err) {
-    error.value = err.message
-  } finally {
-    busy.value = 0
-  }
-}
-
-async function download(item) {
-  openMenu.value = 0
-  busy.value = item.id
-  message.value = ''
-  error.value = ''
-  try {
-    const result = await api.downloadSubscription(item.id)
-    message.value =
-      result.item?.status === 'completed'
-        ? `《${item.title}》最新章节已在本地。`
-        : `已将《${item.title}》最新章节加入下载队列。`
-    await load(true)
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    busy.value = 0
-  }
-}
-
-async function check(item) {
-  openMenu.value = 0
-  busy.value = item.id
-  message.value = ''
-  error.value = ''
-  try {
-    await api.checkSubscription(item.id)
-    message.value = `已检查《${item.title}》，新章节会自动加入下载队列。`
-    await load(true)
-  } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = 0
   }
@@ -204,12 +148,12 @@ async function remove(item) {
   openMenu.value = 0
   if (!window.confirm(`确定删除订阅「${item.title}」吗？`)) return
   busy.value = item.id
-  error.value = ''
   try {
     await api.deleteSubscription(item.id)
     items.value = items.value.filter((row) => row.id !== item.id)
+    notify(`《${item.title}》已删除`)
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = 0
   }
@@ -224,22 +168,12 @@ function sourceIcon(item) {
 }
 
 function chapterCount(item) {
+  if (item.chapterCount) return item.chapterCount
   return jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId).length
-}
-
-function stats(item) {
-  const rows = jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId)
-  const active = rows.filter((job) => ['queued', 'running', 'paused'].includes(job.status)).length
-  const completed = rows.filter((job) => job.status === 'completed').length
-  const failed = rows.filter((job) => ['failed', 'canceled'].includes(job.status)).length
-  return { active, completed, failed }
 }
 </script>
 
 <template>
-  <div v-if="error" class="alert error">{{ error }}</div>
-  <div v-if="message" class="alert ok">{{ message }}</div>
-
   <div class="toolbar subscription-toolbar">
     <span class="spacer" />
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
@@ -269,7 +203,7 @@ function stats(item) {
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
         >
           <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
-          <BookOpen v-else :size="22" />
+          <BookOpen v-else :size="24" />
         </RouterLink>
         <div class="subscription-meta">
           <RouterLink
@@ -279,27 +213,23 @@ function stats(item) {
             {{ item.title }}
           </RouterLink>
           <span class="subscription-sub">{{ item.author || '未知作者' }}</span>
-          <span class="subscription-sub">已记录 {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}</span>
+          <span class="subscription-sub">
+            {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}
+          </span>
           <div class="subscription-line">
-            <CalendarClock :size="13" />
+            <CalendarClock :size="14" />
             <span class="mono">{{ item.cronExpr || '未设置' }}</span>
           </div>
           <div class="subscription-line">
-            <FolderOpen :size="13" />
+            <FolderOpen :size="14" />
             <span>{{ item.downloadDir || '默认下载目录' }}</span>
-          </div>
-          <span v-if="item.convertToSimplified" class="badge"><Languages :size="12" /> 繁转简</span>
-          <div class="inline">
-            <span class="badge primary">进行中 {{ stats(item).active }}</span>
-            <span class="badge success"><CircleCheck :size="12" /> 已完成 {{ stats(item).completed }}</span>
-            <span v-if="stats(item).failed" class="badge danger">失败 {{ stats(item).failed }}</span>
-            <span v-if="!item.enabled" class="badge warning">已停用</span>
           </div>
         </div>
       </div>
       <div class="subscription-menu">
-        <button class="btn ghost icon" type="button" aria-label="更多操作" @click="toggleMenu(item, $event)">
-          <MoreVertical :size="18" />
+        <button class="btn ghost icon subscription-more" type="button" aria-label="更多操作" @click="toggleMenu(item, $event)">
+          <Loader2 v-if="busy === item.id" :size="18" class="spin" />
+          <MoreVertical v-else :size="18" />
         </button>
         <div v-if="openMenu === item.id" class="dropdown-panel subscription-actions" @click.stop>
           <button class="dropdown-item" type="button" @click="openEditor(item)">
@@ -316,17 +246,6 @@ function stats(item) {
           </button>
         </div>
       </div>
-      <div class="subscription-quick">
-        <button class="btn primary small" type="button" :disabled="busy === item.id" @click="download(item)">
-          <Loader2 v-if="busy === item.id" :size="14" class="spin" />
-          <Download v-else :size="14" />
-          下载最新话
-        </button>
-        <button class="btn secondary small" type="button" :disabled="busy === item.id" @click="check(item)">
-          <Play :size="14" />
-          检查更新
-        </button>
-      </div>
     </article>
   </div>
 
@@ -334,7 +253,7 @@ function stats(item) {
     <div class="modal">
       <div class="modal-head">
         <div>
-          <h2>编辑订阅任务</h2>
+          <h2>订阅任务设置</h2>
           <p class="muted small">{{ editing?.title }}</p>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭" @click="editorOpen = false">
@@ -348,13 +267,7 @@ function stats(item) {
         </label>
         <label class="field">
           <span class="inline"><FolderOpen :size="14" /> 下载位置</span>
-          <select v-model="form.downloadDir" class="input">
-            <option value="">使用默认下载目录</option>
-            <option v-for="dir in directories" :key="dir.path" :value="dir.path">
-              {{ dir.path }}{{ dir.default ? '（默认）' : '' }}
-            </option>
-          </select>
-          <input v-model="form.downloadDir" class="input" placeholder="也可手动填写容器内目录" style="margin-top: 8px" />
+          <DirectoryPicker v-model="form.downloadDir" />
         </label>
         <label class="switch-row">
           <input v-model="form.convertToSimplified" type="checkbox" />

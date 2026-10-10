@@ -12,11 +12,14 @@ import {
   RefreshCw,
   Save,
   Server,
+  SlidersHorizontal,
   Trash2,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import { notify } from '../stores/notices'
 import PasswordInput from '../components/PasswordInput.vue'
+import SitePicker from '../components/SitePicker.vue'
 
 const sources = ref([])
 const accounts = ref({})
@@ -24,12 +27,13 @@ const repoUrl = ref('')
 const repoInfo = ref(null)
 const loading = ref(true)
 const busy = ref('')
-const error = ref('')
-const message = ref('')
 const activeKind = ref('comic')
 const editorOpen = ref(false)
 const editorMode = ref('create')
 const repoBusy = ref(false)
+const categoryOpen = ref(false)
+const categorySource = ref(null)
+const categorySelection = ref([])
 
 const forms = reactive({})
 const editor = reactive({
@@ -65,7 +69,6 @@ onMounted(load)
 
 async function load() {
   loading.value = true
-  error.value = ''
   try {
     const payload = await api.sources()
     sources.value = payload.items || []
@@ -83,7 +86,7 @@ async function load() {
       }
     }
   } catch (err) {
-    error.value = err.message
+    notify(`资源库加载失败：${err.message}`, true)
   } finally {
     loading.value = false
   }
@@ -91,17 +94,16 @@ async function load() {
 
 async function loadRepo() {
   repoBusy.value = true
-  error.value = ''
   try {
     const payload = await api.sourceRepo()
     const raw = payload.items
     const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? Object.values(raw) : []
     repoInfo.value = list.find((entry) => entry && typeof entry === 'object') || null
-    if (repoInfo.value && !message.value) {
-      message.value = `已读取 Kototoro 拓展仓库：${repoInfo.value.name || '未命名'}${repoInfo.value.version ? ` · v${repoInfo.value.version}` : ''}`
+    if (repoInfo.value) {
+      notify(`已读取 Kototoro 拓展仓库：${repoInfo.value.name || '未命名'}${repoInfo.value.version ? ` · v${repoInfo.value.version}` : ''}`)
     }
   } catch (err) {
-    error.value = err.message
+    notify(`读取仓库失败：${err.message}`, true)
   } finally {
     repoBusy.value = false
   }
@@ -117,7 +119,47 @@ function connected(id) {
 }
 
 function isBuiltin(item) {
-  return item.builtin || ['picacg', 'jmcomic', 'baozimh'].includes(item.id)
+  return item.builtin || ['picacg', 'jmcomic', 'baozimh', 'biquge'].includes(item.id)
+}
+
+function openCategory(item) {
+  if (!item.filters?.length) {
+    notify(`${item.name} 暂无可配置分类`)
+    return
+  }
+  categorySource.value = item
+  categorySelection.value = item.filters
+    .flatMap((group) => group.options || [])
+    .filter((option) => option.disabled && option.value)
+    .map((option) => String(option.value))
+  categoryOpen.value = true
+}
+
+function toggleCategory(value) {
+  const key = String(value)
+  categorySelection.value = categorySelection.value.includes(key)
+    ? categorySelection.value.filter((item) => item !== key)
+    : [...categorySelection.value, key]
+}
+
+async function saveCategories() {
+  const item = categorySource.value
+  if (!item) return
+  busy.value = item.id
+  try {
+    const result = await api.updateSource(item.id, { disabledCategories: categorySelection.value })
+    const disabled = new Set(result.disabledCategories || [])
+    item.filters = (item.filters || []).map((group) => ({
+      ...group,
+      options: (group.options || []).map((option) => ({ ...option, disabled: disabled.has(String(option.value)) })),
+    }))
+    categoryOpen.value = false
+    notify(`${item.name} 的分类显示设置已保存`)
+  } catch (err) {
+    notify(err.message, true)
+  } finally {
+    busy.value = ''
+  }
 }
 
 function openCreate(kind) {
@@ -154,7 +196,6 @@ async function openEdit(item) {
   if (isBuiltin(item)) return
   editorMode.value = 'edit'
   busy.value = item.id
-  error.value = ''
   try {
     const payload = await api.customSourceConfig(item.id)
     const cfg = payload.config || {}
@@ -184,7 +225,7 @@ async function openEdit(item) {
     })
     editorOpen.value = true
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = ''
   }
@@ -221,17 +262,15 @@ function buildConfig() {
 
 async function saveEditor() {
   if (!editor.id.trim() || !editor.name.trim() || !editor.homepage.trim()) {
-    error.value = '源 ID、名称和首页地址不能为空'
+    notify('源 ID、名称和首页地址不能为空', true)
     return
   }
   const config = buildConfig()
   if (!config.searchUrl && !config.itemSelector) {
-    error.value = '至少填写“搜索地址”或“列表项选择器”其中之一'
+    notify('至少填写“搜索地址”或“列表项选择器”其中之一', true)
     return
   }
   busy.value = editor.id
-  error.value = ''
-  message.value = ''
   const payload = {
     id: editor.id.trim().toLowerCase(),
     name: editor.name.trim(),
@@ -249,11 +288,11 @@ async function saveEditor() {
     } else {
       await api.updateCustomSource(editor.id.trim().toLowerCase(), payload)
     }
-    message.value = `${payload.name} 已保存，可在探索发现中浏览。`
+    notify(`${payload.name} 已保存，可在探索发现中浏览。`)
     editorOpen.value = false
     await load()
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = ''
   }
@@ -262,14 +301,12 @@ async function saveEditor() {
 async function removeCustom(item) {
   if (!window.confirm(`确定删除自定义源「${item.name}」吗？`)) return
   busy.value = item.id
-  error.value = ''
-  message.value = ''
   try {
     await api.deleteCustomSource(item.id)
     sources.value = sources.value.filter((row) => row.id !== item.id)
-    message.value = `${item.name} 已删除。`
+    notify(`${item.name} 已删除。`)
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = ''
   }
@@ -278,8 +315,6 @@ async function removeCustom(item) {
 async function save(item, login) {
   const form = forms[item.id]
   busy.value = item.id
-  error.value = ''
-  message.value = ''
   try {
     await api.saveAccount(item.id, {
       username: form.username,
@@ -288,12 +323,12 @@ async function save(item, login) {
       homeUrl: form.homeUrl,
       login: Boolean(login),
     })
-    message.value = `${item.name} 凭据已保存。`
+    notify(`${item.name} 凭据已保存。`)
     form.password = ''
     form.cookie = ''
     await load()
   } catch (err) {
-    error.value = err.message
+    notify(`${item.name}：${err.message}`, true)
   } finally {
     busy.value = ''
   }
@@ -301,14 +336,12 @@ async function save(item, login) {
 
 async function toggleHidden(item) {
   busy.value = item.id
-  error.value = ''
-  message.value = ''
   try {
     const result = await api.updateSource(item.id, { hidden: !item.hidden })
     item.hidden = Boolean(result.hidden)
-    message.value = item.hidden ? `${item.name} 已从探索发现隐藏。` : `${item.name} 已显示在探索发现。`
+    notify(item.hidden ? `${item.name} 已从探索发现隐藏。` : `${item.name} 已显示在探索发现。`)
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = ''
   }
@@ -317,18 +350,16 @@ async function toggleHidden(item) {
 async function disconnect(item) {
   if (!window.confirm(`确定清除「${item.name}」的账号凭据吗？`)) return
   busy.value = item.id
-  error.value = ''
-  message.value = ''
   try {
     await api.deleteAccount(item.id)
     const form = forms[item.id]
     form.username = ''
     form.password = ''
     form.cookie = ''
-    message.value = `${item.name} 的凭据已清除。`
+    notify(`${item.name} 的凭据已清除。`)
     await load()
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     busy.value = ''
   }
@@ -336,8 +367,6 @@ async function disconnect(item) {
 </script>
 
 <template>
-  <div v-if="error" class="alert error">{{ error }}</div>
-  <div v-if="message" class="alert ok">{{ message }}</div>
 
   <div class="card card-pad" style="margin-bottom: 18px">
     <div class="inline">
@@ -398,8 +427,9 @@ async function disconnect(item) {
       :key="item.id"
       class="card card-pad source-card"
       :class="{ 'source-card-hidden': item.hidden }"
+      @click="openCategory(item)"
     >
-      <div class="section-head" style="margin-bottom: 8px">
+      <div class="section-head" style="margin-bottom: 8px" @click.stop>
         <div class="inline">
           <img v-if="item.icon" class="source-favicon" :src="item.icon" alt="" />
           <Server v-else :size="17" />
@@ -410,6 +440,16 @@ async function disconnect(item) {
         <div class="inline">
           <span v-if="connected(item.id)" class="badge success">已连接</span>
           <span v-else-if="item.needsLogin" class="badge">未连接</span>
+          <button
+            v-if="item.filters?.length"
+            class="btn secondary small"
+            type="button"
+            :disabled="busy === item.id"
+            @click="openCategory(item)"
+          >
+            <SlidersHorizontal :size="14" />
+            分类
+          </button>
           <button class="btn secondary small" type="button" :disabled="busy === item.id" @click="toggleHidden(item)">
             <Loader2 v-if="busy === item.id" :size="14" class="spin" />
             <EyeOff v-else-if="!item.hidden" :size="14" />
@@ -437,18 +477,18 @@ async function disconnect(item) {
           </button>
         </div>
       </div>
-      <p class="muted small" style="margin-top: 0">{{ item.description || item.homepage }}</p>
-      <div class="tag-list">
+      <p class="muted small source-card-summary" style="margin-top: 0" @click.stop>{{ item.description || item.homepage }}</p>
+      <div class="tag-list" @click.stop>
         <span v-if="item.needsLogin" class="badge warning">需要登录</span>
         <span class="badge" :class="item.canSearch ? 'primary' : ''">{{ item.canSearch ? '支持搜索' : '不支持搜索' }}</span>
         <span class="badge" :class="item.canBrowse ? 'primary' : ''">{{ item.canBrowse ? '支持浏览' : '不支持浏览' }}</span>
         <span v-if="item.hidden" class="badge">已隐藏</span>
       </div>
-      <a v-if="item.homepage && !isBuiltin(item)" class="muted small" :href="item.homepage" target="_blank" rel="noreferrer">
+      <a v-if="item.homepage && !isBuiltin(item)" class="muted small" :href="item.homepage" target="_blank" rel="noreferrer" @click.stop>
         {{ item.homepage }}
       </a>
 
-      <template v-if="forms[item.id] && isBuiltin(item)">
+      <div v-if="forms[item.id] && isBuiltin(item)" class="source-account-block" @click.stop>
         <template v-if="item.id === 'picacg'">
           <label class="field" style="margin-bottom: 10px">
             <span>账号（邮箱或用户名）</span>
@@ -462,15 +502,11 @@ async function disconnect(item) {
         <template v-else-if="item.id === 'jmcomic' || item.id === 'baozimh'">
           <label class="field" style="margin-bottom: 10px">
             <span>网站地址（可选内置镜像，也可自定义）</span>
-            <input
+            <SitePicker
               v-model="forms[item.id].homeUrl"
-              class="input"
+              :options="item.sites || []"
               :placeholder="item.homepage"
-              :list="`sites-${item.id}`"
             />
-            <datalist :id="`sites-${item.id}`">
-              <option v-for="site in item.sites || []" :key="site" :value="site">{{ site }}</option>
-            </datalist>
           </label>
           <label class="field" style="margin-bottom: 12px">
             <span>Cookie（可选，用于通过校验）</span>
@@ -520,8 +556,45 @@ async function disconnect(item) {
             更新于 {{ new Date(accountOf(item.id).updatedAt).toLocaleString() }}
           </span>
         </div>
-      </template>
+      </div>
     </section>
+  </div>
+
+  <div v-if="categoryOpen" class="modal-backdrop" @click.self="categoryOpen = false">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2>分类显示设置</h2>
+          <p class="muted small">{{ categorySource?.name }} · 勾选后不在探索发现显示</p>
+        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="categoryOpen = false">
+          <X :size="18" />
+        </button>
+      </div>
+      <div class="modal-body">
+        <section v-for="group in categorySource?.filters || []" :key="group.key" class="settings-block">
+          <h3>{{ group.label }}</h3>
+          <div class="category-picker-grid">
+            <label v-for="option in group.options || []" :key="`${group.key}-${option.value}`" class="category-toggle">
+              <input
+                type="checkbox"
+                :checked="categorySelection.includes(String(option.value))"
+                @change="toggleCategory(option.value)"
+              />
+              <span>{{ option.label }}</span>
+            </label>
+          </div>
+        </section>
+      </div>
+      <div class="modal-foot">
+        <button class="btn secondary" type="button" @click="categoryOpen = false">取消</button>
+        <button class="btn" type="button" :disabled="busy === categorySource?.id" @click="saveCategories">
+          <Loader2 v-if="busy === categorySource?.id" :size="15" class="spin" />
+          <Save v-else :size="15" />
+          保存分类设置
+        </button>
+      </div>
+    </div>
   </div>
 
   <div v-if="editorOpen" class="modal-backdrop" @click.self="editorOpen = false">

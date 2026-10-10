@@ -89,6 +89,13 @@ export const api = {
     if (download) params.set('download', '1')
     return `/api/local/file?${params.toString()}`
   },
+  localCBZ: (path) => request(`/api/local/cbz?path=${encodeURIComponent(path)}`),
+  localCBZFileUrl: (path, entry, download = false) => {
+    if (!path || !entry) return ''
+    const params = new URLSearchParams({ path, entry })
+    if (download) params.set('download', '1')
+    return `/api/local/cbz/file?${params.toString()}`
+  },
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   stats: () => request('/api/stats'),

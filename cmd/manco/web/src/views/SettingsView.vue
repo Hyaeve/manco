@@ -5,14 +5,13 @@ import { api } from '../api'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
+import { notify } from '../stores/notices'
 
 const auth = useAuthStore()
 const route = useRoute()
 const loading = ref(true)
 const saving = ref('')
 const saveState = reactive({})
-const error = ref('')
-const message = ref('')
 const form = reactive({
   username: '',
   currentPassword: '',
@@ -36,13 +35,15 @@ onMounted(async () => {
   await load()
   const section = String(route.query.section || '')
   if (section) {
-    window.setTimeout(() => document.getElementById(`settings-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60)
+    window.setTimeout(
+      () => document.getElementById(`settings-${section}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      60,
+    )
   }
 })
 
 async function load() {
   loading.value = true
-  error.value = ''
   try {
     const payload = await api.settings()
     form.username = payload.username || auth.user?.username || ''
@@ -57,21 +58,19 @@ async function load() {
     form.sourceConcurrency = { picacg: 1, jmcomic: 1, baozimh: 1, ...(payload.sourceConcurrency || {}) }
     form.staleDays = { picacg: 0, jmcomic: 0, baozimh: 0, ...(payload.staleDays || {}) }
   } catch (err) {
-    error.value = err.message
+    notify(`设置加载失败：${err.message}`, true)
   } finally {
     loading.value = false
   }
 }
 
 async function save(section, label) {
-  saving.value = section
-  error.value = ''
-  message.value = ''
   if ((section === 'account' || section === 'all') && form.newPassword && form.newPassword !== form.confirmPassword) {
-    error.value = '两次输入的新密码不一致'
-    saving.value = ''
+    notify('两次输入的新密码不一致', true)
     return
   }
+  if (section === 'account' && !window.confirm('确认保存账号与安全设置吗？修改密码后请使用新密码登录。')) return
+  saving.value = section
   try {
     await api.saveSettings({
       username: form.username,
@@ -106,10 +105,10 @@ async function save(section, label) {
     window.setTimeout(() => {
       saveState[section] = false
     }, 2000)
-    message.value = `${label}已保存`
+    notify(`${label}已保存`)
     await load()
   } catch (err) {
-    error.value = err.message
+    notify(err.message, true)
   } finally {
     saving.value = ''
   }
@@ -117,23 +116,20 @@ async function save(section, label) {
 </script>
 
 <template>
-  <div v-if="error" class="alert error">{{ error }}</div>
-  <div v-if="message" class="alert ok">{{ message }}</div>
-
   <div v-if="loading" class="empty">
     <Loader2 :size="22" class="spin" />
     <span>加载设置</span>
   </div>
 
   <div v-else class="settings-sections">
-    <section id="settings-account" class="card card-pad">
+    <section id="settings-account" class="card card-pad settings-account-card">
       <div class="section-head">
         <div class="inline">
           <ShieldCheck :size="17" />
           <h2>账号与安全</h2>
         </div>
       </div>
-      <div class="settings-grid">
+      <div class="settings-account-row">
         <label class="field">
           <span>账号</span>
           <input v-model="form.username" class="input" autocomplete="username" />
@@ -143,7 +139,7 @@ async function save(section, label) {
           <input v-model.number="form.sessionTtlDays" class="input" type="number" min="1" max="3650" />
         </label>
       </div>
-      <div class="settings-grid">
+      <div class="settings-account-row">
         <label class="field">
           <span>当前密码</span>
           <PasswordInput v-model="form.currentPassword" autocomplete="current-password" />
@@ -152,11 +148,11 @@ async function save(section, label) {
           <span>新密码</span>
           <PasswordInput v-model="form.newPassword" autocomplete="new-password" />
         </label>
+        <label class="field">
+          <span>确认新密码</span>
+          <PasswordInput v-model="form.confirmPassword" autocomplete="new-password" />
+        </label>
       </div>
-      <label class="field">
-        <span>确认新密码</span>
-        <PasswordInput v-model="form.confirmPassword" autocomplete="new-password" />
-      </label>
       <div class="inline settings-actions">
         <button class="btn" type="button" :disabled="saving === 'account'" @click="save('account', '账号与安全设置')">
           <Loader2 v-if="saving === 'account'" :size="15" class="spin" />

@@ -5,25 +5,30 @@ import {
   Activity,
   Bell,
   ChevronRight,
+  CircleCheck,
   CircleUser,
   Compass,
   Download,
   HardDrive,
   Info,
   LayoutDashboard,
+  LoaderCircle,
   LogOut,
   Menu,
+  Monitor,
   Moon,
   Rss,
+  ScrollText,
   Server,
   Settings,
-  ScrollText,
   Sun,
-  SunMoon,
+  X,
 } from 'lucide-vue-next'
 import MancoLogo from './components/MancoLogo.vue'
+import ThinScroll from './components/ThinScroll.vue'
 import { api } from './api'
 import { useAuthStore } from './stores/auth'
+import { clearNotices, dismissNotice, notices } from './stores/notices'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -33,7 +38,15 @@ const openMenu = ref('')
 const activityOpen = ref(false)
 const activityItems = ref([])
 const activityLoading = ref(false)
-const theme = ref(localStorage.getItem('manco-theme') || 'light')
+
+const theme = ref(localStorage.getItem('manco-theme') || 'system')
+const themeOptions = [
+  { id: 'light', label: '日光', icon: Sun },
+  { id: 'dark', label: '夜间', icon: Moon },
+  { id: 'system', label: '跟随系统', icon: Monitor },
+]
+
+const media = window.matchMedia('(prefers-color-scheme: dark)')
 
 const navItems = [
   { name: 'dashboard', label: '总览', to: '/', icon: LayoutDashboard },
@@ -43,8 +56,8 @@ const navItems = [
   { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
   { name: 'sources', label: '资源库', to: '/sources', icon: Server },
 ]
-const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }
 const logsItem = { name: 'logs', label: '运行日志', to: '/logs', icon: ScrollText }
+const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }
 
 const showShell = computed(() => route.name !== 'login')
 const pageTitle = computed(() => {
@@ -65,22 +78,17 @@ const breadcrumb = computed(() => {
   return list
 })
 
-function applyTheme(value) {
-  theme.value = value
-  document.documentElement.dataset.theme = value
+function applyTheme() {
+  const resolved = theme.value === 'system' ? (media.matches ? 'dark' : 'light') : theme.value
+  document.documentElement.dataset.theme = resolved
+  document.documentElement.dataset.themePreference = theme.value
+}
+
+
+
+watch(theme, (value) => {
   localStorage.setItem('manco-theme', value)
-}
-
-function cycleTheme() {
-  const order = ['light', 'dark', 'auto']
-  const next = order[(order.indexOf(theme.value) + 1) % order.length]
-  applyTheme(next)
-}
-
-const themeIcon = computed(() => {
-  if (theme.value === 'dark') return Moon
-  if (theme.value === 'auto') return SunMoon
-  return Sun
+  applyTheme()
 })
 
 watch(
@@ -93,19 +101,27 @@ watch(
 )
 
 onMounted(() => {
-  applyTheme(theme.value)
+  applyTheme()
+  media.addEventListener('change', applyTheme)
   if (!auth.ready) auth.load()
   window.addEventListener('click', closeMenus)
+  window.addEventListener('keydown', escapeMenus)
 })
 
 onUnmounted(() => {
+  media.removeEventListener('change', applyTheme)
   window.removeEventListener('click', closeMenus)
+  window.removeEventListener('keydown', escapeMenus)
 })
 
 function closeMenus(event) {
-  if (event.target.closest('.topbar-menu')) return
+  if (event && event.target?.closest?.('.topbar-menu')) return
   openMenu.value = ''
   activityOpen.value = false
+}
+
+function escapeMenus(event) {
+  if (event.key === 'Escape') closeMenus()
 }
 
 async function toggleActivity(event) {
@@ -126,8 +142,7 @@ async function toggleActivity(event) {
 
 function toggleMenu(name, event) {
   event.stopPropagation()
-  openMenu.value = openMenu.value === name ? '' : name
-  activityOpen.value = false
+  openMenu.value = openMenu.value === name ? '' : (activityOpen.value = false, name)
 }
 
 async function signOut() {
@@ -138,106 +153,160 @@ async function signOut() {
 function goSection(section) {
   router.push({ name: 'settings', query: { section } })
 }
+
+function activityIcon(level) {
+  if (level === 'success') return CircleCheck
+  if (level === 'error') return Activity
+  return LoaderCircle
+}
 </script>
 
 <template>
   <RouterView v-if="!showShell" />
   <div v-else class="app-shell">
+    <div v-if="menuOpen" class="nav-overlay" @click="menuOpen = false" />
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
-        <MancoLogo class="brand-logo" :size="34" />
+        <MancoLogo class="brand-logo" :size="38" />
         <span class="brand-text">
           <strong>Manco</strong>
-          <span>漫画书籍订阅下载</span>
+          <small>漫画书籍 · 订阅下载</small>
         </span>
       </div>
-      <nav class="nav">
-        <RouterLink v-for="item in navItems" :key="item.name" :to="item.to">
-          <component :is="item.icon" :size="17" />
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </nav>
-      <div class="sidebar-foot">
-        <nav class="nav sidebar-settings">
-          <RouterLink :to="logsItem.to">
-            <component :is="logsItem.icon" :size="17" />
+      <nav aria-label="主导航">
+        <div class="nav-group">
+          <RouterLink
+            v-for="item in navItems"
+            :key="item.name"
+            :to="item.to"
+            :aria-current="route.name === item.name ? 'page' : undefined"
+            :class="{ active: route.name === item.name }"
+          >
+            <component :is="item.icon" :size="21" />
+            <span>{{ item.label }}</span>
+          </RouterLink>
+          <RouterLink
+            :to="logsItem.to"
+            :aria-current="route.name === logsItem.name ? 'page' : undefined"
+            :class="{ active: route.name === logsItem.name, 'nav-bottom': true }"
+          >
+            <component :is="logsItem.icon" :size="21" />
             <span>{{ logsItem.label }}</span>
           </RouterLink>
-          <RouterLink :to="systemItem.to">
-            <component :is="systemItem.icon" :size="17" />
+          <RouterLink
+            :to="systemItem.to"
+            :aria-current="route.name === systemItem.name ? 'page' : undefined"
+            :class="{ active: route.name === systemItem.name }"
+          >
+            <component :is="systemItem.icon" :size="21" />
             <span>{{ systemItem.label }}</span>
           </RouterLink>
-        </nav>
-      </div>
-    </aside>
-    <div v-if="menuOpen" class="scrim" @click="menuOpen = false" />
-    <main class="main">
-      <header class="topbar">
-        <div class="inline">
-          <button class="btn ghost icon mobile-only" type="button" aria-label="打开导航" @click="menuOpen = true">
-            <Menu :size="20" />
-          </button>
-          <nav class="breadcrumb" aria-label="面包屑">
-            <template v-for="(crumb, index) in breadcrumb" :key="crumb.label">
-              <ChevronRight v-if="index" :size="14" class="crumb-sep" />
-              <RouterLink v-if="crumb.to" :to="crumb.to">{{ crumb.label }}</RouterLink>
-              <span v-else class="crumb-current">{{ crumb.label }}</span>
-            </template>
-          </nav>
         </div>
+      </nav>
+    </aside>
+
+    <div class="main-shell">
+      <header class="topbar">
+        <button class="icon-btn mobile-menu" type="button" aria-label="打开导航" @click.stop="menuOpen = !menuOpen">
+          <Menu :size="20" />
+        </button>
+        <nav class="breadcrumbs" aria-label="面包屑">
+          <template v-for="(crumb, index) in breadcrumb" :key="crumb.label">
+            <ChevronRight v-if="index" :size="15" class="crumb-sep" />
+            <RouterLink v-if="crumb.to" :to="crumb.to">{{ crumb.label }}</RouterLink>
+            <strong v-else>{{ crumb.label }}</strong>
+          </template>
+        </nav>
         <div class="topbar-actions">
-          <button class="btn ghost icon topbar-menu" type="button" :title="`主题：${theme}`" @click="cycleTheme">
-            <component :is="themeIcon" :size="18" />
-          </button>
-          <div class="topbar-menu menu-anchor">
-            <button class="btn ghost icon" type="button" title="活动通知" @click="toggleActivity">
-              <Bell :size="18" />
-              <span v-if="activityItems.length" class="notif-dot" />
+          <div class="theme-switch" role="group" aria-label="主题">
+            <button
+              v-for="option in themeOptions"
+              :key="option.id"
+              class="icon-btn"
+              :class="{ selected: theme === option.id }"
+              type="button"
+              :aria-label="`主题：${option.label}`"
+              :title="`主题：${option.label}`"
+              @click="theme = option.id"
+            >
+              <component :is="option.icon" :size="18" />
             </button>
-            <div v-if="activityOpen" class="dropdown-panel activity-panel" @click.stop>
-              <div class="dropdown-head">
-                <strong>活动通知</strong>
+          </div>
+          <div class="topbar-menu notification-control" @click.stop>
+            <button class="icon-btn notification-button" type="button" aria-label="活动通知" @click="toggleActivity">
+              <Bell :size="20" />
+              <span v-if="activityItems.length" class="notification-badge">
+                {{ activityItems.length > 99 ? '99+' : activityItems.length }}
+              </span>
+            </button>
+            <section v-if="activityOpen" class="notification-dropdown">
+              <header>
+                <h2>活动通知</h2>
                 <Activity :size="15" />
-              </div>
-              <div v-if="activityLoading" class="dropdown-empty">加载中…</div>
-              <div v-else-if="!activityItems.length" class="dropdown-empty">暂无活动记录</div>
-              <ul v-else class="activity-list">
+              </header>
+              <p v-if="activityLoading" class="small-empty">加载中…</p>
+              <p v-else-if="!activityItems.length" class="small-empty">暂无活动记录</p>
+              <ul v-else class="notification-list">
                 <li v-for="entry in activityItems" :key="entry.id || entry.time">
-                  <span class="activity-dot" :class="entry.level || 'info'" />
-                  <div>
-                    <p>{{ entry.message }}</p>
-                    <span class="muted small">{{ entry.time ? new Date(entry.time).toLocaleString() : '' }}</span>
-                  </div>
+                  <component
+                    :is="activityIcon(entry.level)"
+                    :size="16"
+                    :class="entry.level === 'success' ? 'success-text' : entry.level === 'error' ? 'danger-text' : 'spin'"
+                  />
+                  <span>
+                    <strong>{{ entry.message }}</strong>
+                    <small>{{ entry.time ? new Date(entry.time).toLocaleString() : '' }}</small>
+                  </span>
                 </li>
               </ul>
-            </div>
+            </section>
           </div>
-          <div class="topbar-menu menu-anchor">
-            <button class="btn ghost icon" type="button" title="账号" @click="toggleMenu('account', $event)">
-              <CircleUser :size="19" />
+          <div class="topbar-menu account-control" @click.stop>
+            <button class="account-button" type="button" aria-label="账号菜单" @click="toggleMenu('account', $event)">
+              <CircleUser :size="20" />
             </button>
-            <div v-if="openMenu === 'account'" class="dropdown-panel account-panel" @click.stop>
-              <div class="dropdown-user">
-                <CircleUser :size="18" />
+            <div v-if="openMenu === 'account'" class="account-dropdown">
+              <div class="account-name">
+                <CircleUser :size="17" />
                 <span>{{ auth.user?.username || '未登录' }}</span>
               </div>
-              <button class="dropdown-item" type="button" @click="goSection('account')">
-                <Settings :size="15" />
-                账号安全
+              <button type="button" @click="goSection('account')">
+                <Settings :size="17" /> 账号安全
               </button>
-              <button class="dropdown-item" type="button" @click="goSection('about')">
-                <Info :size="15" />
-                关于 Manco
+              <button type="button" @click="goSection('about')">
+                <Info :size="17" /> 关于 Manco
               </button>
-              <button class="dropdown-item danger" type="button" @click="signOut">
-                <LogOut :size="15" />
-                退出登录
+              <button type="button" class="danger" @click="signOut">
+                <LogOut :size="17" /> 退出登录
               </button>
             </div>
           </div>
         </div>
       </header>
-      <RouterView />
-    </main>
+      <ThinScroll class="page-scroll" :thickness="1">
+        <main class="page-content">
+          <RouterView />
+        </main>
+      </ThinScroll>
+    </div>
   </div>
+
+  <TransitionGroup name="toast-slide" tag="div" class="toast-stack" aria-live="polite">
+    <div
+      v-for="notice in notices"
+      :key="notice.id"
+      class="toast"
+      :class="{ error: notice.error }"
+      :role="notice.error ? 'alert' : 'status'"
+    >
+      <span class="toast-symbol">
+        <X v-if="notice.error" :size="15" />
+        <CircleCheck v-else :size="15" />
+      </span>
+      <span>{{ notice.message }}</span>
+      <button class="icon-btn" type="button" aria-label="关闭提示" @click="dismissNotice(notice.id)">
+        <X :size="15" />
+      </button>
+    </div>
+  </TransitionGroup>
 </template>

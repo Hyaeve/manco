@@ -13,6 +13,7 @@ import (
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/source/baozimh"
+	"github.com/hyaeve/manco/internal/source/biquge"
 	"github.com/hyaeve/manco/internal/source/generic"
 	"github.com/hyaeve/manco/internal/source/gutenberg"
 	"github.com/hyaeve/manco/internal/source/jmcomic"
@@ -35,6 +36,7 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) 
 		picacg.New(client),
 		jmcomic.New(client),
 		baozimh.New(client),
+		biquge.New(client),
 		shencou.New(client),
 		gutenberg.New(client),
 	}
@@ -43,7 +45,7 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) 
 		box:      box,
 		store:    repository,
 		byID:     make(map[string]source.Source, len(items)),
-		builtins: map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "shencou": true, "gutenberg": true},
+		builtins: map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "biquge": true, "shencou": true, "gutenberg": true},
 		custom:   map[string]bool{},
 	}
 	for _, item := range items {
@@ -63,7 +65,7 @@ func (r *Registry) List() []model.SourceInfo {
 		info.Editable = r.custom[info.ID]
 		items = append(items, info)
 	}
-	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "shencou": 3, "gutenberg": 4}
+	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "biquge": 3, "shencou": 4, "gutenberg": 5}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, leftOK := order[items[i].ID]
 		right, rightOK := order[items[j].ID]
@@ -178,6 +180,7 @@ func (r *Registry) AllowedImageHost(host string) bool {
 		".baozimh.com", ".baozimh.org", ".baozimhcn.com", ".baozicdn.com", ".bzmgcn.com", ".bzcdn.net",
 		".wowenku.com", ".shencou.com", ".wenruya.com",
 		".gutenberg.org",
+		".biquge345.com",
 		".webmota.com", ".kukuc.co", ".twmanga.com", ".dinnerku.com", ".twmanhua.com",
 		".picacomic.com", ".go2778.com",
 	} {

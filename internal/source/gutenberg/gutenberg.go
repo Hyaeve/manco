@@ -58,7 +58,7 @@ func (s *Source) Info() model.SourceInfo {
 		NeedsLogin:  false,
 		CanSearch:   true,
 		CanBrowse:   true,
-		Icon:        "https://www.google.com/s2/favicons?domain=gutenberg.org&sz=64",
+		Icon:        "/source-icons/gutenberg.png",
 		Sites:       []string{apiBase, defaultSite},
 		Filters: []model.FilterGroup{
 			{Key: "category", Label: "语言", Options: languageOptions},
