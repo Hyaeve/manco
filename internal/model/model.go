@@ -104,6 +104,7 @@ type SourceInfo struct {
 	CanSearch   bool          `json:"canSearch"`
 	CanBrowse   bool          `json:"canBrowse"`
 	Icon        string        `json:"icon,omitempty"`
+	Order       int           `json:"order,omitempty"`
 	Sites       []string      `json:"sites,omitempty"`
 	Filters     []FilterGroup `json:"filters,omitempty"`
 	Hidden      bool          `json:"hidden,omitempty"`
@@ -134,6 +135,8 @@ type Comic struct {
 	ID           string   `json:"id"`
 	Title        string   `json:"title"`
 	Cover        string   `json:"cover"`
+	CachedCover  string   `json:"cachedCover,omitempty"`
+	Cached       bool     `json:"cached,omitempty"`
 	Author       string   `json:"author,omitempty"`
 	Description  string   `json:"description,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
@@ -210,17 +213,27 @@ type ExtensionRepository struct {
 }
 
 type RepositoryExtension struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	PackageName string          `json:"packageName,omitempty"`
-	Version     string          `json:"version,omitempty"`
-	Kind        string          `json:"kind"`
-	PluginType  string          `json:"pluginType"`
-	Description string          `json:"description,omitempty"`
-	Homepage    string          `json:"homepage,omitempty"`
-	Icon        string          `json:"icon,omitempty"`
-	InstallURL  string          `json:"installUrl,omitempty"`
-	Installable bool            `json:"installable"`
-	Config      json.RawMessage `json:"config,omitempty"`
-	Raw         json.RawMessage `json:"raw,omitempty"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	PackageName string             `json:"packageName,omitempty"`
+	Version     string             `json:"version,omitempty"`
+	Kind        string             `json:"kind"`
+	PluginType  string             `json:"pluginType"`
+	Description string             `json:"description,omitempty"`
+	Homepage    string             `json:"homepage,omitempty"`
+	Icon        string             `json:"icon,omitempty"`
+	InstallURL  string             `json:"installUrl,omitempty"`
+	Installable bool               `json:"installable"`
+	Config      json.RawMessage    `json:"config,omitempty"`
+	Sources     []RepositorySource `json:"sources,omitempty"`
+	Raw         json.RawMessage    `json:"raw,omitempty"`
+}
+
+type RepositorySource struct {
+	ID       string   `json:"id,omitempty"`
+	Name     string   `json:"name"`
+	Language string   `json:"language,omitempty"`
+	HomeURL  string   `json:"homeUrl,omitempty"`
+	Mirrors  []string `json:"mirrors,omitempty"`
+	Message  string   `json:"message,omitempty"`
 }

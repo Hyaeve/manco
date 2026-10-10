@@ -5,6 +5,7 @@ const routes = [
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true } },
   { path: '/', name: 'dashboard', component: () => import('./views/DashboardView.vue') },
   { path: '/discover', name: 'discover', component: () => import('./views/DiscoverView.vue') },
+  { path: '/search', name: 'search', component: () => import('./views/SearchView.vue') },
   {
     path: '/comic/:sourceId/:comicId',
     name: 'comic',

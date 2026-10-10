@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -31,6 +32,7 @@ import (
 	"github.com/hyaeve/manco/internal/config"
 	"github.com/hyaeve/manco/internal/configstore"
 	"github.com/hyaeve/manco/internal/cronutil"
+	"github.com/hyaeve/manco/internal/discovercache"
 	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
 	"github.com/hyaeve/manco/internal/iconcache"
@@ -48,7 +50,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.4"
+	appVersion    = "v0.1.5"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
@@ -72,6 +74,7 @@ type Server struct {
 	store     *store.Store
 	configs   *configstore.Files
 	cache     *diskcache.Cache
+	discover  *discovercache.Cache
 	box       *secret.Box
 	registry  *sources.Registry
 	engine    *downloader.Engine
@@ -105,6 +108,7 @@ type Options struct {
 	Store     *store.Store
 	Configs   *configstore.Files
 	Cache     *diskcache.Cache
+	Discover  *discovercache.Cache
 	Box       *secret.Box
 	Registry  *sources.Registry
 	Engine    *downloader.Engine
@@ -125,6 +129,7 @@ func New(options Options) *Server {
 		store:     options.Store,
 		configs:   options.Configs,
 		cache:     options.Cache,
+		discover:  options.Discover,
 		box:       options.Box,
 		registry:  options.Registry,
 		engine:    options.Engine,
@@ -160,6 +165,7 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 			"jmcomic": 0,
 			"baozimh": 0,
 			"biquge":  0,
+			"*":       30,
 		},
 	}
 	if value, err := s.store.Setting(ctx, "source_repo"); err == nil && strings.TrimSpace(value) != "" {
@@ -247,6 +253,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
 	mux.HandleFunc("GET /api/repositories", s.requireAuth(s.handleListRepositories))
 	mux.HandleFunc("POST /api/repositories", s.requireAuth(s.handleCreateRepository))
+	mux.HandleFunc("PUT /api/repositories/{id}", s.requireAuth(s.handleUpdateRepository))
 	mux.HandleFunc("POST /api/repositories/{id}/sync", s.requireAuth(s.handleSyncRepository))
 	mux.HandleFunc("DELETE /api/repositories/{id}", s.requireAuth(s.handleDeleteRepository))
 	mux.HandleFunc("POST /api/repositories/{id}/extensions/{extensionId}", s.requireAuth(s.handleImportRepositoryExtension))
@@ -258,8 +265,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sources/{id}/account", s.requireAuth(s.handleSaveAccount))
 	mux.HandleFunc("DELETE /api/sources/{id}/account", s.requireAuth(s.handleDeleteAccount))
 	mux.HandleFunc("GET /api/sources/{id}/search", s.requireAuth(s.handleSearch))
+	mux.HandleFunc("GET /api/search", s.requireAuth(s.handleGlobalSearch))
 	mux.HandleFunc("GET /api/sources/{id}/browse", s.requireAuth(s.handleBrowse))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}", s.requireAuth(s.handleComic))
+	mux.HandleFunc("GET /api/discover/cover", s.requireAuth(s.handleDiscoverCover))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/chapters", s.requireAuth(s.handleChapters))
 
 	mux.HandleFunc("GET /api/subscriptions", s.requireAuth(s.handleListSubscriptions))
@@ -268,6 +277,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.requireAuth(s.handleDeleteSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/check", s.requireAuth(s.handleCheckSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download", s.requireAuth(s.handleDownloadSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/download-all", s.requireAuth(s.handleDownloadAllSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/archive", s.requireAuth(s.handleArchiveSubscription))
 
 	mux.HandleFunc("GET /api/downloads", s.requireAuth(s.handleListDownloads))
@@ -288,6 +298,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("GET /api/activity", s.requireAuth(s.handleActivity))
 	mux.HandleFunc("GET /api/download-directories", s.requireAuth(s.handleDownloadDirectories))
+	mux.HandleFunc("POST /api/download-directories", s.requireAuth(s.handleCreateDownloadDirectory))
 	mux.HandleFunc("GET /api/proxy/image", s.requireAuth(s.handleImageProxy))
 
 	mux.HandleFunc("/", s.handleSPA)
@@ -616,6 +627,7 @@ func (s *Server) SourceSettings(ctx context.Context) map[string]model.SourceDown
 }
 func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string][]string) []model.SourceInfo {
 	items := s.registry.List()
+	orderSetting := s.sourceOrder(context.Background())
 	for index := range items {
 		if _, ok := sourceIconSources[items[index].ID]; ok && s.icons != nil {
 			items[index].Icon = s.icons.URL(items[index].ID)
@@ -631,6 +643,26 @@ func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string]
 				option.Disabled = blocked[option.Value]
 			}
 		}
+	}
+	for kind, ids := range orderSetting {
+		positions := map[string]int{}
+		for index, id := range ids {
+			positions[id] = index
+		}
+		sort.SliceStable(items, func(i, j int) bool {
+			if source.KindOf(items[i]) != kind || source.KindOf(items[j]) != kind {
+				return false
+			}
+			left, leftOK := positions[items[i].ID]
+			right, rightOK := positions[items[j].ID]
+			if leftOK && rightOK {
+				return left < right
+			}
+			if leftOK != rightOK {
+				return leftOK
+			}
+			return false
+		})
 	}
 	return items
 }
@@ -653,6 +685,15 @@ func (s *Server) disabledCategories(ctx context.Context) map[string][]string {
 	}
 	_ = json.Unmarshal([]byte(value), &disabled)
 	return disabled
+}
+
+func (s *Server) sourceOrder(ctx context.Context) map[string][]string {
+	result := map[string][]string{}
+	value, err := s.store.Setting(ctx, "source_order")
+	if err == nil && strings.TrimSpace(value) != "" {
+		_ = json.Unmarshal([]byte(value), &result)
+	}
+	return result
 }
 
 func (s *Server) handleSourceRepo(w http.ResponseWriter, r *http.Request) {
@@ -742,6 +783,53 @@ func (s *Server) handleCreateRepository(w http.ResponseWriter, r *http.Request) 
 	}
 	_ = s.configs.PersistRepositories(r.Context(), s.store)
 	writeJSON(w, http.StatusCreated, repositoryView(saved))
+}
+
+func (s *Server) handleUpdateRepository(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	existing, err := s.store.ExtensionRepository(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "拓展仓库不存在")
+		return
+	}
+	var payload struct {
+		Name        string `json:"name"`
+		Kind        string `json:"kind"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+		Icon        string `json:"icon"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.URL = strings.TrimSpace(payload.URL)
+	if payload.URL == "" {
+		writeError(w, http.StatusBadRequest, "仓库地址不能为空")
+		return
+	}
+	existing.Name = strings.TrimSpace(payload.Name)
+	if existing.Name == "" {
+		existing.Name = "拓展仓库"
+	}
+	existing.Kind = repository.NormalizeKind(payload.Kind)
+	existing.URL = payload.URL
+	existing.Description = strings.TrimSpace(payload.Description)
+	existing.Icon = strings.TrimSpace(payload.Icon)
+	saved, err := s.store.UpsertExtensionRepository(r.Context(), existing)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	synced, syncErr := s.syncRepository(r.Context(), saved)
+	if syncErr != nil {
+		saved.LastError = syncErr.Error()
+		_, _ = s.store.UpsertExtensionRepository(r.Context(), saved)
+	} else {
+		saved = synced
+	}
+	_ = s.configs.PersistRepositories(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, repositoryView(saved))
 }
 
 func (s *Server) handleSyncRepository(w http.ResponseWriter, r *http.Request) {
@@ -979,12 +1067,13 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Hidden             *bool     `json:"hidden"`
 		DisabledCategories *[]string `json:"disabledCategories"`
+		Order              *[]string `json:"order"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if payload.Hidden == nil && payload.DisabledCategories == nil {
+	if payload.Hidden == nil && payload.DisabledCategories == nil && payload.Order == nil {
 		writeError(w, http.StatusBadRequest, "没有可更新的资源设置")
 		return
 	}
@@ -1041,6 +1130,35 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.SetSetting(r.Context(), "disabled_categories", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.Order != nil {
+		adapter, err := s.registry.Get(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		kind := source.KindOf(adapter.Info())
+		order := s.sourceOrder(r.Context())
+		normalized := make([]string, 0, len(*payload.Order))
+		seen := map[string]bool{}
+		for _, value := range *payload.Order {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			normalized = append(normalized, value)
+		}
+		order[kind] = normalized
+		raw, err := json.Marshal(order)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "source_order", string(raw)); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1183,8 +1301,83 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	kind := source.KindOf(item.Info())
+	for index := range result.Items {
+		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
+	}
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "缺少搜索关键词")
+		return
+	}
+	kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
+	page := intParam(r, "page", 1)
+	sources := s.filteredSourceList(s.hiddenSources(r.Context()), nil)
+	type searchItem struct {
+		model.Comic
+		SourceName string `json:"sourceName"`
+		SourceIcon string `json:"sourceIcon,omitempty"`
+	}
+	result := make([]searchItem, 0)
+	errorsFound := make([]string, 0)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 6)
+	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
+	defer cancel()
+	for _, info := range sources {
+		if info.Hidden || !info.CanSearch {
+			continue
+		}
+		if kindFilter != "" && source.KindOf(info) != kindFilter {
+			continue
+		}
+		adapter, err := s.registry.Get(info.ID)
+		if err != nil {
+			continue
+		}
+		account, err := s.registry.Account(ctx, info.ID)
+		if err != nil {
+			continue
+		}
+		wg.Add(1)
+		go func(info model.SourceInfo, adapter source.Source, account source.Account) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+			payload, err := adapter.Search(ctx, account, query, page)
+			if err != nil {
+				mu.Lock()
+				if len(errorsFound) < 8 {
+					errorsFound = append(errorsFound, info.Name+": "+err.Error())
+				}
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			for _, item := range payload.Items {
+				item.SourceID = info.ID
+				item = s.annotateDiscover(info.ID, source.KindOf(info), item)
+				result = append(result, searchItem{Comic: item, SourceName: info.Name, SourceIcon: info.Icon})
+			}
+			mu.Unlock()
+		}(info, adapter, account)
+	}
+	wg.Wait()
+	if len(result) == 0 && len(errorsFound) > 0 {
+		writeError(w, http.StatusBadGateway, strings.Join(errorsFound, "；"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": result, "errors": errorsFound, "page": page})
 }
 
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
@@ -1212,6 +1405,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	kind := source.KindOf(item.Info())
+	for index := range result.Items {
+		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
+	}
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, result)
 }
@@ -1220,6 +1417,16 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 	item, account, ok := s.resolveSource(w, r)
 	if !ok {
 		return
+	}
+	sourceID := item.Info().ID
+	kind := source.KindOf(item.Info())
+	comicID := r.PathValue("comicId")
+	if s.discover != nil {
+		if cached, ok := s.discover.Get(sourceID, kind, comicID); ok {
+			writeJSON(w, http.StatusOK, cached)
+			go s.refreshDiscoverDetail(sourceID, kind, comicID)
+			return
+		}
 	}
 	comic, err := item.Detail(r.Context(), account, r.PathValue("comicId"))
 	if err != nil {
@@ -1230,6 +1437,16 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	detail := model.ComicDetail{Comic: comic, Chapters: chapters}
+	if s.discover != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.discover.Put(ctx, s.registry.Client(), sourceID, kind, detail); err != nil {
+				s.logger.Printf("api: cache discover %s/%s: %v", sourceID, comic.ID, err)
+			}
+		}()
 	}
 	writeJSON(w, http.StatusOK, model.ComicDetail{Comic: comic, Chapters: chapters})
 }
@@ -1245,6 +1462,54 @@ func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": chapters})
+}
+
+func (s *Server) annotateDiscover(sourceID, kind string, comic model.Comic) model.Comic {
+	comic.SourceID = source.FirstNonEmpty(comic.SourceID, sourceID)
+	if s.discover == nil {
+		return comic
+	}
+	return s.discover.Annotate(comic)
+}
+
+func (s *Server) refreshDiscoverDetail(sourceID, kind, comicID string) {
+	if s.discover == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	adapter, err := s.registry.Get(sourceID)
+	if err != nil {
+		return
+	}
+	account, err := s.registry.Account(ctx, sourceID)
+	if err != nil {
+		return
+	}
+	comic, err := adapter.Detail(ctx, account, comicID)
+	if err != nil {
+		return
+	}
+	chapters, err := adapter.Chapters(ctx, account, comic.ID)
+	if err != nil {
+		return
+	}
+	if err := s.discover.Put(ctx, s.registry.Client(), sourceID, kind, model.ComicDetail{Comic: comic, Chapters: chapters}); err != nil {
+		s.logger.Printf("api: refresh discover %s/%s: %v", sourceID, comicID, err)
+	}
+}
+
+func (s *Server) handleDiscoverCover(w http.ResponseWriter, r *http.Request) {
+	if s.discover == nil {
+		http.NotFound(w, r)
+		return
+	}
+	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	comicID := strings.TrimSpace(r.URL.Query().Get("comicId"))
+	if sourceID == "" || comicID == "" || !s.discover.ServeCover(w, r, sourceID, kind, comicID) {
+		http.NotFound(w, r)
+	}
 }
 
 func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -1273,6 +1538,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		DownloadDir         string  `json:"downloadDir"`
 		ConvertToSimplified *bool   `json:"convertToSimplified"`
 		Baseline            string  `json:"baseline"`
+		AllChapters         bool    `json:"allChapters"`
 		LastOrder           float64 `json:"lastChapterOrder"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
@@ -1336,7 +1602,18 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
-	writeJSON(w, http.StatusOK, saved)
+	response := map[string]any{"item": saved}
+	if payload.AllChapters {
+		queued, skipped, queueErr := s.scheduler.QueueAll(r.Context(), saved)
+		if queueErr != nil {
+			s.logger.Printf("api: queue all subscription %d: %v", saved.ID, queueErr)
+			response["queueError"] = queueErr.Error()
+		} else {
+			response["queued"] = queued
+			response["skipped"] = skipped
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -1404,6 +1681,29 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	updated, _ := s.store.Subscription(r.Context(), id)
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) handleDownloadAllSubscription(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	subscription, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	queued, skipped, err := s.scheduler.QueueAll(r.Context(), subscription)
+	if err != nil {
+		if errors.Is(err, scheduler.ErrNoChapters) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": queued, "skipped": skipped})
 }
 
 func (s *Server) handleArchiveSubscription(w http.ResponseWriter, r *http.Request) {
@@ -1497,7 +1797,114 @@ func (s *Server) handleDownloadDirectories(w http.ResponseWriter, r *http.Reques
 	sort.Slice(items, func(i, j int) bool {
 		return items[i]["path"].(string) < items[j]["path"].(string)
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "default": defaultDir})
+	s.downloadDirectoryView(w, r, defaultDir, items)
+}
+
+func (s *Server) downloadDirectoryView(w http.ResponseWriter, r *http.Request, defaultDir string, roots []map[string]any) {
+	requested := strings.TrimSpace(r.URL.Query().Get("path"))
+	if requested == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"items": roots, "default": defaultDir, "current": "", "children": []map[string]any{}, "breadcrumbs": []map[string]any{}})
+		return
+	}
+	current, err := s.cleanDownloadDir(requested)
+	if err != nil || !directoryAllowed(current, roots) || !directoryExists(current) {
+		writeError(w, http.StatusBadRequest, "目录不在允许访问的挂载目录中")
+		return
+	}
+	entries, err := os.ReadDir(current)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取目录失败："+err.Error())
+		return
+	}
+	children := make([]map[string]any, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		child := filepath.Join(current, entry.Name())
+		children = append(children, map[string]any{"name": entry.Name(), "path": child, "writable": directoryWritable(child)})
+	}
+	sort.Slice(children, func(i, j int) bool { return children[i]["name"].(string) < children[j]["name"].(string) })
+	breadcrumbs := make([]map[string]any, 0)
+	for _, root := range roots {
+		rootPath, _ := root["path"].(string)
+		if rootPath != "" && directoryAllowed(current, []map[string]any{root}) {
+			breadcrumbs = append(breadcrumbs, map[string]any{"name": filepath.Base(rootPath), "path": rootPath})
+			relative, relErr := filepath.Rel(rootPath, current)
+			if relErr == nil && relative != "." {
+				parent := rootPath
+				for _, part := range strings.Split(filepath.ToSlash(relative), "/") {
+					if part == "" || part == "." {
+						continue
+					}
+					parent = filepath.Join(parent, part)
+					breadcrumbs = append(breadcrumbs, map[string]any{"name": part, "path": parent})
+				}
+			}
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": roots, "default": defaultDir, "current": current,
+		"parent": filepath.Dir(current), "children": children, "breadcrumbs": breadcrumbs,
+	})
+}
+
+func directoryAllowed(path string, roots []map[string]any) bool {
+	path = filepath.Clean(path)
+	for _, root := range roots {
+		rootPath, _ := root["path"].(string)
+		if rootPath == "" {
+			continue
+		}
+		relative, err := filepath.Rel(filepath.Clean(rootPath), path)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func directoryWritable(path string) bool {
+	file, err := os.CreateTemp(path, ".manco-write-*")
+	if err != nil {
+		return false
+	}
+	name := file.Name()
+	_ = file.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+func (s *Server) handleCreateDownloadDirectory(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Parent string `json:"parent"`
+		Name   string `json:"name"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	name := strings.TrimSpace(payload.Name)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\\`) {
+		writeError(w, http.StatusBadRequest, "文件夹名称不能为空，且不能包含路径分隔符")
+		return
+	}
+	if len([]rune(name)) > 120 {
+		writeError(w, http.StatusBadRequest, "文件夹名称不能超过 120 个字符")
+		return
+	}
+	parent, err := s.cleanDownloadDir(payload.Parent)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	path := filepath.Join(parent, name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "创建文件夹失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"path": filepath.Clean(path), "name": name})
 }
 
 func directoryExists(path string) bool {
@@ -2250,7 +2657,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "新密码至少需要 8 个字符")
 			return
 		}
-		if bcrypt.CompareHashAndPassword([]byte(currentUser.PasswordHash), []byte(payload.CurrentPassword)) != nil {
+		if payload.CurrentPassword != "" &&
+			bcrypt.CompareHashAndPassword([]byte(currentUser.PasswordHash), []byte(payload.CurrentPassword)) != nil {
 			writeError(w, http.StatusUnauthorized, "当前密码不正确")
 			return
 		}
@@ -2406,7 +2814,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if payload.StaleDays != nil {
 		normalized := map[string]int{}
 		for sourceID, days := range payload.StaleDays {
-			if !isManagedSource(sourceID) {
+			if sourceID != "*" && !isManagedSource(sourceID) {
 				continue
 			}
 			if days < 0 || days > 3650 {

@@ -706,6 +706,15 @@ func (s *Store) MaintainSubscriptions(ctx context.Context, staleDays map[string]
 		}
 	}
 	disabledCutoff := now.Add(-15 * 24 * time.Hour)
+	if days := staleDays["*"]; days > 0 {
+		cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE subscriptions SET enabled = 0, disabled_at = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE archived_at IS NULL AND enabled = 1
+			  AND COALESCE(last_new_chapter_at, created_at) <= ?`, now, cutoff); err != nil {
+			return err
+		}
+	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE subscriptions SET archived_at = ?, archive_reason = 'stale', updated_at = CURRENT_TIMESTAMP
 		WHERE archived_at IS NULL AND disabled_at IS NOT NULL AND disabled_at <= ?`, now, disabledCutoff)

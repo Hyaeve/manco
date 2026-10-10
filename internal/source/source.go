@@ -17,6 +17,7 @@ var ErrAuthRequired = errors.New("source account is not connected")
 const (
 	KindComic = "comic"
 	KindBook  = "book"
+	KindOther = "other"
 )
 
 type Account struct {
@@ -80,6 +81,9 @@ type ContentSource interface {
 func KindOf(info model.SourceInfo) string {
 	if info.Kind == KindBook {
 		return KindBook
+	}
+	if info.Kind == KindOther {
+		return KindOther
 	}
 	return KindComic
 }

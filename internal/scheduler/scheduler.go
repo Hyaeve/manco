@@ -229,6 +229,58 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 	return job, nil
 }
 
+// QueueAll queues every chapter in a subscription. Completed chapters are
+// returned as skipped by the store and retain their existing files, so this is
+// safe to use both for initial full subscriptions and later full refreshes.
+func (s *Scheduler) QueueAll(ctx context.Context, subscription model.Subscription) (queued, skipped int, err error) {
+	item, err := s.registry.Get(subscription.SourceID)
+	if err != nil {
+		return 0, 0, err
+	}
+	account, err := s.registry.Account(ctx, subscription.SourceID)
+	if err != nil {
+		return 0, 0, err
+	}
+	chapters, err := item.Chapters(ctx, account, subscription.ComicID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(chapters) == 0 {
+		return 0, 0, ErrNoChapters
+	}
+	for _, chapter := range chapters {
+		if strings.TrimSpace(chapter.ID) == "" {
+			continue
+		}
+		job, createErr := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
+			SourceID:            subscription.SourceID,
+			ComicID:             subscription.ComicID,
+			ComicTitle:          subscriptionSeriesDir(subscription),
+			ComicCover:          subscription.Cover,
+			ChapterID:           chapter.ID,
+			ChapterTitle:        chapter.Title,
+			ChapterOrder:        chapter.Order,
+			DownloadDir:         subscription.DownloadDir,
+			ConvertToSimplified: subscription.ConvertToSimplified,
+		})
+		if createErr != nil {
+			return queued, skipped, createErr
+		}
+		switch job.Status {
+		case "completed", "running":
+			skipped++
+		default:
+			queued++
+		}
+	}
+	newest := chapters[len(chapters)-1]
+	if err := s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(chapters), true); err != nil {
+		s.logger.Printf("scheduler: update full download baseline %s/%s: %v", subscription.SourceID, subscription.Title, err)
+	}
+	s.downloads.Notify()
+	return queued, skipped, nil
+}
+
 // RunDue checks subscriptions whose weekly cron schedule has come due.
 func (s *Scheduler) RunDue(ctx context.Context) {
 	subscriptions, err := s.subscriptions.ListSubscriptions(ctx)

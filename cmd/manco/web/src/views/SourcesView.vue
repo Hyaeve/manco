@@ -12,6 +12,8 @@ import {
   PackagePlus,
   Plus,
   RefreshCw,
+  GripVertical,
+  Pencil,
   Save,
   Server,
   ShieldCheck,
@@ -43,6 +45,8 @@ const editorSource = ref(null)
 const expandedRepositories = ref({})
 const forms = reactive({})
 const repositoryForm = reactive({ name: '', url: '', kind: 'json' })
+const editingRepositoryId = ref('')
+const dragId = ref('')
 
 const repositoryKinds = [
   { value: 'json', label: 'JSON 清单' },
@@ -56,7 +60,12 @@ const repositoryKinds = [
 
 const comicSources = computed(() => sources.value.filter((item) => (item.kind || 'comic') === 'comic'))
 const bookSources = computed(() => sources.value.filter((item) => item.kind === 'book'))
-const visibleSources = computed(() => (activeKind.value === 'book' ? bookSources.value : comicSources.value))
+const otherSources = computed(() => sources.value.filter((item) => item.kind === 'other'))
+const visibleSources = computed(() => {
+  if (activeKind.value === 'book') return bookSources.value
+  if (activeKind.value === 'other') return otherSources.value
+  return comicSources.value
+})
 const repositoryOptions = computed(() =>
   repositories.value.map((repository) => ({
     value: repository.id,
@@ -131,6 +140,10 @@ function sourceStatus(item) {
   if (connected(item.id)) return { label: '已连接', className: 'success' }
   if (item.needsLogin) return { label: '未连接', className: '' }
   return { label: '可用', className: 'primary' }
+}
+
+function kindLabel(kind) {
+  return { comic: '漫画', book: '书籍', other: '其他' }[kind] || '资源'
 }
 
 function categoryFilters(item) {
@@ -274,6 +287,13 @@ async function disconnect(item) {
 
 function openRepository() {
   Object.assign(repositoryForm, { name: '', url: '', kind: 'json' })
+  editingRepositoryId.value = ''
+  repositoryOpen.value = true
+}
+
+function openRepositoryEdit(item) {
+  editingRepositoryId.value = item.id
+  Object.assign(repositoryForm, { name: item.name || '', url: item.url || '', kind: item.kind || 'json' })
   repositoryOpen.value = true
 }
 
@@ -284,16 +304,26 @@ async function createRepository() {
   }
   busy.value = 'repository-create'
   try {
-    const created = await api.createRepository({
+    const payload = {
       name: repositoryForm.name.trim(),
       url: repositoryForm.url.trim(),
       kind: repositoryForm.kind,
-    })
-    repositories.value = [...repositories.value.filter((item) => item.id !== created.id), created]
+    }
+    let saved
+    if (editingRepositoryId.value) {
+      const updated = await api.updateRepository(editingRepositoryId.value, payload)
+      saved = updated && updated.id ? updated : { ...payload, id: editingRepositoryId.value }
+      const index = repositories.value.findIndex((row) => row.id === editingRepositoryId.value)
+      if (index >= 0) repositories.value[index] = saved
+      notify(`${saved.name || payload.name} 已更新`, 'success')
+    } else {
+      saved = await api.createRepository(payload)
+      repositories.value = [...repositories.value.filter((item) => item.id !== saved.id), saved]
+      notify(`${saved.name} 已添加，正在同步来源清单`, 'success')
+    }
     repositoryOpen.value = false
-    addRepositoryID.value = created.id
-    notify(`${created.name} 已添加，正在同步来源清单`, 'success')
-    await syncRepository(created)
+    addRepositoryID.value = saved.id
+    expandedRepositories.value[saved.id] = true
   } catch (err) {
     notify(err.message, 'error')
   } finally {
@@ -353,7 +383,7 @@ async function importExtension(repository, extension) {
       sources.value = [...sources.value, source]
     }
     notify(`${extension.name} 已加入资源库`, 'success')
-    if (source) activeKind.value = source.kind === 'book' ? 'book' : 'comic'
+    if (source) activeKind.value = ['book', 'other'].includes(source.kind) ? source.kind : 'comic'
     addSourceOpen.value = false
     await load()
   } catch (err) {
@@ -361,6 +391,47 @@ async function importExtension(repository, extension) {
   } finally {
     busy.value = ''
   }
+}
+
+function onDragStart(item, event) {
+  dragId.value = item.id
+  if (event?.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    try {
+      event.dataTransfer.setData('text/plain', item.id)
+    } catch {
+      // 忽略浏览器对 setData 的限制
+    }
+  }
+}
+
+function onDragOver(item, event) {
+  if (!dragId.value || dragId.value === item.id) return
+  event.preventDefault()
+  const list = sources.value
+  const from = list.findIndex((row) => row.id === dragId.value)
+  const to = list.findIndex((row) => row.id === item.id)
+  if (from < 0 || to < 0 || from === to) return
+  const next = [...list]
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  sources.value = next
+}
+
+async function onDrop() {
+  dragId.value = ''
+  const ids = visibleSources.value.map((item) => item.id)
+  if (!ids.length) return
+  try {
+    await api.updateSource(ids[0], { order: ids })
+    notify('来源顺序已保存', 'success')
+  } catch (err) {
+    notify(`保存排序失败：${err.message}`, 'error')
+  }
+}
+
+function onDragEnd() {
+  dragId.value = ''
 }
 </script>
 
@@ -374,6 +445,10 @@ async function importExtension(repository, extension) {
       <button type="button" :class="{ active: activeKind === 'book' }" @click="activeKind = 'book'">
         书籍源
         <span class="segmented-count">{{ bookSources.length }}</span>
+      </button>
+      <button type="button" :class="{ active: activeKind === 'other' }" @click="activeKind = 'other'">
+        其他源
+        <span class="segmented-count">{{ otherSources.length }}</span>
       </button>
       <button type="button" :class="{ active: activeKind === 'repository' }" @click="activeKind = 'repository'">
         拓展仓库
@@ -407,15 +482,23 @@ async function importExtension(repository, extension) {
   <template v-else-if="activeKind !== 'repository'">
     <div v-if="!visibleSources.length" class="card empty">
       <Server :size="24" />
-      <p>暂无{{ activeKind === 'book' ? '书籍' : '漫画' }}来源</p>
+      <p>暂无{{ kindLabel(activeKind) }}来源</p>
     </div>
     <div v-else class="source-grid source-grid-simple">
       <article
         v-for="item in visibleSources"
         :key="item.id"
         class="card source-card-simple"
-        :class="{ 'source-card-disabled': item.hidden }"
+        :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id }"
+        draggable="false"
+        @dragstart="onDragStart(item, $event)"
+        @dragover="onDragOver(item, $event)"
+        @drop.prevent="onDrop"
+        @dragend="onDragEnd"
       >
+        <span class="source-drag-handle" draggable="true" title="拖拽排序">
+          <GripVertical :size="16" />
+        </span>
         <button
           class="source-logo-button"
           type="button"
@@ -482,6 +565,10 @@ async function importExtension(repository, extension) {
               <Loader2 v-if="busy === `repository-${repository.id}`" :size="14" class="spin" />
               <RefreshCw v-else :size="14" />
               同步
+            </button>
+            <button class="btn secondary small" type="button" @click="openRepositoryEdit(repository)">
+              <Pencil :size="14" />
+              编辑
             </button>
             <button class="btn danger small" type="button" :disabled="busy === `repository-${repository.id}`" @click="removeRepository(repository)">
               <Trash2 :size="14" />
@@ -727,8 +814,8 @@ async function importExtension(repository, extension) {
     <div class="modal">
       <div class="modal-head">
         <div>
-          <h2>添加拓展仓库</h2>
-          <p class="muted small">添加兼容 Kototoro、Mihon、JAR 等格式的仓库清单地址。</p>
+          <h2>{{ editingRepositoryId ? '编辑拓展仓库' : '添加拓展仓库' }}</h2>
+          <p class="muted small">{{ editingRepositoryId ? '修改仓库名称、地址或类型，保存后会重新同步来源。' : '添加兼容 Kototoro、Mihon、JAR 等格式的仓库清单地址。' }}</p>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭" @click="repositoryOpen = false">
           <X :size="18" />
@@ -755,7 +842,7 @@ async function importExtension(repository, extension) {
         <button class="btn" type="button" :disabled="busy === 'repository-create'" @click="createRepository">
           <Loader2 v-if="busy === 'repository-create'" :size="15" class="spin" />
           <Plus v-else :size="15" />
-          添加并同步
+          {{ editingRepositoryId ? '保存并同步' : '添加并同步' }}
         </button>
       </div>
     </div>

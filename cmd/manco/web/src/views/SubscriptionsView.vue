@@ -7,8 +7,9 @@ import {
   CalendarClock,
   FolderOpen,
   Languages,
+  Layers,
   Loader2,
-  MoreHorizontal,
+  MoreVertical,
   Pencil,
   Power,
   RefreshCcw,
@@ -35,7 +36,7 @@ let timer = 0
 const form = ref({
   cronExpr: '',
   downloadDir: '',
-  convertToSimplified: false,
+  convertToSimplified: true,
 })
 
 const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 'paused'].includes(job.status)))
@@ -193,6 +194,27 @@ async function checkUpdate(item) {
     busy.value = 0
   }
 }
+
+async function downloadAll(item) {
+  openMenu.value = 0
+  busy.value = item.id
+  try {
+    const result = await api.downloadAllSubscription(item.id)
+    const queued = Number(result?.queued || 0)
+    const skipped = Number(result?.skipped || 0)
+    notify(
+      [`《${item.title}》全量下载已加入 ${queued} 个章节`, skipped ? `跳过 ${skipped} 个已完成章节` : '']
+        .filter(Boolean)
+        .join('，'),
+      'success',
+    )
+    await load(true)
+  } catch (err) {
+    notify(`全量下载失败：${err.message}`, 'error')
+  } finally {
+    busy.value = 0
+  }
+}
 </script>
 
 <template>
@@ -264,11 +286,14 @@ async function checkUpdate(item) {
         </button>
         <div class="subscription-menu">
           <button class="btn ghost icon subscription-more" type="button" aria-label="更多操作" @click="toggleMenu(item, $event)">
-            <MoreHorizontal :size="19" />
+            <MoreVertical :size="19" />
           </button>
           <div v-if="openMenu === item.id" class="dropdown-panel subscription-actions" @click.stop>
             <button class="dropdown-item" type="button" @click="openEditor(item)">
               <Pencil :size="15" /> 编辑
+            </button>
+            <button class="dropdown-item" type="button" @click="downloadAll(item)">
+              <Layers :size="15" /> 全量
             </button>
             <button class="dropdown-item" type="button" @click="toggleEnabled(item)">
               <Power :size="15" /> {{ item.enabled ? '禁用' : '启用' }}
@@ -298,12 +323,12 @@ async function checkUpdate(item) {
       </div>
       <div class="modal-body">
         <label class="field">
-          <span class="inline"><CalendarClock :size="14" /> Cron 检查周期</span>
+          <span>Cron 表达式</span>
           <input v-model="form.cronExpr" class="input" placeholder="0 21 * * 5" />
         </label>
         <label class="field">
-          <span class="inline"><FolderOpen :size="14" /> 下载位置</span>
-          <DirectoryPicker v-model="form.downloadDir" />
+          <span>下载位置</span>
+          <DirectoryPicker v-model="form.downloadDir" :suffix="editing?.title" />
         </label>
         <label class="switch-row">
           <input v-model="form.convertToSimplified" type="checkbox" />

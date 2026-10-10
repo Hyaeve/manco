@@ -17,6 +17,7 @@ import (
 	"github.com/hyaeve/manco/internal/api"
 	"github.com/hyaeve/manco/internal/config"
 	"github.com/hyaeve/manco/internal/configstore"
+	"github.com/hyaeve/manco/internal/discovercache"
 	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
 	"github.com/hyaeve/manco/internal/iconcache"
@@ -75,6 +76,10 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	if err != nil {
 		return err
 	}
+	discoverItems, err := discovercache.Open(filepath.Join(cfg.DataDir, "discover"), 30*24*time.Hour)
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,6 +110,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Store:     repository,
 		Configs:   configFiles,
 		Cache:     discoverCache,
+		Discover:  discoverItems,
 		Box:       box,
 		Registry:  registry,
 		Engine:    engine,
@@ -134,6 +140,20 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	engine.Start(ctx)
 	scanner.Start(ctx)
 	go server.RunSubscriptionMaintenance(ctx, 30*time.Minute)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := discoverItems.Prune(now); err != nil {
+					logger.Printf("manco: prune discover cache: %v", err)
+				}
+			}
+		}
+	}()
 
 	httpServer := &http.Server{
 		Addr:              cfg.Addr,

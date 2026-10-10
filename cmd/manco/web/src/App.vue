@@ -1,10 +1,9 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Activity,
   Bell,
-  ChevronRight,
   CircleCheck,
   CircleUser,
   Compass,
@@ -19,6 +18,7 @@ import {
   Moon,
   Rss,
   ScrollText,
+  Search,
   Server,
   Settings,
   Sun,
@@ -37,6 +37,9 @@ const openMenu = ref('')
 const activityOpen = ref(false)
 const activityItems = ref([])
 const activityLoading = ref(false)
+const searchQuery = ref('')
+const searchInput = ref(null)
+const SEARCH_HISTORY_KEY = 'manco.search.history.v1'
 
 const theme = ref(localStorage.getItem('manco-theme') || 'system')
 const themeOptions = [
@@ -60,23 +63,6 @@ const logsItem = { name: 'logs', label: '运行日志', to: '/logs', icon: Scrol
 const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }
 
 const showShell = computed(() => route.name !== 'login')
-const pageTitle = computed(() => {
-  if (route.name === 'dashboard') return '总览'
-  if (route.name === 'discover') return '探索发现'
-  if (route.name === 'comic') return '作品详情'
-  if (route.name === 'subscriptions') return '订阅清单'
-  if (route.name === 'downloads') return '下载列表'
-  if (route.name === 'local') return '本地库'
-  if (route.name === 'sources') return '资源仓库'
-  if (route.name === 'settings') return '系统设置'
-  if (route.name === 'logs') return '运行日志'
-  return 'Manco'
-})
-const breadcrumb = computed(() => {
-  const list = [{ label: 'Manco', to: '/' }]
-  if (route.name && route.name !== 'dashboard') list.push({ label: pageTitle.value })
-  return list
-})
 
 function applyTheme() {
   const resolved = theme.value === 'system' ? (media.matches ? 'dark' : 'light') : theme.value
@@ -103,13 +89,13 @@ onMounted(() => {
   media.addEventListener('change', applyTheme)
   if (!auth.ready) auth.load()
   window.addEventListener('click', closeMenus)
-  window.addEventListener('keydown', escapeMenus)
+  window.addEventListener('keydown', handleGlobalKeys)
 })
 
 onUnmounted(() => {
   media.removeEventListener('change', applyTheme)
   window.removeEventListener('click', closeMenus)
-  window.removeEventListener('keydown', escapeMenus)
+  window.removeEventListener('keydown', handleGlobalKeys)
 })
 
 function closeMenus(event) {
@@ -120,6 +106,36 @@ function closeMenus(event) {
 
 function escapeMenus(event) {
   if (event.key === 'Escape') closeMenus()
+}
+
+function handleGlobalKeys(event) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault()
+    searchInput.value?.focus()
+    searchInput.value?.select?.()
+    return
+  }
+  if (event.key === 'Escape') {
+    closeMenus()
+    if (route.name === 'search') router.push({ name: 'discover' })
+  }
+}
+
+function submitGlobalSearch() {
+  const query = searchQuery.value.trim()
+  if (!query) return
+  let history = []
+  try {
+    history = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]')
+  } catch {}
+  if (!Array.isArray(history)) history = []
+  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify([query, ...history.filter((item) => item !== query)].slice(0, 3)))
+  router.push({ name: 'search', query: { q: query } })
+}
+
+function clearGlobalSearch() {
+  searchQuery.value = ''
+  if (route.name === 'search') router.push({ name: 'discover' })
 }
 
 async function toggleActivity(event) {
@@ -216,13 +232,21 @@ function activityIcon(level) {
         <button class="icon-btn mobile-menu" type="button" aria-label="打开导航" @click.stop="menuOpen = !menuOpen">
           <Menu :size="20" />
         </button>
-        <nav class="breadcrumbs" aria-label="面包屑">
-          <template v-for="(crumb, index) in breadcrumb" :key="crumb.label">
-            <ChevronRight v-if="index" :size="15" class="crumb-sep" />
-            <RouterLink v-if="crumb.to" :to="crumb.to">{{ crumb.label }}</RouterLink>
-            <strong v-else>{{ crumb.label }}</strong>
-          </template>
-        </nav>
+        <form class="global-search" role="search" @submit.prevent="submitGlobalSearch">
+          <Search :size="16" />
+          <input
+            ref="searchInput"
+            v-model="searchQuery"
+            class="global-search-input"
+            type="search"
+            placeholder="搜索漫画、书籍或资源"
+            autocomplete="off"
+          />
+          <kbd>Ctrl K</kbd>
+          <button v-if="searchQuery" class="global-search-clear" type="button" aria-label="清除搜索" @click="clearGlobalSearch">
+            <X :size="15" />
+          </button>
+        </form>
         <div class="topbar-actions">
           <button
             class="icon-btn theme-cycle"
@@ -267,10 +291,6 @@ function activityIcon(level) {
               <CircleUser :size="20" />
             </button>
             <div v-if="openMenu === 'account'" class="account-dropdown">
-              <div class="account-name">
-                <CircleUser :size="17" />
-                <span>{{ auth.user?.username || '未登录' }}</span>
-              </div>
               <button type="button" @click="goSection('account')">
                 <Settings :size="17" /> 账号安全
               </button>

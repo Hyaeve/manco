@@ -74,11 +74,10 @@ func Sync(ctx context.Context, httpClient client, repo model.ExtensionRepository
 	if err != nil {
 		return nil, err
 	}
-	var payload any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, fmt.Errorf("仓库清单不是可识别的 JSON：%w", err)
+	items, err := decodeRepositoryPayload(raw, parsed, repo.Kind)
+	if err != nil {
+		return nil, err
 	}
-	items := parsePayload(payload, parsed, NormalizeKind(repo.Kind))
 	if len(items) == 0 {
 		return nil, fmt.Errorf("仓库中没有可识别的扩展或配置源")
 	}
@@ -181,6 +180,10 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 		}
 	}
 	config := configFromMap(object)
+	sources := sourcesFromAny(object["sources"], base)
+	if homepage == "" && len(sources) > 0 {
+		homepage = sources[0].HomeURL
+	}
 	installable := len(config) > 0 && homepage != ""
 	idSource := firstNonEmpty(packageName, name) + "|" + firstNonEmpty(version, strconv.Itoa(index))
 	return model.RepositoryExtension{
@@ -196,8 +199,41 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 		InstallURL:  installURL,
 		Installable: installable,
 		Config:      config,
+		Sources:     sources,
 		Raw:         marshalRaw(object),
 	}
+}
+
+func sourcesFromAny(value any, base *url.URL) []model.RepositorySource {
+	rows, ok := value.([]any)
+	if !ok || len(rows) == 0 {
+		return nil
+	}
+	out := make([]model.RepositorySource, 0, len(rows))
+	for _, row := range rows {
+		child, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		item := model.RepositorySource{
+			ID:       firstString(child, "id", "sourceId"),
+			Name:     firstString(child, "name", "title", "label"),
+			Language: firstString(child, "lang", "language"),
+			HomeURL:  absolute(base, firstString(child, "homeUrl", "baseUrl", "homepage", "website", "url")),
+			Message:  firstString(child, "message", "note"),
+		}
+		if mirrors, ok := child["mirrorUrls"].([]any); ok {
+			for _, mirror := range mirrors {
+				if text := absolute(base, strings.TrimSpace(fmt.Sprint(mirror))); text != "" {
+					item.Mirrors = append(item.Mirrors, text)
+				}
+			}
+		}
+		if item.Name != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func configFromMap(object map[string]any) json.RawMessage {
@@ -235,11 +271,44 @@ func configFromMap(object map[string]any) json.RawMessage {
 }
 
 func sourceKind(object map[string]any) string {
-	value := strings.ToLower(firstString(object, "kind", "type", "contentType", "mediaType"))
-	if strings.Contains(value, "book") || strings.Contains(value, "novel") || value == "text" {
-		return "book"
+	category := firstString(object, "category", "categories", "genre", "genres")
+	kind := firstString(object, "kind", "type", "contentType", "mediaType")
+	description := firstString(object, "description", "summary")
+	return classifySourceKindFields(category, kind, "", description)
+}
+
+func classifyKindText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "comic"
 	}
-	return "comic"
+	bookMarkers := []string{"book", "novel", "novel", "小说", "轻小说", "文学", "text"}
+	comicMarkers := []string{"comic", "manga", "manhwa", "manhua", "漫画", "韩漫", "美漫", "成人漫画"}
+	otherMarkers := []string{"anime", "movie", "video", "music", "audio", "game", "sport", "news", "动漫", "动画", "影视", "音乐", "游戏", "运动", "新闻", "其他"}
+	for _, marker := range bookMarkers {
+		if strings.Contains(value, marker) {
+			return "book"
+		}
+	}
+	for _, marker := range comicMarkers {
+		if strings.Contains(value, marker) {
+			return "comic"
+		}
+	}
+	for _, marker := range otherMarkers {
+		if strings.Contains(value, marker) {
+			return "other"
+		}
+	}
+	return "other"
+}
+
+func classifySourceKindFields(category, kind, mediaType, description string) string {
+	value := strings.Join([]string{category, kind, mediaType, description}, " ")
+	if strings.TrimSpace(value) == "" {
+		return "comic"
+	}
+	return classifyKindText(value)
 }
 
 func compact(items []model.RepositoryExtension) []model.RepositoryExtension {

@@ -36,6 +36,8 @@ export const api = {
   repositories: () => request('/api/repositories'),
   createRepository: (payload) =>
     request('/api/repositories', { method: 'POST', body: JSON.stringify(payload) }),
+  updateRepository: (id, payload) =>
+    request(`/api/repositories/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   syncRepository: (id) =>
     request(`/api/repositories/${encodeURIComponent(id)}/sync`, { method: 'POST' }),
   deleteRepository: (id) =>
@@ -56,6 +58,11 @@ export const api = {
   deleteAccount: (id) => request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'DELETE' }),
   search: (id, query, page = 1) =>
     request(`/api/sources/${encodeURIComponent(id)}/search?q=${encodeURIComponent(query)}&page=${page}`),
+  globalSearch: (query, kind = '', page = 1) => {
+    const params = new URLSearchParams({ q: query, page: String(page) })
+    if (kind) params.set('kind', kind)
+    return request(`/api/search?${params.toString()}`)
+  },
   browse: (id, filters = {}, page = 1) => {
     const params = new URLSearchParams({ page: String(page) })
     for (const [key, value] of Object.entries(filters)) {
@@ -75,6 +82,7 @@ export const api = {
   deleteSubscription: (id) => request(`/api/subscriptions/${id}`, { method: 'DELETE' }),
   checkSubscription: (id) => request(`/api/subscriptions/${id}/check`, { method: 'POST' }),
   downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
+  downloadAllSubscription: (id) => request(`/api/subscriptions/${id}/download-all`, { method: 'POST' }),
   archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
 
   downloads: (limit = 200) => request(`/api/downloads?limit=${limit}`),
@@ -112,7 +120,12 @@ export const api = {
   stats: () => request('/api/stats'),
   logs: (limit = 300) => request(`/api/logs?limit=${limit}`),
   activity: () => request('/api/activity'),
-  downloadDirectories: () => request('/api/download-directories'),
+  downloadDirectories: (path = '') => {
+    const params = path ? `?path=${encodeURIComponent(path)}` : ''
+    return request(`/api/download-directories${params}`)
+  },
+  createDownloadDirectory: (parent, name) =>
+    request('/api/download-directories', { method: 'POST', body: JSON.stringify({ parent, name }) }),
 
   imageUrl: (url, sourceId, referer) => {
     if (!url) return ''
