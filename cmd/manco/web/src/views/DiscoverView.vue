@@ -105,7 +105,7 @@ async function loadSources() {
       await ensure(activeSource.value, panel, restorePage)
       if (nav.source === activeId.value && nav.scrollTop) {
         nextTick(() => {
-          const area = document.querySelector('.page-scroll .thin-scroll-area')
+          const area = document.querySelector('.content-scroll')
           if (area) area.scrollTop = Number(nav.scrollTop) || 0
         })
       }
@@ -253,7 +253,7 @@ function afterLoad() {
 
 function scrollPageTop() {
   nextTick(() => {
-    const area = document.querySelector('.page-scroll .thin-scroll-area')
+    const area = document.querySelector('.content-scroll')
     if (area) area.scrollTop = 0
   })
 }
@@ -269,7 +269,7 @@ function rememberPosition() {
     kind: activeKind.value,
     source: activeId.value,
     page: activePanel.value?.page || 1,
-    scrollTop: document.querySelector('.page-scroll .thin-scroll-area')?.scrollTop || 0,
+    scrollTop: document.querySelector('.content-scroll')?.scrollTop || 0,
   })
 }
 

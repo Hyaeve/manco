@@ -25,10 +25,9 @@ import {
   X,
 } from 'lucide-vue-next'
 import MancoLogo from './components/MancoLogo.vue'
-import ThinScroll from './components/ThinScroll.vue'
 import { api } from './api'
 import { useAuthStore } from './stores/auth'
-import { clearNotices, dismissNotice, notices } from './stores/notices'
+import { dismissNotice, notices } from './stores/notices'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -283,11 +282,11 @@ function activityIcon(level) {
           </div>
         </div>
       </header>
-      <ThinScroll class="page-scroll" :thickness="1">
-        <main class="page-content">
+      <main class="content-scroll">
+        <div class="page-content">
           <RouterView />
-        </main>
-      </ThinScroll>
+        </div>
+      </main>
     </div>
   </div>
 
