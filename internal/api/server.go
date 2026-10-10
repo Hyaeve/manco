@@ -33,6 +33,7 @@ import (
 	"github.com/hyaeve/manco/internal/cronutil"
 	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
+	"github.com/hyaeve/manco/internal/iconcache"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/repository"
@@ -47,9 +48,24 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
+	appVersion    = "v0.1.4"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
+
+var sourceIconSources = map[string]string{
+	"picacg":  "https://bica.mom/favicon.jpeg",
+	"jmcomic": "https://jmcomicapp.net/favicon.ico",
+	"baozimh": "https://www.webmota.com/favicon.ico",
+	"biquge":  "https://www.biquge345.com/favicon.ico",
+}
+
+var sourceIconFallbacks = map[string]string{
+	"picacg":  "/source-icons/picacg.png",
+	"jmcomic": "/source-icons/jmcomic.png",
+	"baozimh": "/source-icons/baozimh.png",
+	"biquge":  "/source-icons/biquge345.ico",
+}
 
 type Server struct {
 	cfg       config.Config
@@ -59,6 +75,7 @@ type Server struct {
 	box       *secret.Box
 	registry  *sources.Registry
 	engine    *downloader.Engine
+	icons     *iconcache.Cache
 	scheduler *scheduler.Scheduler
 	logger    *log.Logger
 	logs      *logbuf.Buffer
@@ -91,6 +108,7 @@ type Options struct {
 	Box       *secret.Box
 	Registry  *sources.Registry
 	Engine    *downloader.Engine
+	Icons     *iconcache.Cache
 	Scheduler *scheduler.Scheduler
 	Logger    *log.Logger
 	Logs      *logbuf.Buffer
@@ -110,6 +128,7 @@ func New(options Options) *Server {
 		box:       options.Box,
 		registry:  options.Registry,
 		engine:    options.Engine,
+		icons:     options.Icons,
 		scheduler: options.Scheduler,
 		logger:    logger,
 		logs:      options.Logs,
@@ -224,6 +243,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
+	mux.HandleFunc("GET /api/icons/{id}", s.requireAuth(s.handleSourceIcon))
 	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
 	mux.HandleFunc("GET /api/repositories", s.requireAuth(s.handleListRepositories))
 	mux.HandleFunc("POST /api/repositories", s.requireAuth(s.handleCreateRepository))
@@ -261,6 +281,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/local/cbz", s.requireAuth(s.handleLocalCBZ))
 	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
 	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
+	mux.HandleFunc("GET /api/version", s.requireAuth(s.handleVersion))
+	mux.HandleFunc("GET /api/update-check", s.requireAuth(s.handleUpdateCheck))
 	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
 	mux.HandleFunc("GET /api/logs", s.requireAuth(s.handleLogs))
@@ -374,13 +396,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	hidden := s.hiddenSources(r.Context())
 	type accountView struct {
-		SourceID  string    `json:"sourceId"`
-		Username  string    `json:"username,omitempty"`
-		Password  string    `json:"password,omitempty"`
-		HomeURL   string    `json:"homeUrl,omitempty"`
-		HasToken  bool      `json:"hasToken"`
-		HasCookie bool      `json:"hasCookie"`
-		UpdatedAt time.Time `json:"updatedAt"`
+		Settings  model.SourceDownloadSettings `json:"settings"`
+		SourceID  string                       `json:"sourceId"`
+		Username  string                       `json:"username,omitempty"`
+		Password  string                       `json:"password,omitempty"`
+		HomeURL   string                       `json:"homeUrl,omitempty"`
+		HasToken  bool                         `json:"hasToken"`
+		HasCookie bool                         `json:"hasCookie"`
+		UpdatedAt time.Time                    `json:"updatedAt"`
 	}
 	accounts := map[string]accountView{}
 	stored, err := s.store.ListSourceAccounts(r.Context())
@@ -388,6 +411,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		for _, account := range stored {
 			plainPassword, _ := s.box.Decrypt(account.SecretCipher)
 			accounts[account.SourceID] = accountView{
+				Settings:  s.sourceDownloadSettings(account.Extra),
 				SourceID:  account.SourceID,
 				Username:  account.Username,
 				Password:  plainPassword,
@@ -405,9 +429,197 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleSourceIcon(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	sourceURL, ok := sourceIconSources[id]
+	if !ok || s.icons == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if reader, _, err := s.icons.Open(id); err == nil {
+		_ = reader.Close()
+		file, entry, err := s.icons.Open(id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer file.Close()
+		http.ServeContent(w, r, entry.File, entry.UpdatedAt, file)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if _, err := s.icons.Fetch(ctx, id, sourceURL); err != nil {
+		if fallback := sourceIconFallbacks[id]; fallback != "" {
+			http.Redirect(w, r, fallback, http.StatusTemporaryRedirect)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+	file, entry, err := s.icons.Open(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	http.ServeContent(w, r, entry.File, entry.UpdatedAt, file)
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"version": appVersion})
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	var latest, releaseURL string
+	releaseState, releaseErr := s.fetchGitHubUpdate(ctx, "https://api.github.com/repos/Hyaeve/manco/releases/latest", true, &latest, &releaseURL)
+	if releaseState != http.StatusOK {
+		tagState, tagErr := s.fetchGitHubUpdate(ctx, "https://api.github.com/repos/Hyaeve/manco/tags?per_page=1", false, &latest, &releaseURL)
+		if tagState != http.StatusOK {
+			message := "GitHub 更新服务不可用"
+			if releaseErr != nil {
+				message = releaseErr.Error()
+			} else if tagErr != nil {
+				message = tagErr.Error()
+			}
+			writeError(w, http.StatusBadGateway, message)
+			return
+		}
+	}
+	latest = strings.TrimSpace(latest)
+	if latest == "" {
+		writeError(w, http.StatusBadGateway, "GitHub 未返回可用版本标签")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current":   appVersion,
+		"latest":    latest,
+		"url":       releaseURL,
+		"hasUpdate": compareVersions(latest, appVersion) > 0,
+	})
+}
+
+func (s *Server) fetchGitHubUpdate(ctx context.Context, endpoint string, release bool, latest, releaseURL *string) (int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "Manco/"+appVersion)
+	response, err := s.registry.Client().Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return response.StatusCode, fmt.Errorf("GitHub 更新服务返回 HTTP %d", response.StatusCode)
+	}
+	if release {
+		var payload struct {
+			TagName string `json:"tag_name"`
+			HTMLURL string `json:"html_url"`
+		}
+		if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+			return 0, err
+		}
+		*latest = payload.TagName
+		*releaseURL = payload.HTMLURL
+		return http.StatusOK, nil
+	}
+	var payload []struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&payload); err != nil {
+		return 0, err
+	}
+	if len(payload) == 0 || strings.TrimSpace(payload[0].Name) == "" {
+		return http.StatusOK, nil
+	}
+	latestValue := strings.TrimSpace(payload[0].Name)
+	*latest = latestValue
+	*releaseURL = "https://github.com/Hyaeve/manco/releases/tag/" + url.PathEscape(latestValue)
+	return http.StatusOK, nil
+}
+
+func compareVersions(left, right string) int {
+	parse := func(value string) []int {
+		value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+		value = strings.SplitN(value, "-", 2)[0]
+		parts := strings.Split(value, ".")
+		result := make([]int, len(parts))
+		for index, part := range parts {
+			result[index], _ = strconv.Atoi(part)
+		}
+		return result
+	}
+	a, b := parse(left), parse(right)
+	length := len(a)
+	if len(b) > length {
+		length = len(b)
+	}
+	for index := 0; index < length; index++ {
+		var leftValue, rightValue int
+		if index < len(a) {
+			leftValue = a[index]
+		}
+		if index < len(b) {
+			rightValue = b[index]
+		}
+		if leftValue > rightValue {
+			return 1
+		}
+		if leftValue < rightValue {
+			return -1
+		}
+	}
+	return 0
+}
+func (s *Server) sourceDownloadSettings(raw json.RawMessage) model.SourceDownloadSettings {
+	settings := model.SourceDownloadSettings{
+		ChapterConcurrency: s.cfg.MaxChapterConcurrency,
+		PageConcurrency:    s.cfg.MaxPageConcurrency,
+	}
+	extra := map[string]any{}
+	if len(raw) > 0 && json.Unmarshal(raw, &extra) == nil {
+		if value, ok := extra["downloadSettings"]; ok {
+			encoded, _ := json.Marshal(value)
+			_ = json.Unmarshal(encoded, &settings)
+		}
+	}
+	if settings.ChapterConcurrency < 1 {
+		settings.ChapterConcurrency = 1
+	}
+	if settings.PageConcurrency < 1 {
+		settings.PageConcurrency = 1
+	}
+	return settings
+}
+
+func (s *Server) allSourceDownloadSettings(ctx context.Context) map[string]model.SourceDownloadSettings {
+	result := map[string]model.SourceDownloadSettings{}
+	accounts, err := s.store.ListSourceAccounts(ctx)
+	if err != nil {
+		return result
+	}
+	for _, account := range accounts {
+		result[account.SourceID] = s.sourceDownloadSettings(account.Extra)
+	}
+	return result
+}
+
+// SourceSettings returns the current per-source policy for the download engine.
+func (s *Server) SourceSettings(ctx context.Context) map[string]model.SourceDownloadSettings {
+	return s.allSourceDownloadSettings(ctx)
+}
 func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string][]string) []model.SourceInfo {
 	items := s.registry.List()
 	for index := range items {
+		if _, ok := sourceIconSources[items[index].ID]; ok && s.icons != nil {
+			items[index].Icon = s.icons.URL(items[index].ID)
+		}
 		items[index].Hidden = hidden[items[index].ID]
 		blocked := map[string]bool{}
 		for _, value := range disabled[items[index].ID] {
@@ -849,12 +1061,13 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Token    string `json:"token"`
-		Cookie   string `json:"cookie"`
-		HomeURL  string `json:"homeUrl"`
-		Login    bool   `json:"login"`
+		Settings *model.SourceDownloadSettings `json:"settings"`
+		Username string                        `json:"username"`
+		Password string                        `json:"password"`
+		Token    string                        `json:"token"`
+		Cookie   string                        `json:"cookie"`
+		HomeURL  *string                       `json:"homeUrl"`
+		Login    bool                          `json:"login"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -878,8 +1091,8 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 	if payload.Cookie != "" {
 		account.Cookie = payload.Cookie
 	}
-	if strings.TrimSpace(payload.HomeURL) != "" {
-		account.HomeURL = strings.TrimRight(strings.TrimSpace(payload.HomeURL), "/")
+	if payload.HomeURL != nil {
+		account.HomeURL = strings.TrimRight(strings.TrimSpace(*payload.HomeURL), "/")
 	}
 	if payload.Login {
 		loginSource, ok := item.(source.LoginSource)
@@ -912,6 +1125,17 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if payload.Settings != nil {
+		if account.Extra == nil {
+			account.Extra = map[string]any{}
+		}
+		account.Extra["downloadSettings"] = *payload.Settings
+	}
+	extraJSON, err := json.Marshal(account.Extra)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.store.UpsertSourceAccount(r.Context(), model.SourceAccount{
 		SourceID:     id,
 		Username:     account.Username,
@@ -919,12 +1143,13 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		TokenCipher:  tokenCipher,
 		CookieCipher: cookieCipher,
 		HomeURL:      account.HomeURL,
-		Extra:        json.RawMessage(`{}`),
+		Extra:        extraJSON,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = s.configs.PersistSources(r.Context(), s.store)
+	s.engine.SetSourceSettings(s.allSourceDownloadSettings(r.Context()))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "connected": account.Token != "" || account.Cookie != ""})
 }
 
@@ -1088,10 +1313,12 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 			payload.Author = source.FirstNonEmpty(payload.Author, comic.Author)
 		}
 	}
+	title := source.FirstNonEmpty(payload.Title, payload.ComicID)
 	subscription := model.Subscription{
 		SourceID:            payload.SourceID,
 		ComicID:             payload.ComicID,
-		Title:               source.FirstNonEmpty(payload.Title, payload.ComicID),
+		Title:               title,
+		SeriesDir:           downloader.SeriesDirectoryName(title, convertToSimplified),
 		Cover:               payload.Cover,
 		Author:              payload.Author,
 		Enabled:             payload.Enabled == nil || *payload.Enabled,
@@ -1138,6 +1365,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	auto := existing.AutoDownload
 	cronExpr := existing.CronExpr
 	downloadDir := existing.DownloadDir
+	seriesDir := existing.SeriesDir
 	convertToSimplified := existing.ConvertToSimplified
 	if payload.Enabled != nil {
 		enabled = *payload.Enabled
@@ -1164,8 +1392,12 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
+		seriesDir = downloader.SeriesDirectoryName(existing.Title, convertToSimplified)
 	}
-	if err := s.store.UpdateSubscriptionConfig(r.Context(), id, enabled, auto, cronExpr, downloadDir, convertToSimplified); err != nil {
+	if strings.TrimSpace(seriesDir) == "" {
+		seriesDir = downloader.SeriesDirectoryName(existing.Title, convertToSimplified)
+	}
+	if err := s.store.UpdateSubscriptionConfig(r.Context(), id, enabled, auto, cronExpr, downloadDir, seriesDir, convertToSimplified); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1435,7 +1667,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		saved, err := s.store.CreateDownloadJob(r.Context(), model.DownloadJob{
 			SourceID:            payload.SourceID,
 			ComicID:             payload.ComicID,
-			ComicTitle:          title,
+			ComicTitle:          downloader.SeriesDirectoryName(title, convertToSimplified),
 			ComicCover:          payload.ComicCover,
 			ChapterID:           chapter.ID,
 			ChapterTitle:        source.FirstNonEmpty(chapter.Title, chapter.ID),
@@ -1459,6 +1691,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			SourceID:         payload.SourceID,
 			ComicID:          payload.ComicID,
 			Title:            title,
+			SeriesDir:        downloader.SeriesDirectoryName(title, convertToSimplified),
 			Cover:            payload.ComicCover,
 			Enabled:          true,
 			AutoDownload:     true,

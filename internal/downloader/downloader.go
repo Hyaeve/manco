@@ -45,6 +45,11 @@ type Engine struct {
 	maxPageConcurrency    int
 	logger                *log.Logger
 	sourceConcurrency     map[string]int
+	sourcePageConcurrency map[string]int
+	sourceBatchSize       map[string]int
+	sourceBatchInterval   map[string]time.Duration
+	sourceBatchCompleted  map[string]int
+	sourceCooldownUntil   map[string]time.Time
 	batchSize             int
 	batchInterval         time.Duration
 	batchCompleted        int
@@ -89,6 +94,37 @@ func (e *Engine) SetSourceConcurrency(limits map[string]int) {
 		}
 		e.sourceConcurrency[sourceID] = limit
 		total += limit
+	}
+	if total > 0 {
+		e.maxChapterConcurrency = total
+	}
+	e.mu.Unlock()
+	e.Notify()
+}
+
+// SetSourceSettings applies the per-source download policy shown on each
+// resource card. Zero values fall back to the process defaults.
+func (e *Engine) SetSourceSettings(settings map[string]model.SourceDownloadSettings) {
+	e.mu.Lock()
+	for sourceID, value := range settings {
+		if value.ChapterConcurrency > 0 {
+			e.sourceConcurrency[sourceID] = value.ChapterConcurrency
+		}
+		if value.PageConcurrency > 0 {
+			e.sourcePageConcurrency[sourceID] = value.PageConcurrency
+		}
+		if value.BatchSize >= 0 {
+			e.sourceBatchSize[sourceID] = value.BatchSize
+		}
+		if value.BatchIntervalMinutes >= 0 {
+			e.sourceBatchInterval[sourceID] = time.Duration(value.BatchIntervalMinutes) * time.Minute
+		}
+	}
+	total := 0
+	for _, limit := range e.sourceConcurrency {
+		if limit > 0 {
+			total += limit
+		}
 	}
 	if total > 0 {
 		e.maxChapterConcurrency = total
@@ -148,10 +184,15 @@ func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxCh
 			"jmcomic": maxChapterConcurrency,
 			"baozimh": maxChapterConcurrency,
 		},
-		logger:         logger,
-		active:         map[int64]context.CancelFunc{},
-		activeBySource: map[string]int{},
-		kick:           make(chan struct{}, 1),
+		sourcePageConcurrency: map[string]int{},
+		sourceBatchSize:       map[string]int{},
+		sourceBatchInterval:   map[string]time.Duration{},
+		sourceBatchCompleted:  map[string]int{},
+		sourceCooldownUntil:   map[string]time.Time{},
+		logger:                logger,
+		active:                map[int64]context.CancelFunc{},
+		activeBySource:        map[string]int{},
+		kick:                  make(chan struct{}, 1),
 	}
 }
 
@@ -200,9 +241,12 @@ func (e *Engine) concurrency() int {
 	return e.maxChapterConcurrency
 }
 
-func (e *Engine) pageConcurrency() int {
+func (e *Engine) pageConcurrency(sourceID string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if limit := e.sourcePageConcurrency[sourceID]; limit > 0 {
+		return limit
+	}
 	return e.maxPageConcurrency
 }
 
@@ -242,9 +286,7 @@ func (e *Engine) loop(ctx context.Context) {
 		} else if activated > 0 {
 			e.logger.Printf("downloader: requeued %d failed job(s) for automatic retry", activated)
 		}
-		if e.inCooldown() {
-			continue
-		}
+
 		jobs, err := e.store.ListQueuedJobs(ctx)
 		if err != nil {
 			e.logger.Printf("downloader: list queue: %v", err)
@@ -252,7 +294,7 @@ func (e *Engine) loop(ctx context.Context) {
 		}
 		for _, job := range jobs {
 			job := job
-			if !e.claim(job) {
+			if e.inCooldown(job.SourceID) || !e.claim(job) {
 				continue
 			}
 			if ctx.Err() != nil {
@@ -304,28 +346,40 @@ func (e *Engine) release(job model.DownloadJob) {
 }
 
 // inCooldown reports whether the configured batch pause is still active.
-func (e *Engine) inCooldown() bool {
+func (e *Engine) inCooldown(sourceID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.batchSize > 0 && time.Now().Before(e.cooldownUntil)
+	batchSize := e.batchSize
+	if limit, ok := e.sourceBatchSize[sourceID]; ok {
+		batchSize = limit
+	}
+	return batchSize > 0 && time.Now().Before(e.sourceCooldownUntil[sourceID])
 }
 
 // markBatchComplete pauses the engine after the configured number of jobs.
-func (e *Engine) markBatchComplete() {
+func (e *Engine) markBatchComplete(sourceID string) {
 	e.mu.Lock()
-	if e.batchSize <= 0 {
+	batchSize := e.batchSize
+	if limit, ok := e.sourceBatchSize[sourceID]; ok {
+		batchSize = limit
+	}
+	if batchSize <= 0 {
 		e.mu.Unlock()
 		return
 	}
-	e.batchCompleted++
-	if e.batchCompleted < e.batchSize {
+	e.sourceBatchCompleted[sourceID]++
+	if e.sourceBatchCompleted[sourceID] < batchSize {
 		e.mu.Unlock()
 		return
 	}
-	e.batchCompleted = 0
-	if e.batchInterval > 0 {
-		e.cooldownUntil = time.Now().Add(e.batchInterval)
-		e.logger.Printf("downloader: batch of %d completed, pausing until %s", e.batchSize, e.cooldownUntil.Format(time.RFC3339))
+	e.sourceBatchCompleted[sourceID] = 0
+	interval := e.batchInterval
+	if value, ok := e.sourceBatchInterval[sourceID]; ok {
+		interval = value
+	}
+	if interval > 0 {
+		e.sourceCooldownUntil[sourceID] = time.Now().Add(interval)
+		e.logger.Printf("downloader: source %s batch of %d completed, pausing until %s", sourceID, batchSize, e.sourceCooldownUntil[sourceID].Format(time.RFC3339))
 	}
 	e.mu.Unlock()
 }
@@ -339,7 +393,7 @@ func (e *Engine) runJob(parent context.Context, job model.DownloadJob) {
 
 	err := e.download(ctx, job)
 	if err == nil {
-		e.markBatchComplete()
+		e.markBatchComplete(job.SourceID)
 		return
 	}
 	message := err.Error()
@@ -423,7 +477,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		err   error
 	}
 	results := make(chan fetched, len(pages))
-	semaphore := make(chan struct{}, e.pageConcurrency())
+	semaphore := make(chan struct{}, e.pageConcurrency(job.SourceID))
 	var wait sync.WaitGroup
 	for index, page := range pages {
 		index, page := index, page
@@ -949,6 +1003,17 @@ func Descramble(data []byte, parts int) ([]byte, error) {
 }
 
 var unsafeNamePattern = regexp.MustCompile(`[\\/:*?"<>|\x00-\x1f]+`)
+
+// SeriesDirectoryName returns the stable parent folder for a subscription.
+// The name is converted once when the subscription is created or edited, then
+// reused for every later chapter so traditional and simplified names never
+// split one work into two folders.
+func SeriesDirectoryName(title string, convertToSimplified bool) string {
+	if convertToSimplified {
+		title = convertToSimplifiedText(title)
+	}
+	return SafeName(title)
+}
 
 // SafeName converts a title into a portable file name.
 func SafeName(value string) string {

@@ -343,6 +343,16 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 }
 
+func TestSeriesDirectoryNameIsStableForSimplifiedTitles(t *testing.T) {
+	first := SeriesDirectoryName("龍珠", true)
+	if first != "龙珠" {
+		t.Fatalf("simplified directory = %q, want 龙珠", first)
+	}
+	if second := SeriesDirectoryName(first, true); second != first {
+		t.Fatalf("directory name changed after repeat conversion: %q -> %q", first, second)
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

@@ -25,6 +25,7 @@ type SourceAccount struct {
 }
 
 type Subscription struct {
+	SeriesDir           string     `json:"seriesDir,omitempty"`
 	DownloadDir         string     `json:"downloadDir"`
 	ConvertToSimplified bool       `json:"convertToSimplified"`
 	ID                  int64      `json:"id"`
@@ -73,6 +74,15 @@ type DownloadJob struct {
 	UpdatedAt           time.Time  `json:"updatedAt"`
 	StartedAt           *time.Time `json:"startedAt,omitempty"`
 	FinishedAt          *time.Time `json:"finishedAt,omitempty"`
+}
+
+// SourceDownloadSettings stores per-source download limits in the source
+// account's extra JSON so each card can be tuned independently.
+type SourceDownloadSettings struct {
+	ChapterConcurrency   int `json:"chapterConcurrency"`
+	PageConcurrency      int `json:"pageConcurrency"`
+	BatchSize            int `json:"batchSize"`
+	BatchIntervalMinutes int `json:"batchIntervalMinutes"`
 }
 
 type Stats struct {

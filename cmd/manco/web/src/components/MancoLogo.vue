@@ -14,22 +14,11 @@ defineProps({
     :aria-label="title"
     xmlns="http://www.w3.org/2000/svg"
   >
-    <rect x="2" y="2" width="60" height="60" rx="14" fill="#312E81" />
-    <path
-      d="M12.5 18.5c6.4-2.4 12.2-2 19.5 2.1v28.2c-7.3-4.1-13.1-4.5-19.5-2.1V18.5Z"
-      fill="#F8FAFC"
-    />
-    <path
-      d="M51.5 18.5c-6.4-2.4-12.2-2-19.5 2.1v28.2c7.3-4.1 13.1-4.5 19.5-2.1V18.5Z"
-      fill="#C7D2FE"
-    />
-    <path
-      d="M32 23.5v15M25.5 32.5 32 39l6.5-6.5"
-      fill="none"
-      stroke="#FBBF24"
-      stroke-width="4"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
+    <rect x="2" y="2" width="60" height="60" rx="14" fill="#0F766E" />
+    <path d="M10.5 18.5c7-3 13.1-2.2 20.4 2.1v28.1c-7.3-4.3-13.4-5.1-20.4-2.1V18.5Z" fill="#F8FAFC" />
+    <path d="M53.5 18.5c-7-3-13.1-2.2-20.4 2.1v28.1c7.3-4.3 13.4-5.1 20.4-2.1V18.5Z" fill="#CCFBF1" />
+    <rect x="35.5" y="22.5" width="13.5" height="11" rx="4" fill="#F59E0B" />
+    <path d="M39 28.5h6.5" stroke="#78350F" stroke-width="2.2" stroke-linecap="round" />
+    <path d="M32 38v11M26.6 43.4 32 49l5.4-5.6" fill="none" stroke="#F59E0B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
   </svg>
 </template>

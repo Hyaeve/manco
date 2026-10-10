@@ -107,6 +107,8 @@ export const api = {
   },
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  version: () => request('/api/version'),
+  checkUpdate: () => request('/api/update-check'),
   stats: () => request('/api/stats'),
   logs: (limit = 300) => request(`/api/logs?limit=${limit}`),
   activity: () => request('/api/activity'),

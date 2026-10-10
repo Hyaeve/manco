@@ -19,6 +19,7 @@ import (
 	"github.com/hyaeve/manco/internal/configstore"
 	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
+	"github.com/hyaeve/manco/internal/iconcache"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/scheduler"
@@ -87,6 +88,10 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 			logger.Printf("manco: apply proxy: %v", err)
 		}
 	}
+	icons, err := iconcache.New(filepath.Join(cfg.DataDir, "icon"), client)
+	if err != nil {
+		return err
+	}
 	registry := sources.NewRegistry(client, box, repository)
 	engine := downloader.NewEngine(registry, repository, cfg.DownloadDir, cfg.MaxChapterConcurrency, cfg.MaxPageConcurrency, logger)
 	scanner := scheduler.New(registry, repository, downloadQueue{store: repository, engine: engine}, cfg.ScanInterval, logger)
@@ -103,6 +108,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Box:       box,
 		Registry:  registry,
 		Engine:    engine,
+		Icons:     icons,
 		Scheduler: scanner,
 		Logger:    logger,
 		Logs:      logs,
@@ -113,6 +119,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		logger.Printf("manco: load settings: %v", err)
 	} else {
 		engine.SetSourceConcurrency(settings.SourceConcurrency)
+		engine.SetSourceSettings(server.SourceSettings(ctx))
 		engine.SetDownloadPolicy(settings.BatchSize, settings.BatchIntervalMinutes, settings.ConvertToSimplified)
 	}
 	_ = repository.CleanupSessions(ctx, time.Now())

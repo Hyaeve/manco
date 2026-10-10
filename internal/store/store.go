@@ -69,6 +69,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			comic_id TEXT NOT NULL,
 			title TEXT NOT NULL,
 			cover TEXT NOT NULL DEFAULT '',
+			series_dir TEXT NOT NULL DEFAULT '',
 			author TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			auto_download INTEGER NOT NULL DEFAULT 1,
@@ -168,6 +169,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 	}
 	if err := s.ensureColumn(ctx, "subscriptions", "download_dir", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "series_dir", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "subscriptions", "convert_to_simplified", `INTEGER NOT NULL DEFAULT 0`); err != nil {
@@ -520,11 +524,12 @@ func (s *Store) DeleteExtensionRepository(ctx context.Context, id string) error 
 func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
 			title = excluded.title,
 			cover = excluded.cover,
+			series_dir = CASE WHEN excluded.series_dir <> '' THEN excluded.series_dir ELSE subscriptions.series_dir END,
 			author = excluded.author,
 			enabled = excluded.enabled,
 			auto_download = excluded.auto_download,
@@ -539,7 +544,7 @@ func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) 
 			archived_at = NULL,
 			archive_reason = '',
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus)
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -571,7 +576,7 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 	return subscriptions, rows.Err()
 }
 
-const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at FROM subscriptions`
+const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at FROM subscriptions`
 
 func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription, error) {
 	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` ORDER BY created_at ASC, id ASC`)
@@ -594,8 +599,8 @@ func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription,
 // mounted /app/config directory, including polling baseline and archive state.
 func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
 			title = excluded.title,
 			cover = excluded.cover,
@@ -603,6 +608,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 			enabled = excluded.enabled,
 			auto_download = excluded.auto_download,
 			cron_expr = excluded.cron_expr,
+			series_dir = excluded.series_dir,
 			download_dir = excluded.download_dir,
 			convert_to_simplified = excluded.convert_to_simplified,
 			last_chapter_id = excluded.last_chapter_id,
@@ -616,7 +622,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 			archived_at = excluded.archived_at,
 			archive_reason = excluded.archive_reason,
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason)
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -625,7 +631,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
-	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt)
+	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Subscription{}, ErrNotFound
 	}
@@ -645,16 +651,16 @@ func (s *Store) UpdateSubscription(ctx context.Context, id int64, enabled, autoD
 	return err
 }
 
-func (s *Store) UpdateSubscriptionConfig(ctx context.Context, id int64, enabled, autoDownload bool, cronExpr, downloadDir string, convertToSimplified bool) error {
+func (s *Store) UpdateSubscriptionConfig(ctx context.Context, id int64, enabled, autoDownload bool, cronExpr, downloadDir, seriesDir string, convertToSimplified bool) error {
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE subscriptions SET enabled = ?, auto_download = ?, cron_expr = ?, download_dir = ?, convert_to_simplified = ?,
+		UPDATE subscriptions SET enabled = ?, auto_download = ?, cron_expr = ?, download_dir = ?, series_dir = ?, convert_to_simplified = ?,
 			last_checked_at = CASE WHEN ? = 1 THEN NULL WHEN cron_expr = ? THEN last_checked_at ELSE NULL END,
 			last_new_chapter_at = CASE WHEN ? = 1 AND enabled = 0 THEN CURRENT_TIMESTAMP ELSE last_new_chapter_at END,
 			disabled_at = CASE WHEN ? = 1 THEN NULL ELSE disabled_at END,
 			archived_at = CASE WHEN ? = 1 THEN NULL ELSE archived_at END,
 			archive_reason = CASE WHEN ? = 1 THEN '' ELSE archive_reason END,
 			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		enabled, autoDownload, cronExpr, downloadDir, convertToSimplified, enabled, cronExpr, enabled, enabled, enabled, enabled, id)
+		enabled, autoDownload, cronExpr, downloadDir, seriesDir, convertToSimplified, enabled, cronExpr, enabled, enabled, enabled, enabled, id)
 	return err
 }
 

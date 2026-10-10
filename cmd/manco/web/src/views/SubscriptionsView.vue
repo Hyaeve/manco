@@ -215,7 +215,12 @@ async function checkUpdate(item) {
   </div>
 
   <div v-else class="subscription-grid">
-    <article v-for="item in items" :key="item.id" class="subscription-card" :class="{ disabled: !item.enabled }">
+    <article
+      v-for="item in items"
+      :key="item.id"
+      class="subscription-card"
+      :class="{ disabled: !item.enabled, 'menu-open': openMenu === item.id }"
+    >
       <span v-if="sourceIcon(item)" class="subscription-source" :title="item.sourceId">
         <img :src="sourceIcon(item)" :alt="item.sourceId" loading="lazy" />
       </span>
@@ -247,8 +252,8 @@ async function checkUpdate(item) {
             <span>{{ item.downloadDir || '默认下载目录' }}</span>
           </div>
           <div class="subscription-job-stats">
-            <span class="success-text">成功 {{ jobStats(item).success }}</span>
-            <span class="danger-text">失败 {{ jobStats(item).failed }}</span>
+            <span class="subscription-stat success">成功 {{ jobStats(item).success }}</span>
+            <span class="subscription-stat failed">失败 {{ jobStats(item).failed }}</span>
           </div>
         </div>
       </div>

@@ -134,7 +134,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 			_, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
 				SourceID:            subscription.SourceID,
 				ComicID:             subscription.ComicID,
-				ComicTitle:          subscription.Title,
+				ComicTitle:          subscriptionSeriesDir(subscription),
 				ComicCover:          subscription.Cover,
 				ChapterID:           chapter.ID,
 				ChapterTitle:        chapter.Title,
@@ -154,6 +154,12 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 	return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, subscription.ComicStatus, completedStatus(chapters), false)
 }
 
+func subscriptionSeriesDir(subscription model.Subscription) string {
+	if value := strings.TrimSpace(subscription.SeriesDir); value != "" {
+		return value
+	}
+	return subscription.Title
+}
 func isNewer(chapter model.Chapter, subscription model.Subscription) bool {
 	if chapter.ID == subscription.LastChapterID {
 		return false
@@ -205,7 +211,7 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 	job, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
 		SourceID:            subscription.SourceID,
 		ComicID:             subscription.ComicID,
-		ComicTitle:          subscription.Title,
+		ComicTitle:          subscriptionSeriesDir(subscription),
 		ComicCover:          subscription.Cover,
 		ChapterID:           newest.ID,
 		ChapterTitle:        newest.Title,
