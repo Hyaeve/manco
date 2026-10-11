@@ -84,6 +84,9 @@ func (c *Cache) Root() string {
 func (c *Cache) Get(sourceID, kind, comicID string) (model.ComicDetail, bool) {
 	entry, path, ok := c.read(sourceID, kind, comicID)
 	if !ok {
+		entry, path, ok = c.findBySourceAndID(sourceID, comicID)
+	}
+	if !ok {
 		return model.ComicDetail{}, false
 	}
 	entry.Accessed = time.Now()
@@ -140,6 +143,17 @@ func (c *Cache) Annotate(comic model.Comic) model.Comic {
 }
 
 func (c *Cache) Put(ctx context.Context, client *http.Client, sourceID, kind string, detail model.ComicDetail) error {
+	return c.put(ctx, client, sourceID, kind, "", detail)
+}
+
+// PutNamed stores an entry under the localized source name. The source ID is
+// still used as the stable identity, while the directory remains readable in
+// the mounted /data tree.
+func (c *Cache) PutNamed(ctx context.Context, client *http.Client, sourceID, sourceName, kind string, detail model.ComicDetail) error {
+	return c.put(ctx, client, sourceID, kind, sourceName, detail)
+}
+
+func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, sourceName string, detail model.ComicDetail) error {
 	if c == nil {
 		return nil
 	}
@@ -153,7 +167,11 @@ func (c *Cache) Put(ctx context.Context, client *http.Client, sourceID, kind str
 	if strings.TrimSpace(kind) == "" {
 		kind = NormalizeKind("")
 	}
-	path := c.entryPath(sourceID, kind, detail.Comic.ID)
+	existing, existingPath, exists := c.findBySourceAndID(sourceID, detail.Comic.ID)
+	path := c.entryPathNamed(sourceID, sourceName, kind, detail.Comic.ID)
+	if exists && existingPath != "" {
+		path = existingPath
+	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
 	}
@@ -165,13 +183,8 @@ func (c *Cache) Put(ctx context.Context, client *http.Client, sourceID, kind str
 			coverFile = name
 		}
 	}
-	if existing, existingPath, ok := c.read(sourceID, kind, comic.ID); ok {
-		if coverFile == "" {
-			coverFile = existing.CoverFile
-		}
-		if existingPath != "" {
-			path = existingPath
-		}
+	if coverFile == "" && exists {
+		coverFile = existing.CoverFile
 	}
 	now := time.Now()
 	entry := storedDetail{
@@ -191,6 +204,9 @@ func (c *Cache) Put(ctx context.Context, client *http.Client, sourceID, kind str
 
 func (c *Cache) ServeCover(w http.ResponseWriter, r *http.Request, sourceID, kind, comicID string) bool {
 	entry, path, ok := c.read(sourceID, kind, comicID)
+	if !ok {
+		entry, path, ok = c.findBySourceAndID(sourceID, comicID)
+	}
 	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
 		return false
 	}
@@ -275,7 +291,48 @@ func (c *Cache) findBySourceAndID(sourceID, comicID string) (storedDetail, strin
 			return entry, path, true
 		}
 	}
+	var found storedDetail
+	var foundPath string
+	_ = filepath.WalkDir(c.root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || foundPath != "" || entry.IsDir() || entry.Name() != "item.json" {
+			return nil
+		}
+		candidate, readErr := readEntry(filepath.Dir(path))
+		if readErr == nil && candidate.SourceID == sourceID && candidate.Comic.ID == comicID {
+			found = candidate
+			foundPath = filepath.Dir(path)
+		}
+		return nil
+	})
+	if foundPath != "" {
+		return found, foundPath, true
+	}
 	return storedDetail{}, "", false
+}
+
+func (c *Cache) findBySourceAndIDLegacy(sourceID, comicID string) (storedDetail, string, bool) {
+	if c == nil {
+		return storedDetail{}, "", false
+	}
+	for _, kind := range []string{"comic", "book", "other"} {
+		if entry, path, ok := c.read(sourceID, kind, comicID); ok {
+			return entry, path, true
+		}
+	}
+	return storedDetail{}, "", false
+}
+
+func (c *Cache) entryPathNamed(sourceID, sourceName, kind, comicID string) string {
+	slug := slugify(comicID)
+	if slug == "" {
+		slug = "item"
+	}
+	sourceDir := slugify(strings.TrimSpace(sourceName))
+	if sourceDir == "" {
+		sourceDir = slugify(sourceID)
+	}
+	hash := sha256.Sum256([]byte(sourceID + "\x00" + comicID))
+	return filepath.Join(c.root, NormalizeKind(kind), sourceDir, slug+"-"+hex.EncodeToString(hash[:6]))
 }
 
 func (c *Cache) entryPath(sourceID, kind, comicID string) string {

@@ -84,6 +84,7 @@ export const api = {
   downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
   downloadAllSubscription: (id) => request(`/api/subscriptions/${id}/download-all`, { method: 'POST' }),
   archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
+  backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),
 
   downloads: (limit = 200) => request(`/api/downloads?limit=${limit}`),
   createDownload: (payload) => request('/api/downloads', { method: 'POST', body: JSON.stringify(payload) }),

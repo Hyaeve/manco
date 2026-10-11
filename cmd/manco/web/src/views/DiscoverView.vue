@@ -324,7 +324,7 @@ function sourceKindLabel(kind) {
         />
         <button class="btn small" type="button" :disabled="!activeSource.canSearch || activePanel.loading" @click="submitSearch">
           <Loader2 v-if="activePanel.loading" :size="15" class="spin" />
-          <Search v-else :size="15" />
+          <span v-else>搜索</span>
         </button>
       </div>
     </div>
@@ -358,10 +358,10 @@ function sourceKindLabel(kind) {
           <img v-if="activeSource.icon" class="source-favicon" :src="activeSource.icon" alt="" />
           <div>
             <h2>{{ activeSource.name }}</h2>
-            <p>{{ activeSource.description }}</p>
+
           </div>
         </div>
-        <span class="badge primary">{{ visibleItems.length }} / {{ activePanel.items.length }} 项</span>
+        <span v-if="activePanel.loading" class="muted small">加载中</span>
       </header>
 
       <div class="source-column-tools">
@@ -408,9 +408,9 @@ function sourceKindLabel(kind) {
           <div class="comic-cover">
             <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
             <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
-            <img v-if="activeSource.icon" class="comic-source-corner" :src="activeSource.icon" alt="" />
           </div>
           <div class="comic-body">
+            <img v-if="activeSource.icon" class="comic-source-corner" :src="activeSource.icon" alt="" />
             <span class="comic-title">{{ item.title }}</span>
             <span class="comic-meta">{{ item.author || '未知作者' }}</span>
           </div>
@@ -439,7 +439,7 @@ function sourceKindLabel(kind) {
         <button class="btn secondary small" type="button" :disabled="activePanel.page <= 1 || activePanel.loading" @click="changePage(-1)">
           <ChevronLeft :size="15" /> 上一页
         </button>
-        <span class="muted small">第 {{ activePanel.page }} 页 · 每页 {{ pageSize }} 项</span>
+        <span class="muted small">第 {{ activePanel.page }} 页</span>
         <button class="btn secondary small" type="button" :disabled="!hasNextPage || activePanel.loading" @click="changePage(1)">
           下一页 <ChevronRight :size="15" />
         </button>

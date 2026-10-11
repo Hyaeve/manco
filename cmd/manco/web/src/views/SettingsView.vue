@@ -14,6 +14,7 @@ import { api } from '../api'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
+import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 
 const auth = useAuthStore()
@@ -77,7 +78,12 @@ function passwordInput(value) {
 }
 
 async function saveAccount() {
-  if (!window.confirm('确认保存账号与安全设置吗？')) return
+  const confirmed = await askConfirm({
+    title: '保存账号与安全设置',
+    message: '确认保存当前账号与安全设置吗？',
+    confirmText: '保存',
+  })
+  if (!confirmed) return
   saving.value = 'account'
   try {
     const payload = {

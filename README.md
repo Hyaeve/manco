@@ -10,14 +10,14 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 - 首次启动进入创建账号页；登录后可在「设置 → 账号设置」中修改用户名和密码。
 - 默认漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**；默认书籍源包含**笔趣阁**及现有公开书籍源。
 - 书籍源：**笔趣阁**、**神凑轻小说**与 **Project Gutenberg**。「资源仓库」页分为「漫画源 / 书籍源 / 拓展仓库」三个栏目，书籍按章节或整本下载为纯文本。
-- 拓展仓库默认不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持添加、编辑、同步、展开、删除和导入来源。除 JSON 清单外，还支持 gzip protobuf（Mihon / Keiyoushi `index.pb`）。Android/JVM 插件会明确标记为“仅登记”，不会伪装成可在 Go 后端直接执行的来源。
+- 拓展仓库不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持添加、编辑、同步、展开、删除、来源搜索和导入。除 JSON 清单外，还支持 gzip protobuf（Mihon / Keiyoushi `index.pb`）。Android/JVM 插件会明确标记为“仅登记”，不会伪装成可在 Go 后端直接执行的来源。
 - 「资源仓库」按期类分为「漫画源 / 书籍源 / 其他源 / 拓展仓库」四个栏目，来源可按类型拖拽排序，顺序持久化到服务端并同步到探索发现。
 - 探索发现浏览结果缓存写入 `/data/discover-cache.json`，默认 30 分钟内复用；访问过的作品详情与封面按类型落盘到 `/data/discover/<kind>/<source>/`，30 天未访问自动清理。
 - 「本地库」页面浏览已经配置或选择过的下载目录，可查看已下载的漫画 / 书籍、展开文件列表并下载或预览。
 - 「运行日志」支持原始文本与结构化列表切换，并记住上次选择；同一份日志也会输出到容器标准输出，可用 `docker logs -f Manco` 查看。
 - 支持搜索、浏览、作品详情、章节列表、勾选章节批量下载。
 - 顶部搜索栏常驻（Ctrl/⌘+K 聚焦），可跨所有已启用来源检索并保留最近三次搜索；发现页分为「漫画源 / 书籍源 / 其他源」三个标签，源标签单行横滑，各源筛选条件与视图模式（网格/列表）按浏览器持久化。
-- 网格视图每页 7×7=49 项、列表视图每页 30 项，支持输入页码快速跳转；进入作品详情再返回会恢复到原来的源、页码与滚动位置。
+- 网格视图按七行铺满并支持虚拟加载，列表视图每页 30 行；支持输入页码快速跳转，进入作品详情再返回会恢复到原来的源、页码与滚动位置。
 - 漫画源可单独从发现页隐藏，隐藏状态保存在服务端，不影响继续维护账号和 Cookie。
 - 网络代理可在「设置」中配置，用于访问被地域或网络策略拦截的漫画源。
 - 订阅追更：首次检查只记录当前最新章节作为基线，之后按订阅卡片中的 Cron 表达式周期性检查；新订阅默认使用创建时的星期与整点，每周执行一次。
@@ -30,7 +30,8 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 - 包子漫画封面统一通过图片 CDN `s1.bzcdn.net` 访问（原 `static-tw.baozimh.com` 常被 Cloudflare 拦截），章节目录从站点结构化容器解析并按章节槽位排序。
 - 下载失败会按 10 分钟、30 分钟自动重试两次，仍失败则保留失败记录，可在下载页多选（支持 Shift 多选）后手动重试。
 - 订阅长期未更新（超过所设天数）会先关闭，关闭 15 天后归档；已完结的订阅 15 天后归档且不再轮询；手动重新启用会重新计算检查周期。
-- 前端 UI 参考 BangumiKomga 的浅色后台风格：左侧导航 + 卡片式列表。
+- 前端 UI 参考 Aether / MoviePilot / kmreader 的后台与阅读器风格：浅黄绿色侧栏、细灰色滚动条、来源原生圆角图标、卡片式订阅和响应式发现网格。
+- 订阅卡片支持章节标符开关（文件名前缀 `#1`）、封面模糊、检查更新与全量下载；已启用章节标符后可回填已有下载文件名。
 
 ## 目录结构
 
@@ -70,8 +71,10 @@ services:
       - "15600:15600"
     environment:
       TZ: "Asia/Shanghai"
+      MANCO_DATA_DIR: "/data"
+      MANCO_CONFIG_DIR: "/app/config"
     volumes:
-      - ./data:/app/data
+      - ./data:/data
       - ./config:/app/config
       # 下载位置在「系统设置 → 下载设置」和订阅任务设置里选择/填写。
       # 需要自定义下载目录时，按需添加宿主机目录映射，例如：
@@ -85,7 +88,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-启动后访问 `http://<NAS-IP>:15600`，首次进入会要求创建登录账号；之后可在「设置 → 修改密码」中更新密码。
+启动后访问 `http://<NAS-IP>:15600`，首次进入会要求创建登录账号；之后可在「系统设置 → 账号与安全」中更新账号、密码与会话存活期。
 
 > 首次拉取如果提示 `denied` 或未授权，说明 GHCR 包还是私有可见性：把 GitHub 仓库的
 > **Packages → manco → Package settings → Change visibility** 改成 Public，或在 NAS 上先
@@ -108,7 +111,7 @@ docker compose up -d
 
 | 容器路径 | 宿主机路径 | 说明 |
 | --- | --- | --- |
-| `/app/data` | `./data` | SQLite 数据库、会话、探索发现缓存、加密密钥 `.secret` |
+| `/data` | `./data` | SQLite 数据库、会话、探索发现缓存、图标索引与加密密钥 |
 | `/app/config` | `./config` | 系统设置、来源与账号、拓展仓库、订阅等模块化 JSON 配置 |
 | 自定义下载目录 | 按需映射 | 在「系统设置 → 下载设置」为订阅选择/填写容器内路径，如 `/downloads/manco` |
 
@@ -118,10 +121,10 @@ docker compose up -d
 | --- | --- | --- |
 | `MANCO_ADDR` | `:15600` | 监听地址 |
 | `MANCO_SECRET` | 自动生成 `data/.secret` | 凭据加密密钥，建议显式设置并备份 |
-| `MANCO_DATA_DIR` | `data` | 数据目录 |
-| `MANCO_CONFIG_DIR` | `config` | 用户配置目录，Docker 中为 `/app/config` |
+| `MANCO_DATA_DIR` | `data`（compose 中为 `/data`） | 运行数据目录，包含 SQLite、探索缓存和图标索引 |
+| `MANCO_CONFIG_DIR` | `config`（compose 中为 `/app/config`） | 用户配置目录，保存设置、来源、仓库与订阅配置 |
 | `MANCO_DOWNLOAD_DIR` | `downloads` | 下载目录 |
-| `MANCO_SOURCE_REPO` | Kototoro 拓展仓库 | 源清单参考地址 |
+| `MANCO_SOURCE_REPO` | 空 | 可选的源清单地址；默认不内置第三方仓库 |
 | `MANCO_SCAN_INTERVAL` | `30m` | 无 Cron 数据的旧订阅兼容扫描间隔 |
 | `MANCO_MAX_CHAPTER_CONCURRENCY` | `2` | 同时下载的章节数 |
 | `MANCO_MAX_PAGE_CONCURRENCY` | `4` | 单章节内同时下载的图片数 |
@@ -209,7 +212,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v0.0.8 && git push origin v0.0.8     # 构建并发布 :v0.0.8
+git tag v0.1.6 && git push origin v0.1.6     # 构建并发布 :v0.1.6
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

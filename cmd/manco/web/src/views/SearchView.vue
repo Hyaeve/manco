@@ -117,9 +117,9 @@ watch(
         <div class="comic-cover">
           <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
           <span v-else class="cover-fallback"><BookOpen :size="24" /></span>
-          <img v-if="item.sourceIcon" class="search-result-source" :src="item.sourceIcon" alt="" />
         </div>
         <div class="comic-body">
+          <img v-if="item.sourceIcon" class="search-result-source" :src="item.sourceIcon" alt="" />
           <span class="comic-title">{{ item.title }}</span>
           <span class="comic-meta">{{ item.sourceName || item.sourceId }}</span>
         </div>

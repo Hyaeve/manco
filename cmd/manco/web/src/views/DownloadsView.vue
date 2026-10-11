@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import { askConfirm } from '../stores/confirm'
 
 const items = ref([])
 const loading = ref(true)
@@ -175,7 +176,13 @@ async function remove(item, removeFile) {
   const hint = removeFile
     ? `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录并删除已下载的 CBZ 文件吗？`
     : `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录吗？CBZ 文件会保留。`
-  if (!window.confirm(hint)) return
+  const confirmed = await askConfirm({
+    title: removeFile ? '删除任务和文件' : '删除任务记录',
+    message: hint,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
   busy.value = item.id
   error.value = ''
   try {

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowDownWideNarrow,
@@ -11,6 +11,8 @@ import {
   Loader2,
   Rss,
   Search,
+  Tag,
+  UserRound,
   Square,
   SquareCheck,
   X,
@@ -35,6 +37,8 @@ const sortDesc = ref(false)
 const queryInput = ref('')
 const appliedQuery = ref('')
 const heroTint = ref('')
+const chapterRenderLimit = ref(80)
+let pageScroller = null
 let anchorIndex = -1
 
 const subscribeOpen = ref(false)
@@ -42,6 +46,8 @@ const subForm = ref({
   cronExpr: '',
   downloadDir: '',
   convertToSimplified: true,
+  chapterMarker: false,
+  coverBlur: false,
   allChapters: false,
 })
 
@@ -57,10 +63,26 @@ const displayChapters = computed(() => {
   rows.sort((a, b) => (sortDesc.value ? (b.order || 0) - (a.order || 0) : (a.order || 0) - (b.order || 0)))
   return rows
 })
+const renderedChapters = computed(() => displayChapters.value.slice(0, chapterRenderLimit.value))
 const allSelected = computed(
   () => displayChapters.value.length > 0 && displayChapters.value.every((chapter) => selected.value.has(chapter.id)),
 )
-const heroStyle = computed(() => ({ '--hero-tint': heroTint.value || 'transparent' }))
+const heroStyle = computed(() => ({
+  '--hero-tint': heroTint.value || 'transparent',
+  '--hero-cover': comic.value?.cover ? `url("${cover()}")` : 'none',
+}))
+
+watch([appliedQuery, sortDesc], () => {
+  chapterRenderLimit.value = 80
+})
+
+function handlePageScroll(event) {
+  const element = event.currentTarget
+  if (!element || chapterRenderLimit.value >= displayChapters.value.length) return
+  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 280) {
+    chapterRenderLimit.value += 80
+  }
+}
 
 function defaultCron() {
   const now = new Date()
@@ -83,6 +105,12 @@ onMounted(async () => {
     isBook.value = false
   }
   if (comic.value?.cover) extractTint(cover())
+  pageScroller = document.querySelector('.content-scroll')
+  pageScroller?.addEventListener('scroll', handlePageScroll, { passive: true })
+})
+
+onUnmounted(() => {
+  pageScroller?.removeEventListener('scroll', handlePageScroll)
 })
 
 function extractTint(url) {
@@ -126,6 +154,12 @@ function goBack() {
   } else {
     router.push({ name: 'discover' })
   }
+}
+
+function searchAuthor() {
+  const author = String(comic.value?.author || '').trim()
+  if (!author) return
+  router.push({ name: 'search', query: { q: author, kind: isBook.value ? 'book' : 'comic' } })
 }
 
 function handleChapterClick(event, chapter, index) {
@@ -175,6 +209,8 @@ function openSubscribe() {
     cronExpr: subForm.value.cronExpr || defaultCron(),
     downloadDir: subForm.value.downloadDir,
     convertToSimplified: true,
+    chapterMarker: false,
+    coverBlur: false,
     allChapters: false,
   }
   subscribeOpen.value = true
@@ -204,6 +240,8 @@ async function confirmSubscribe() {
       cronExpr: subForm.value.cronExpr.trim(),
       downloadDir: subForm.value.downloadDir.trim(),
       convertToSimplified: Boolean(subForm.value.convertToSimplified),
+      chapterMarker: Boolean(subForm.value.chapterMarker),
+      coverBlur: Boolean(subForm.value.coverBlur),
     })
     subscribeOpen.value = false
     const queued = Number(result?.queued || 0)
@@ -262,12 +300,14 @@ async function downloadSelected() {
   </div>
   <div v-else>
     <div class="detail-hero" :style="heroStyle">
-      <div class="detail-cover">
+      <div class="detail-cover-wrap">
         <button class="detail-cover-back" type="button" aria-label="返回" title="返回" @click="goBack">
           <ChevronLeft :size="20" />
         </button>
+        <div class="detail-cover">
         <img v-if="comic.cover" :src="cover()" :alt="comic.title" />
         <span v-else class="cover-fallback"><BookOpen :size="28" /></span>
+        </div>
       </div>
       <div class="detail-info">
         <div class="detail-info-head">
@@ -284,12 +324,18 @@ async function downloadSelected() {
             </button>
           </div>
         </div>
-        <div class="meta">
-          <span>{{ comic.author || '未知作者' }}</span>
+        <div class="meta detail-meta-line">
+          <button v-if="comic.author" class="author-pill" type="button" @click="searchAuthor">
+            <UserRound :size="14" />
+            {{ comic.author }}
+          </button>
+          <span v-else>未知作者</span>
           <span v-if="comic.status"> · {{ comic.status }}</span>
         </div>
         <div v-if="comic.tags?.length" class="tag-list">
-          <span v-for="tag in comic.tags" :key="tag" class="badge">{{ tag }}</span>
+          <span v-for="tag in comic.tags" :key="tag" class="badge tag-pill">
+            <Tag :size="12" />{{ tag }}
+          </span>
         </div>
         <p class="description">{{ comic.description || '暂无简介' }}</p>
       </div>
@@ -319,7 +365,7 @@ async function downloadSelected() {
       <div v-if="!displayChapters.length" class="empty">没有匹配的章节</div>
       <div v-else class="chapter-grid">
         <button
-          v-for="(chapter, index) in displayChapters"
+          v-for="(chapter, index) in renderedChapters"
           :key="chapter.id"
           class="chapter-tile"
           :class="{ selected: selected.has(chapter.id) }"
@@ -354,6 +400,14 @@ async function downloadSelected() {
         <label class="field">
           <span>下载位置</span>
           <DirectoryPicker v-model="subForm.downloadDir" :suffix="comic?.title" />
+        </label>
+        <label class="switch-row">
+          <input v-model="subForm.chapterMarker" type="checkbox" />
+          <span>章节标符（文件名前缀 #序号）</span>
+        </label>
+        <label class="switch-row">
+          <input v-model="subForm.coverBlur" type="checkbox" />
+          <span>封面模糊</span>
         </label>
         <label class="switch-row">
           <input v-model="subForm.convertToSimplified" type="checkbox" />

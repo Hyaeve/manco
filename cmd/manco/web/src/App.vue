@@ -24,6 +24,7 @@ import {
   Sun,
   X,
 } from 'lucide-vue-next'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import MancoLogo from './components/MancoLogo.vue'
 import { api } from './api'
 import { useAuthStore } from './stores/auth'
@@ -312,6 +313,7 @@ function activityIcon(level) {
     </div>
   </div>
 
+  <ConfirmDialog />
   <TransitionGroup name="toast-slide" tag="div" class="toast-stack" aria-live="polite">
     <div
       v-for="notice in notices"

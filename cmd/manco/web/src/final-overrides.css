@@ -1432,3 +1432,407 @@
 .source-card-dragging {
   opacity: 0.55;
 }
+
+/* ===== v0.1.6：探索发现、资源卡片、详情页与订阅交互收口 ===== */
+:root {
+  --primary: #e8a35c;
+  --primary-strong: #c87b34;
+  --primary-soft: #fff1df;
+}
+
+[data-theme='dark'] {
+  --primary: #e6ae72;
+  --primary-strong: #f3c18c;
+  --primary-soft: #3a2d20;
+}
+
+/* 所有滚动条统一为极浅灰色细条。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.38) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 0;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.42);
+}
+
+/* 顶部搜索：只占面包屑区域的一半，Ctrl+K 仍由 App 统一拦截。 */
+.global-search {
+  flex: 0 1 360px;
+  width: min(360px, 50%);
+  max-width: 360px;
+  min-width: 230px;
+}
+
+.global-search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+/* 侧栏：浅黄、带一点绿色，和内容区保持轻量分层。 */
+.sidebar {
+  background: color-mix(in srgb, #f1f5d8 90%, var(--surface));
+  border-right-color: color-mix(in srgb, #cbd69a 55%, var(--border));
+}
+
+[data-theme='dark'] .sidebar {
+  background: #20261c;
+  border-right-color: #323b29;
+}
+
+/* 探索发现：来源分类、搜索栏和来源条在顶部严格对齐。 */
+.discover-tabs-wrap {
+  gap: 12px;
+}
+
+.discover-head {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.discover-head-left {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.discover-search.source-search {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  flex: 0 0 330px;
+  width: 330px;
+  margin-left: auto;
+}
+
+.source-page {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.source-page-head,
+.source-column-tools {
+  padding-inline: 0;
+  background: transparent;
+}
+
+.source-page-head {
+  border-bottom: 0;
+  padding-top: 0;
+}
+
+.source-column-tools {
+  border-bottom: 0;
+}
+
+.source-comic-grid,
+.source-list-view {
+  padding-inline: 0;
+}
+
+.source-comic-card .comic-body {
+  position: relative;
+  padding-right: 36px;
+}
+
+.comic-body {
+  position: relative;
+}
+
+.comic-source-corner,
+.search-result-source {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  object-fit: contain;
+  box-shadow: none;
+}
+
+/* 资源卡片：按钮横向靠右，图标高亮只作用在图标主体。 */
+.source-card-simple {
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.source-card-simple .source-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: end;
+}
+
+.source-card-simple .source-category-button,
+.source-card-simple .source-more-button {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.source-card-simple .source-category-button:hover,
+.source-card-simple .source-more-button:hover,
+.source-logo-button:hover {
+  color: var(--primary-strong);
+  background: transparent;
+}
+
+.source-logo-button {
+  border-radius: 8px;
+}
+
+.source-logo-button img {
+  border-radius: 10px;
+}
+
+/* 添加来源：仓库选择器收窄，右侧保留仓库内搜索。 */
+.source-add-toolbar .rounded-select {
+  flex: 0 0 25%;
+  max-width: 25%;
+}
+
+.source-repository-search {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 7px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.source-repository-search input {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+
+/* 仓库展开动画。 */
+.extension-list {
+  animation: manco-reveal 180ms ease-out;
+  transform-origin: top;
+}
+
+@keyframes manco-reveal {
+  from { opacity: 0; transform: scaleY(0.96); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+/* 订阅卡片：两张一行，封面固定比例，来源图标与封面顶部对齐。 */
+.subscription-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.subscription-card {
+  min-height: 264px;
+  overflow: visible;
+  isolation: isolate;
+}
+
+.subscription-card .subscription-main {
+  grid-template-columns: 138px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 16px 14px;
+}
+
+.subscription-card .subscription-cover {
+  width: 138px;
+  flex-basis: 138px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.subscription-card .subscription-cover img {
+  object-fit: cover;
+}
+
+.subscription-cover.blurred img {
+  filter: blur(7px);
+  transform: scale(1.08);
+}
+
+.subscription-card .subscription-source {
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  z-index: 5;
+}
+
+.subscription-card .subscription-source img {
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  object-fit: contain;
+}
+
+.subscription-card .subscription-meta {
+  padding-bottom: 58px;
+}
+
+.subscription-tools {
+  right: 12px;
+  bottom: 18px;
+  z-index: 100;
+}
+
+.subscription-tools .subscription-actions {
+  top: auto;
+  bottom: calc(100% + 7px);
+  right: 0;
+  min-width: 112px;
+  z-index: 160;
+}
+
+/* 作品详情：不套外框，使用封面模糊背景，章节跟随页面滚动。 */
+.detail-hero {
+  isolation: isolate;
+  border: 0;
+  border-radius: 0;
+  padding: 0 0 18px;
+  background: transparent;
+  overflow: visible;
+}
+
+.detail-hero::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: -24px -20px -18px;
+  border-radius: 20px;
+  background-image: var(--hero-cover, none);
+  background-size: cover;
+  background-position: center 28%;
+  filter: blur(34px) saturate(1.08);
+  opacity: 0.18;
+  pointer-events: none;
+}
+
+.detail-cover-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.detail-cover-back {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.detail-cover-back:hover {
+  background: transparent;
+  color: var(--primary-strong);
+}
+
+.detail-info-head h2 {
+  font-size: 28px;
+  line-height: 1.25;
+}
+
+.detail-meta-line {
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.author-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  cursor: pointer;
+}
+
+.detail-info .description {
+  margin-top: 12px;
+  font-size: 15px;
+  line-height: 1.72;
+}
+
+.detail-chapters {
+  margin-top: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.chapter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+
+/* 本地库：桌面端一行六张，详情章节使用封面网格。 */
+.local-library-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.local-chapter-grid {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+
+@media (max-width: 1400px) {
+  .local-library-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1100px) {
+  .local-library-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .source-add-toolbar .rounded-select { flex-basis: 32%; max-width: 32%; }
+}
+
+@media (max-width: 760px) {
+  .global-search { width: min(360px, calc(100% - 80px)); min-width: 0; }
+  .discover-head { flex-wrap: wrap; }
+  .discover-search.source-search { flex: 1 1 100%; width: 100%; }
+  .chapter-grid { grid-template-columns: minmax(0, 1fr); }
+  .local-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

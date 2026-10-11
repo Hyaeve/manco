@@ -28,6 +28,8 @@ type Subscription struct {
 	SeriesDir           string     `json:"seriesDir,omitempty"`
 	DownloadDir         string     `json:"downloadDir"`
 	ConvertToSimplified bool       `json:"convertToSimplified"`
+	ChapterMarker       bool       `json:"chapterMarker"`
+	CoverBlur           bool       `json:"coverBlur"`
 	ID                  int64      `json:"id"`
 	SourceID            string     `json:"sourceId"`
 	ComicID             string     `json:"comicId"`
@@ -55,6 +57,7 @@ type Subscription struct {
 type DownloadJob struct {
 	DownloadDir         string     `json:"downloadDir"`
 	ConvertToSimplified bool       `json:"convertToSimplified"`
+	ChapterMarker       bool       `json:"chapterMarker"`
 	ID                  int64      `json:"id"`
 	SourceID            string     `json:"sourceId"`
 	ComicID             string     `json:"comicId"`

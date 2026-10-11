@@ -21,6 +21,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
+import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 
 const items = ref([])
@@ -37,6 +38,8 @@ const form = ref({
   cronExpr: '',
   downloadDir: '',
   convertToSimplified: true,
+  chapterMarker: false,
+  coverBlur: false,
 })
 
 const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 'paused'].includes(job.status)))
@@ -90,6 +93,8 @@ function openEditor(item) {
     cronExpr: item.cronExpr || '',
     downloadDir: item.downloadDir || '',
     convertToSimplified: Boolean(item.convertToSimplified),
+    chapterMarker: Boolean(item.chapterMarker),
+    coverBlur: Boolean(item.coverBlur),
   }
   openMenu.value = 0
   editorOpen.value = true
@@ -101,13 +106,25 @@ async function saveEditor() {
     notify('Cron 表达式不能为空', 'warning')
     return
   }
+  const enablingMarker = Boolean(form.value.chapterMarker) && !editing.value.chapterMarker
+  if (enablingMarker) {
+    const confirmed = await askConfirm({
+      title: '补全章节标符',
+      message: '开启后会把该订阅已下载的章节文件名补全为 #序号 章节名，是否继续？',
+      confirmText: '确认补全',
+    })
+    if (!confirmed) return
+  }
   busy.value = editing.value.id
   try {
     const updated = await api.updateSubscription(editing.value.id, {
       cronExpr: form.value.cronExpr.trim(),
       downloadDir: form.value.downloadDir.trim(),
       convertToSimplified: Boolean(form.value.convertToSimplified),
+      chapterMarker: Boolean(form.value.chapterMarker),
+      coverBlur: Boolean(form.value.coverBlur),
     })
+    if (enablingMarker) await api.backfillChapterMarkers(editing.value.id)
     Object.assign(editing.value, updated)
     notify(`已更新《${editing.value.title}》的订阅任务`, 'success')
     editorOpen.value = false
@@ -148,7 +165,13 @@ async function archive(item) {
 
 async function remove(item) {
   openMenu.value = 0
-  if (!window.confirm(`确定删除订阅「${item.title}」吗？`)) return
+  const confirmed = await askConfirm({
+    title: '删除订阅',
+    message: `确定删除订阅「${item.title}」吗？下载文件和任务记录不会被自动删除。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
   busy.value = item.id
   try {
     await api.deleteSubscription(item.id)
@@ -249,6 +272,7 @@ async function downloadAll(item) {
       <div class="subscription-main">
         <RouterLink
           class="subscription-cover"
+          :class="{ blurred: item.coverBlur }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
         >
           <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
@@ -329,6 +353,14 @@ async function downloadAll(item) {
         <label class="field">
           <span>下载位置</span>
           <DirectoryPicker v-model="form.downloadDir" :suffix="editing?.title" />
+        </label>
+        <label class="switch-row">
+          <input v-model="form.chapterMarker" type="checkbox" />
+          <span>章节标符（文件名前缀 #序号）</span>
+        </label>
+        <label class="switch-row">
+          <input v-model="form.coverBlur" type="checkbox" />
+          <span>封面模糊</span>
         </label>
         <label class="switch-row">
           <input v-model="form.convertToSimplified" type="checkbox" />

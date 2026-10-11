@@ -141,6 +141,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 				ChapterOrder:        chapter.Order,
 				DownloadDir:         subscription.DownloadDir,
 				ConvertToSimplified: subscription.ConvertToSimplified,
+				ChapterMarker:       subscription.ChapterMarker,
 			})
 			if err != nil {
 				s.logger.Printf("scheduler: queue %s/%s: %v", subscription.Title, chapter.Title, err)
@@ -218,6 +219,7 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 		ChapterOrder:        newest.Order,
 		DownloadDir:         subscription.DownloadDir,
 		ConvertToSimplified: subscription.ConvertToSimplified,
+		ChapterMarker:       subscription.ChapterMarker,
 	})
 	if err != nil {
 		return model.DownloadJob{}, err
@@ -262,6 +264,7 @@ func (s *Scheduler) QueueAll(ctx context.Context, subscription model.Subscriptio
 			ChapterOrder:        chapter.Order,
 			DownloadDir:         subscription.DownloadDir,
 			ConvertToSimplified: subscription.ConvertToSimplified,
+			ChapterMarker:       subscription.ChapterMarker,
 		})
 		if createErr != nil {
 			return queued, skipped, createErr

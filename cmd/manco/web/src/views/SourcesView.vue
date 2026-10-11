@@ -8,11 +8,11 @@ import {
   EyeOff,
   KeyRound,
   Loader2,
-  MoreHorizontal,
+  MoreVertical,
+  Search,
   PackagePlus,
   Plus,
   RefreshCw,
-  GripVertical,
   Pencil,
   Save,
   Server,
@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import PasswordInput from '../components/PasswordInput.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
@@ -37,6 +38,7 @@ const activeKind = ref('comic')
 const repositoryOpen = ref(false)
 const addSourceOpen = ref(false)
 const addRepositoryID = ref('')
+const sourceSearch = ref('')
 const categoryOpen = ref(false)
 const categorySource = ref(null)
 const categorySelection = ref({})
@@ -73,7 +75,12 @@ const repositoryOptions = computed(() =>
   })),
 )
 const selectedRepository = computed(() => repositories.value.find((item) => item.id === addRepositoryID.value) || null)
-const selectedExtensions = computed(() => selectedRepository.value?.extensions || [])
+const selectedExtensions = computed(() => {
+  const keyword = sourceSearch.value.trim().toLowerCase()
+  const rows = selectedRepository.value?.extensions || []
+  if (!keyword) return rows
+  return rows.filter((item) => `${item.name} ${item.packageName || ''}`.toLowerCase().includes(keyword))
+})
 
 onMounted(load)
 
@@ -268,7 +275,13 @@ async function toggleHidden(item) {
 }
 
 async function disconnect(item) {
-  if (!window.confirm(`确定清除「${item.name}」的登录凭据吗？`)) return
+  const confirmed = await askConfirm({
+    title: '清除登录凭据',
+    message: `确定清除「${item.name}」的登录凭据吗？`,
+    confirmText: '清除',
+    danger: true,
+  })
+  if (!confirmed) return
   busy.value = `source-${item.id}`
   try {
     await api.deleteAccount(item.id)
@@ -347,7 +360,13 @@ async function syncRepository(item) {
 }
 
 async function removeRepository(item) {
-  if (!window.confirm(`确定删除拓展仓库「${item.name}」吗？`)) return
+  const confirmed = await askConfirm({
+    title: '删除拓展仓库',
+    message: `确定删除拓展仓库「${item.name}」吗？`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
   busy.value = `repository-${item.id}`
   try {
     await api.deleteRepository(item.id)
@@ -367,6 +386,7 @@ function openAddSource() {
     activeKind.value = 'repository'
     return
   }
+  sourceSearch.value = ''
   addSourceOpen.value = true
 }
 
@@ -394,6 +414,10 @@ async function importExtension(repository, extension) {
 }
 
 function onDragStart(item, event) {
+	if (event?.target?.closest?.('button, input, textarea, select, a')) {
+		event.preventDefault()
+		return
+	}
   dragId.value = item.id
   if (event?.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
@@ -490,19 +514,15 @@ function onDragEnd() {
         :key="item.id"
         class="card source-card-simple"
         :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id }"
-        draggable="false"
+        draggable="true"
         @dragstart="onDragStart(item, $event)"
         @dragover="onDragOver(item, $event)"
         @drop.prevent="onDrop"
         @dragend="onDragEnd"
       >
-        <span class="source-drag-handle" draggable="true" title="拖拽排序">
-          <GripVertical :size="16" />
-        </span>
         <button
           class="source-logo-button"
           type="button"
-          :title="item.hidden ? '点击启用' : '点击停用'"
           :disabled="busy === `source-${item.id}`"
           @click="toggleHidden(item)"
         >
@@ -514,11 +534,11 @@ function onDragEnd() {
           <h2>{{ item.name }}</h2>
           <span class="badge" :class="sourceStatus(item).className">{{ sourceStatus(item).label }}</span>
         </div>
+        <div class="source-card-actions">
         <button
           class="icon-btn source-category-button"
           type="button"
           aria-label="筛选分类"
-          title="筛选分类"
           @click="openCategory(item)"
         >
           <SlidersHorizontal :size="17" />
@@ -527,11 +547,11 @@ function onDragEnd() {
           class="icon-btn source-more-button"
           type="button"
           aria-label="编辑来源"
-          title="编辑来源"
           @click="openEditor(item)"
         >
-          <MoreHorizontal :size="19" />
+          <MoreVertical :size="19" />
         </button>
+        </div>
       </article>
     </div>
   </template>
@@ -620,6 +640,10 @@ function onDragEnd() {
       <div class="modal-body">
         <div class="source-add-toolbar">
           <RoundedSelect v-model="addRepositoryID" label="拓展仓库" :options="repositoryOptions" placeholder="选择仓库" />
+          <label class="source-repository-search">
+            <Search :size="15" />
+            <input v-model="sourceSearch" placeholder="搜索当前仓库来源" />
+          </label>
           <button
             v-if="selectedRepository"
             class="btn secondary small"

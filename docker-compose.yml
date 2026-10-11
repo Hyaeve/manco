@@ -6,9 +6,11 @@ services:
     ports:
       - 15600:15600
     volumes:
-      - ./data:/app/data
+      - ./data:/data
       - ./config:/app/config
-      # 在系统设置里选择/填写自定义下载位置后，按需添加你的宿主机下载目录映射。
+      # 运行数据固定写入 /data；配置单独写入 /app/config。
     environment:
       - TZ=Asia/Shanghai
+      - MANCO_DATA_DIR=/data
+      - MANCO_CONFIG_DIR=/app/config
     restart: unless-stopped

@@ -78,8 +78,18 @@ function fileSize(bytes) {
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
-function openDetail(item) {
+async function openDetail(item) {
   active.value = item
+  for (const file of item.files || []) {
+    if ((file.ext !== 'cbz' && file.ext !== 'zip') || file.thumbnail) continue
+    try {
+      const payload = await api.localCBZ(file.path)
+      const first = (payload.items || []).find((entry) => entry.name && !entry.name.endsWith('/'))
+      if (first) file.thumbnail = api.localCBZFileUrl(file.path, first.name)
+    } catch {
+      file.thumbnail = ''
+    }
+  }
 }
 
 function closeDetail() {
@@ -158,19 +168,25 @@ function downloadReaderFile() {
         <div class="section-head local-file-head">
           <h3>文件</h3>
         </div>
-        <div class="chapter-list local-file-list">
-          <div v-for="file in activeFiles" :key="file.path" class="chapter-row">
-            <FileText v-if="file.ext === 'txt'" :size="16" />
-            <BookOpen v-else :size="16" />
-            <span class="title">{{ file.name }}</span>
-            <span class="muted small">{{ fileSize(file.size) }}</span>
-            <button class="btn ghost icon" type="button" :title="`阅读 ${file.name}`" @click="openReader(file)">
-              <BookOpen :size="15" />
+        <div class="local-chapter-grid">
+          <article v-for="file in activeFiles" :key="file.path" class="local-chapter-card">
+            <button class="local-chapter-cover" type="button" @click="openReader(file)">
+              <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" />
+              <BookOpen v-else :size="26" />
             </button>
-            <a class="btn ghost icon" :href="fileUrl(file, true)" :title="`下载 ${file.name}`">
-              <Download :size="15" />
-            </a>
-          </div>
+            <div class="local-chapter-copy">
+              <strong :title="file.name">{{ file.name }}</strong>
+              <span>{{ file.ext === 'txt' ? '文本' : '漫画章节' }} · {{ fileSize(file.size) }}</span>
+            </div>
+            <div class="local-chapter-actions">
+              <button class="btn ghost icon" type="button" :aria-label="`阅读 ${file.name}`" @click="openReader(file)">
+                <BookOpen :size="15" />
+              </button>
+              <a class="btn ghost icon" :href="fileUrl(file, true)" :aria-label="`下载 ${file.name}`">
+                <Download :size="15" />
+              </a>
+            </div>
+          </article>
           <div v-if="!activeFiles.length" class="empty">没有可阅读的文件</div>
         </div>
       </div>

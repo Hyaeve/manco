@@ -575,7 +575,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
 	}
 
-	outputPath := filepath.Join(comicDir, SafeName(chapterTitle)+".cbz")
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
@@ -678,7 +678,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return err
 	}
-	outputPath := filepath.Join(comicDir, SafeName(chapterTitle)+".txt")
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".txt"))
 	if err := os.WriteFile(outputPath, []byte(text), 0o644); err != nil {
 		return err
 	}
@@ -1013,6 +1013,18 @@ func SeriesDirectoryName(title string, convertToSimplified bool) string {
 		title = convertToSimplifiedText(title)
 	}
 	return SafeName(title)
+}
+
+// ChapterFileName builds the stable chapter file name. When marker is enabled,
+// the chapter order is prefixed as #1, #2, ... so readers and file managers can
+// sort downloaded chapters without relying on the source title text.
+func ChapterFileName(title string, order float64, marker bool, extension string) string {
+	name := SafeName(title)
+	if marker && order > 0 {
+		orderText := strconv.FormatFloat(order, 'f', -1, 64)
+		name = "#" + orderText + " " + name
+	}
+	return name + extension
 }
 
 // SafeName converts a title into a portable file name.

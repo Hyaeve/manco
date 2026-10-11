@@ -50,7 +50,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.5"
+	appVersion    = "v0.1.6"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
@@ -278,6 +278,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{id}/check", s.requireAuth(s.handleCheckSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download", s.requireAuth(s.handleDownloadSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download-all", s.requireAuth(s.handleDownloadAllSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/chapter-marker/backfill", s.requireAuth(s.handleBackfillChapterMarkers))
 	mux.HandleFunc("POST /api/subscriptions/{id}/archive", s.requireAuth(s.handleArchiveSubscription))
 
 	mux.HandleFunc("GET /api/downloads", s.requireAuth(s.handleListDownloads))
@@ -1293,6 +1294,16 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	page := intParam(r, "page", 1)
 	cacheKey := "search:" + r.URL.RequestURI()
 	if raw, storedAt, ok := s.cache.Get(cacheKey); ok {
+		var cached model.SearchResult
+		if json.Unmarshal(raw, &cached) == nil {
+			info := item.Info()
+			kind := source.KindOf(info)
+			for index := range cached.Items {
+				cached.Items[index] = s.annotateDiscover(info.ID, kind, cached.Items[index])
+			}
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
 		writeCachedJSON(w, raw, storedAt)
 		return
 	}
@@ -1302,9 +1313,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := source.KindOf(item.Info())
+
+	info := item.Info()
 	for index := range result.Items {
 		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
 	}
+	s.cacheDiscoverItems(info, kind, result.Items)
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, result)
 }
@@ -1363,6 +1377,7 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 				mu.Unlock()
 				return
 			}
+			s.cacheDiscoverItems(info, source.KindOf(info), payload.Items)
 			mu.Lock()
 			for _, item := range payload.Items {
 				item.SourceID = info.ID
@@ -1397,6 +1412,16 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	page := intParam(r, "page", 1)
 	cacheKey := "browse:" + r.URL.RequestURI()
 	if raw, storedAt, ok := s.cache.Get(cacheKey); ok {
+		var cached model.SearchResult
+		if json.Unmarshal(raw, &cached) == nil {
+			info := item.Info()
+			kind := source.KindOf(info)
+			for index := range cached.Items {
+				cached.Items[index] = s.annotateDiscover(info.ID, kind, cached.Items[index])
+			}
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
 		writeCachedJSON(w, raw, storedAt)
 		return
 	}
@@ -1405,6 +1430,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	info := item.Info()
+	s.cacheDiscoverItems(info, source.KindOf(info), result.Items)
 	kind := source.KindOf(item.Info())
 	for index := range result.Items {
 		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
@@ -1443,7 +1470,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if err := s.discover.Put(ctx, s.registry.Client(), sourceID, kind, detail); err != nil {
+			if err := s.discover.PutNamed(ctx, s.registry.Client(), sourceID, item.Info().Name, kind, detail); err != nil {
 				s.logger.Printf("api: cache discover %s/%s: %v", sourceID, comic.ID, err)
 			}
 		}()
@@ -1462,6 +1489,25 @@ func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": chapters})
+}
+
+func (s *Server) cacheDiscoverItems(info model.SourceInfo, kind string, items []model.Comic) {
+	if s.discover == nil || len(items) == 0 {
+		return
+	}
+	copyItems := append([]model.Comic(nil), items...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		for _, comic := range copyItems {
+			if strings.TrimSpace(comic.ID) == "" {
+				continue
+			}
+			if err := s.discover.PutNamed(ctx, s.registry.Client(), info.ID, info.Name, kind, model.ComicDetail{Comic: comic}); err != nil {
+				s.logger.Printf("api: cache discover browse %s/%s: %v", info.ID, comic.ID, err)
+			}
+		}
+	}()
 }
 
 func (s *Server) annotateDiscover(sourceID, kind string, comic model.Comic) model.Comic {
@@ -1494,7 +1540,7 @@ func (s *Server) refreshDiscoverDetail(sourceID, kind, comicID string) {
 	if err != nil {
 		return
 	}
-	if err := s.discover.Put(ctx, s.registry.Client(), sourceID, kind, model.ComicDetail{Comic: comic, Chapters: chapters}); err != nil {
+	if err := s.discover.PutNamed(ctx, s.registry.Client(), sourceID, adapter.Info().Name, kind, model.ComicDetail{Comic: comic, Chapters: chapters}); err != nil {
 		s.logger.Printf("api: refresh discover %s/%s: %v", sourceID, comicID, err)
 	}
 }
@@ -1537,6 +1583,8 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		CronExpr            string  `json:"cronExpr"`
 		DownloadDir         string  `json:"downloadDir"`
 		ConvertToSimplified *bool   `json:"convertToSimplified"`
+		ChapterMarker       *bool   `json:"chapterMarker"`
+		CoverBlur           *bool   `json:"coverBlur"`
 		Baseline            string  `json:"baseline"`
 		AllChapters         bool    `json:"allChapters"`
 		LastOrder           float64 `json:"lastChapterOrder"`
@@ -1563,6 +1611,8 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	convertToSimplified := s.loadSettings(r.Context()).ConvertToSimplified
+	chapterMarker := payload.ChapterMarker != nil && *payload.ChapterMarker
+	coverBlur := payload.CoverBlur != nil && *payload.CoverBlur
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
 	}
@@ -1592,6 +1642,8 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		CronExpr:            cronExpr,
 		DownloadDir:         downloadDir,
 		ConvertToSimplified: convertToSimplified,
+		ChapterMarker:       chapterMarker,
+		CoverBlur:           coverBlur,
 		LastChapterID:       strings.TrimSpace(payload.Baseline),
 		LastChapterOrder:    payload.LastOrder,
 		LastChapterTitle:    "",
@@ -1633,6 +1685,8 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		CronExpr            *string `json:"cronExpr"`
 		DownloadDir         *string `json:"downloadDir"`
 		ConvertToSimplified *bool   `json:"convertToSimplified"`
+		ChapterMarker       *bool   `json:"chapterMarker"`
+		CoverBlur           *bool   `json:"coverBlur"`
 	}{}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1644,6 +1698,8 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	downloadDir := existing.DownloadDir
 	seriesDir := existing.SeriesDir
 	convertToSimplified := existing.ConvertToSimplified
+	chapterMarker := existing.ChapterMarker
+	coverBlur := existing.CoverBlur
 	if payload.Enabled != nil {
 		enabled = *payload.Enabled
 	}
@@ -1671,10 +1727,16 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		convertToSimplified = *payload.ConvertToSimplified
 		seriesDir = downloader.SeriesDirectoryName(existing.Title, convertToSimplified)
 	}
+	if payload.ChapterMarker != nil {
+		chapterMarker = *payload.ChapterMarker
+	}
+	if payload.CoverBlur != nil {
+		coverBlur = *payload.CoverBlur
+	}
 	if strings.TrimSpace(seriesDir) == "" {
 		seriesDir = downloader.SeriesDirectoryName(existing.Title, convertToSimplified)
 	}
-	if err := s.store.UpdateSubscriptionConfig(r.Context(), id, enabled, auto, cronExpr, downloadDir, seriesDir, convertToSimplified); err != nil {
+	if err := s.store.UpdateSubscriptionConfig(r.Context(), id, enabled, auto, cronExpr, downloadDir, seriesDir, convertToSimplified, chapterMarker, coverBlur); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1704,6 +1766,53 @@ func (s *Server) handleDownloadAllSubscription(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": queued, "skipped": skipped})
+}
+
+func (s *Server) handleBackfillChapterMarkers(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	subscription, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	jobs, err := s.store.ListDownloadJobs(r.Context(), 500)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	renamed := 0
+	for _, job := range jobs {
+		if job.SourceID != subscription.SourceID || job.ComicID != subscription.ComicID || job.Status != "completed" || strings.TrimSpace(job.FilePath) == "" {
+			continue
+		}
+		ext := filepath.Ext(job.FilePath)
+		if ext == "" {
+			continue
+		}
+		target := filepath.Join(filepath.Dir(job.FilePath), downloader.ChapterFileName(job.ChapterTitle, job.ChapterOrder, true, ext))
+		if target == job.FilePath {
+			continue
+		}
+		if _, statErr := os.Stat(target); statErr == nil {
+			_ = s.store.SetDownloadJobFilePath(r.Context(), job.ID, target)
+			renamed++
+			continue
+		}
+		if err := os.Rename(job.FilePath, target); err != nil {
+			s.logger.Printf("api: rename chapter marker %s: %v", job.FilePath, err)
+			continue
+		}
+		if err := s.store.SetDownloadJobFilePath(r.Context(), job.ID, target); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		renamed++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "renamed": renamed})
 }
 
 func (s *Server) handleArchiveSubscription(w http.ResponseWriter, r *http.Request) {
@@ -2035,6 +2144,8 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		ComicCover          string          `json:"comicCover"`
 		DownloadDir         string          `json:"downloadDir"`
 		ConvertToSimplified *bool           `json:"convertToSimplified"`
+		ChapterMarker       *bool           `json:"chapterMarker"`
+		CoverBlur           *bool           `json:"coverBlur"`
 		AutoDownload        bool            `json:"autoDownload"`
 		Chapters            []model.Chapter `json:"chapters"`
 		Chapter             *model.Chapter  `json:"chapter"`
@@ -2064,6 +2175,8 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
 	}
+	chapterMarker := payload.ChapterMarker != nil && *payload.ChapterMarker
+	coverBlur := payload.CoverBlur != nil && *payload.CoverBlur
 	created := make([]model.DownloadJob, 0, len(chapters))
 	queuedCount := 0
 	skippedCount := 0
@@ -2081,6 +2194,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			ChapterOrder:        chapter.Order,
 			DownloadDir:         downloadDir,
 			ConvertToSimplified: convertToSimplified,
+			ChapterMarker:       chapterMarker,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -2095,17 +2209,20 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.AutoDownload && len(created) > 0 {
 		if _, err := s.store.UpsertSubscription(r.Context(), model.Subscription{
-			SourceID:         payload.SourceID,
-			ComicID:          payload.ComicID,
-			Title:            title,
-			SeriesDir:        downloader.SeriesDirectoryName(title, convertToSimplified),
-			Cover:            payload.ComicCover,
-			Enabled:          true,
-			AutoDownload:     true,
-			CronExpr:         cronutil.Default(time.Now()),
-			LastChapterID:    created[len(created)-1].ChapterID,
-			LastChapterTitle: created[len(created)-1].ChapterTitle,
-			LastChapterOrder: created[len(created)-1].ChapterOrder,
+			SourceID:            payload.SourceID,
+			ComicID:             payload.ComicID,
+			Title:               title,
+			SeriesDir:           downloader.SeriesDirectoryName(title, convertToSimplified),
+			Cover:               payload.ComicCover,
+			Enabled:             true,
+			AutoDownload:        true,
+			CronExpr:            cronutil.Default(time.Now()),
+			ConvertToSimplified: convertToSimplified,
+			ChapterMarker:       chapterMarker,
+			CoverBlur:           coverBlur,
+			LastChapterID:       created[len(created)-1].ChapterID,
+			LastChapterTitle:    created[len(created)-1].ChapterTitle,
+			LastChapterOrder:    created[len(created)-1].ChapterOrder,
 		}); err != nil {
 			s.logger.Printf("api: auto subscribe: %v", err)
 		}
