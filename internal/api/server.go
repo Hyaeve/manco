@@ -36,6 +36,7 @@ import (
 	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/downloader"
 	"github.com/hyaeve/manco/internal/iconcache"
+	"github.com/hyaeve/manco/internal/localops"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/repository"
@@ -50,7 +51,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.6"
+	appVersion    = "v0.1.7"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
@@ -291,6 +292,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/local/file", s.requireAuth(s.handleLocalFile))
 	mux.HandleFunc("GET /api/local/cbz", s.requireAuth(s.handleLocalCBZ))
 	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
+	mux.HandleFunc("POST /api/local/merge", s.requireAuth(s.handleLocalMerge))
+	mux.HandleFunc("POST /api/local/simplify", s.requireAuth(s.handleLocalSimplify))
 	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
 	mux.HandleFunc("GET /api/version", s.requireAuth(s.handleVersion))
 	mux.HandleFunc("GET /api/update-check", s.requireAuth(s.handleUpdateCheck))
@@ -351,6 +354,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "无法创建用户")
 		return
 	}
+	_ = s.configs.PersistAccounts(r.Context(), s.store)
 	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "user": map[string]any{"username": username}})
 }
 
@@ -2336,6 +2340,7 @@ type localItemEntry struct {
 	Description string           `json:"description,omitempty"`
 	Cover       string           `json:"cover,omitempty"`
 	Files       []localFileEntry `json:"files"`
+	TotalFiles  int              `json:"totalFiles"`
 	Size        int64            `json:"size"`
 	UpdatedAt   time.Time        `json:"updatedAt"`
 }
@@ -2421,6 +2426,7 @@ func (s *Server) scanLocalDir(root, name string) localItemEntry {
 		if err != nil {
 			continue
 		}
+		item.TotalFiles++
 		lower := strings.ToLower(file.Name())
 		if strings.HasPrefix(lower, "cover.") {
 			item.Cover = filepath.ToSlash(filepath.Join(name, file.Name()))
@@ -2687,6 +2693,97 @@ func (s *Server) handleLocalFile(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(target)+"\"")
 	}
 	http.ServeFile(w, r, target)
+}
+
+func (s *Server) handleLocalMerge(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Paths []string `json:"paths"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	targets, err := s.resolveLocalDirectories(r.Context(), payload.Paths)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(targets) < 2 {
+		writeError(w, http.StatusBadRequest, "合并至少需要选择两部作品")
+		return
+	}
+	result, err := localops.Merge(targets[0], targets[1:])
+	if err != nil {
+		s.logger.Printf("local: merge %s: %v", filepath.Base(targets[0]), err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.logger.Printf("local: merged %d file(s) into %s", result.MovedFiles, filepath.Base(result.ParentDir))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"movedFiles": result.MovedFiles,
+		"parent":     filepath.Base(result.ParentDir),
+	})
+}
+
+func (s *Server) handleLocalSimplify(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Paths []string `json:"paths"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	targets, err := s.resolveLocalDirectories(r.Context(), payload.Paths)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	renamed := 0
+	merged := 0
+	for _, target := range targets {
+		result, err := localops.ConvertToSimplified(target)
+		if err != nil {
+			s.logger.Printf("local: simplify %s: %v", filepath.Base(target), err)
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		renamed += result.Renamed
+		if result.MergedInto != "" {
+			merged++
+		}
+	}
+	s.logger.Printf("local: converted %d path(s), merged %d item(s)", renamed, merged)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"renamed": renamed,
+		"merged":  merged,
+	})
+}
+
+func (s *Server) resolveLocalDirectories(ctx context.Context, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("请选择本地作品")
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(paths))
+	for _, value := range paths {
+		target, err := s.resolveLocalTarget(ctx, value)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(target)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("本地作品目录不存在: %s", filepath.Base(target))
+		}
+		clean := filepath.Clean(target)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		result = append(result, clean)
+	}
+	return result, nil
 }
 
 func (s *Server) settingsResponse(ctx context.Context, username string) map[string]any {
@@ -2978,6 +3075,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	s.engine.SetDownloadPolicy(current.BatchSize, current.BatchIntervalMinutes, current.ConvertToSimplified)
 	response := s.settingsResponse(r.Context(), responseUsername)
 	response["ok"] = true
+	_ = s.configs.PersistAccounts(r.Context(), s.store)
 	_ = s.configs.PersistSettings(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, response)
 }
@@ -3012,6 +3110,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 type logEntry struct {
 	Time    string `json:"time,omitempty"`
 	Level   string `json:"level"`
+	Module  string `json:"module"`
 	Message string `json:"message"`
 	Raw     string `json:"raw"`
 }
@@ -3028,8 +3127,35 @@ func parseLogEntry(line string) logEntry {
 		entry.Level = "error"
 	} else if strings.Contains(lower, "warn") || strings.Contains(lower, "retry") || strings.Contains(lower, "重试") {
 		entry.Level = "warning"
+	} else if strings.Contains(lower, "debug") || strings.Contains(lower, "verbose") || strings.Contains(lower, "调试") {
+		entry.Level = "debug"
 	}
+	entry.Module = inferLogModule(lower)
 	return entry
+}
+
+func inferLogModule(message string) string {
+	if strings.HasPrefix(message, "manco:") || strings.HasPrefix(message, "manco listening") {
+		return "system"
+	}
+	switch {
+	case strings.Contains(message, "downloader:") || strings.Contains(message, "download job") || strings.Contains(message, "下载任务") || strings.Contains(message, "下载失败"):
+		return "downloads"
+	case strings.Contains(message, "scheduler:") || strings.Contains(message, "subscription") || strings.Contains(message, "订阅"):
+		return "subscriptions"
+	case strings.Contains(message, "repository") || strings.Contains(message, "repo ") || strings.Contains(message, "manifest") || strings.Contains(message, "拓展仓库") || strings.Contains(message, "仓库"):
+		return "repositories"
+	case strings.Contains(message, "local:") || strings.Contains(message, "cbz") || strings.Contains(message, "本地") || strings.Contains(message, "merge") || strings.Contains(message, "合并"):
+		return "local"
+	case strings.Contains(message, "auth") || strings.Contains(message, "login") || strings.Contains(message, "session") || strings.Contains(message, "账号") || strings.Contains(message, "登录") || strings.Contains(message, "用户"):
+		return "accounts"
+	case strings.Contains(message, "setting") || strings.Contains(message, "proxy") || strings.Contains(message, "配置") || strings.Contains(message, "设置"):
+		return "settings"
+	case strings.Contains(message, "source") || strings.Contains(message, "discover") || strings.Contains(message, "browse") || strings.Contains(message, "search") || strings.Contains(message, "资源") || strings.Contains(message, "搜索"):
+		return "sources"
+	default:
+		return "system"
+	}
 }
 
 func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {

@@ -108,6 +108,8 @@ export const api = {
     return `/api/local/file?${params.toString()}`
   },
   localCBZ: (path) => request(`/api/local/cbz?path=${encodeURIComponent(path)}`),
+  localMerge: (paths) => request('/api/local/merge', { method: 'POST', body: JSON.stringify({ paths }) }),
+  localSimplify: (paths) => request('/api/local/simplify', { method: 'POST', body: JSON.stringify({ paths }) }),
   localCBZFileUrl: (path, entry, download = false) => {
     if (!path || !entry) return ''
     const params = new URLSearchParams({ path, entry })

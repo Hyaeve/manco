@@ -2,6 +2,24 @@ package api
 
 import "testing"
 
+func TestParseLogEntryAddsModuleAndLevel(t *testing.T) {
+	entry := parseLogEntry("2026/10/11 16:00:00 downloader: chapter failed: timeout")
+	if entry.Module != "downloads" {
+		t.Fatalf("module = %q, want downloads", entry.Module)
+	}
+	if entry.Level != "error" {
+		t.Fatalf("level = %q, want error", entry.Level)
+	}
+	debug := parseLogEntry("scheduler: debug subscription baseline")
+	if debug.Module != "subscriptions" || debug.Level != "debug" {
+		t.Fatalf("debug entry = %#v", debug)
+	}
+	system := parseLogEntry("manco listening on :15600 (downloads: /downloads)")
+	if system.Module != "system" || system.Level != "info" {
+		t.Fatalf("system entry = %#v", system)
+	}
+}
+
 func TestCompareVersions(t *testing.T) {
 	tests := []struct {
 		name  string

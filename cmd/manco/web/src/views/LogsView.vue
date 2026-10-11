@@ -12,30 +12,42 @@ const levels = [
   { value: 'info', label: '信息' },
   { value: 'warning', label: '警告' },
   { value: 'error', label: '错误' },
+  { value: 'debug', label: '调试' },
+]
+const modules = [
+  { value: 'all', label: '全部模块' },
+  { value: 'system', label: '系统' },
+  { value: 'accounts', label: '账号安全' },
+  { value: 'sources', label: '资源源' },
+  { value: 'repositories', label: '拓展仓库' },
+  { value: 'subscriptions', label: '订阅' },
+  { value: 'downloads', label: '下载' },
+  { value: 'local', label: '本地库' },
+  { value: 'settings', label: '系统设置' },
 ]
 
-const lines = ref([])
 const entries = ref([])
 const loading = ref(false)
 const autoRefresh = ref(true)
 const mode = ref(window.localStorage.getItem(LOG_MODE_KEY) === 'structured' ? 'structured' : 'raw')
 const level = ref('all')
+const module = ref('all')
 const query = ref('')
 let timer = null
 
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   let rows = entries.value
+  if (module.value !== 'all') rows = rows.filter((entry) => entry.module === module.value)
   if (level.value !== 'all') rows = rows.filter((entry) => entry.level === level.value)
   if (keyword) {
-    rows = rows.filter((entry) => `${entry.time} ${entry.level} ${entry.message}`.toLowerCase().includes(keyword))
+    rows = rows.filter((entry) => `${entry.time} ${entry.module} ${entry.level} ${entry.message}`.toLowerCase().includes(keyword))
   }
   return rows
 })
 
 const rawText = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  const rows = lines.value.filter((line) => !keyword || line.toLowerCase().includes(keyword))
+  const rows = filtered.value.map((entry) => entry.raw || `${entry.time || '--'} ${entry.message}`)
   return rows.length ? rows.join('\n') : '暂无匹配日志。'
 })
 
@@ -43,7 +55,6 @@ async function load() {
   loading.value = true
   try {
     const payload = await api.logs(500)
-    lines.value = payload.lines || []
     entries.value = payload.items || []
   } catch (err) {
     notify(`运行日志加载失败：${err.message}`, true)
@@ -90,6 +101,7 @@ onUnmounted(() => {
           结构化
         </button>
       </div>
+      <RoundedSelect v-model="module" label="日志模块" :options="modules" />
       <RoundedSelect v-model="level" label="日志级别" :options="levels" />
       <label class="search-field log-search">
         <Search :size="16" />
@@ -116,6 +128,7 @@ onUnmounted(() => {
           <div v-if="!filtered.length" class="empty">暂无匹配日志。</div>
           <article v-for="(entry, index) in filtered" :key="`${entry.time}-${index}`" class="log-entry">
             <time class="log-time">{{ entry.time || '--' }}</time>
+            <span class="log-module">{{ entry.module || 'system' }}</span>
             <span class="log-level" :class="entry.level">{{ entry.level }}</span>
             <span class="log-message">{{ entry.message }}</span>
           </article>

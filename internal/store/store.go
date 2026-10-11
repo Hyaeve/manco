@@ -284,6 +284,37 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) e
 	return err
 }
 
+func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, username, password_hash, created_at FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]model.User, 0, 1)
+	for rows.Next() {
+		var item model.User
+		if err := rows.Scan(&item.ID, &item.Username, &item.PasswordHash, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) UpsertUser(ctx context.Context, user model.User) error {
+	if strings.TrimSpace(user.Username) == "" || strings.TrimSpace(user.PasswordHash) == "" {
+		return errors.New("username and password hash are required")
+	}
+	createdAt := user.CreatedAt.UTC()
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO users(username, password_hash, created_at) VALUES(?, ?, ?)
+		ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash`, user.Username, user.PasswordHash, createdAt)
+	return err
+}
+
 func (s *Store) UserByUsername(ctx context.Context, username string) (model.User, error) {
 	var user model.User
 	err := s.db.QueryRowContext(ctx, `SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username).

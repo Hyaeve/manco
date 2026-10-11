@@ -1836,3 +1836,78 @@
   .chapter-grid { grid-template-columns: minmax(0, 1fr); }
   .local-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* 本地库多选：右键进入，底部胶囊工具栏执行批量操作。 */
+.local-library-card {
+  position: relative;
+}
+
+.local-library-card.selected {
+  border-color: var(--primary-strong);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-strong) 48%, transparent);
+}
+
+.local-selection-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--primary-strong);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.local-selection-bar {
+  position: sticky;
+  z-index: 20;
+  bottom: 16px;
+  display: flex;
+  width: fit-content;
+  max-width: min(100%, 720px);
+  align-items: center;
+  gap: 8px;
+  margin: 20px auto 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--primary-strong));
+  box-shadow: 0 12px 34px rgba(30, 36, 26, 0.16);
+}
+
+.local-selection-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 4px;
+  color: var(--text);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .local-selection-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    border-radius: 18px;
+  }
+}
+
+.log-entry {
+  grid-template-columns: 138px 88px 68px minmax(0, 1fr);
+}
+
+.log-module {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-level.debug {
+  color: color-mix(in srgb, var(--text-muted) 76%, var(--primary-strong));
+}

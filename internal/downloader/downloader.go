@@ -637,6 +637,12 @@ func convertToSimplifiedText(value string) string {
 
 // downloadBook persists one text file per chapter for book sources, plus a
 // short book.json metadata file shared by all chapters of the work.
+// SimplifiedText exposes the project's stable Traditional-to-Simplified
+// conversion for local library maintenance.
+func SimplifiedText(value string) string {
+	return convertToSimplifiedText(value)
+}
+
 func (e *Engine) downloadBook(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
 	contentSource, ok := item.(source.ContentSource)
 	if !ok {

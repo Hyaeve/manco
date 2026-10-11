@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/store"
@@ -19,6 +20,7 @@ const (
 	sourcesFile       = "sources.json"
 	repositoriesFile  = "repositories.json"
 	subscriptionsFile = "subscriptions.json"
+	accountsFile      = "accounts.json"
 )
 
 // Files persists user-facing configuration separately from the operational
@@ -31,6 +33,12 @@ type Files struct {
 type sourcesDocument struct {
 	Custom []model.CustomSource `json:"customSources"`
 	Users  []accountDocument    `json:"accounts"`
+}
+
+type userDocument struct {
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"passwordHash"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 type accountDocument struct {
@@ -64,6 +72,9 @@ func (f *Files) Restore(ctx context.Context, repository *store.Store) error {
 	if err := f.restoreSettings(ctx, repository); err != nil {
 		return err
 	}
+	if err := f.restoreAccounts(ctx, repository); err != nil {
+		return err
+	}
 	if err := f.restoreSources(ctx, repository); err != nil {
 		return err
 	}
@@ -82,6 +93,25 @@ func (f *Files) PersistSettings(ctx context.Context, repository *store.Store) er
 		return err
 	}
 	return f.writeJSON(settingsFile, values)
+}
+
+func (f *Files) PersistAccounts(ctx context.Context, repository *store.Store) error {
+	if f == nil || repository == nil {
+		return nil
+	}
+	users, err := repository.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	document := make([]userDocument, 0, len(users))
+	for _, user := range users {
+		document = append(document, userDocument{
+			Username:     user.Username,
+			PasswordHash: user.PasswordHash,
+			CreatedAt:    user.CreatedAt,
+		})
+	}
+	return f.writeJSON(accountsFile, document)
 }
 
 func (f *Files) PersistSources(ctx context.Context, repository *store.Store) error {
@@ -137,6 +167,9 @@ func (f *Files) PersistAll(ctx context.Context, repository *store.Store) error {
 	if err := f.PersistSettings(ctx, repository); err != nil {
 		return err
 	}
+	if err := f.PersistAccounts(ctx, repository); err != nil {
+		return err
+	}
 	if err := f.PersistSources(ctx, repository); err != nil {
 		return err
 	}
@@ -158,6 +191,23 @@ func (f *Files) restoreSettings(ctx context.Context, repository *store.Store) er
 	sort.Strings(keys)
 	for _, key := range keys {
 		if err := repository.SetSetting(ctx, key, values[key]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *Files) restoreAccounts(ctx context.Context, repository *store.Store) error {
+	var items []userDocument
+	if err := f.readJSON(accountsFile, &items); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if err := repository.UpsertUser(ctx, model.User{
+			Username:     item.Username,
+			PasswordHash: item.PasswordHash,
+			CreatedAt:    item.CreatedAt,
+		}); err != nil {
 			return err
 		}
 	}
