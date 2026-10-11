@@ -1,6 +1,13 @@
 package api
 
-import "testing"
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/hyaeve/manco/internal/model"
+)
 
 func TestParseLogEntryAddsModuleAndLevel(t *testing.T) {
 	entry := parseLogEntry("2026/10/11 16:00:00 downloader: chapter failed: timeout")
@@ -40,5 +47,42 @@ func TestCompareVersions(t *testing.T) {
 				t.Fatalf("compareVersions(%q, %q) = %d, want %d", test.left, test.right, got, test.want)
 			}
 		})
+	}
+}
+
+func TestBackfillChapterMarkerFilesRenamesAndPersistsPath(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "第1话.cbz")
+	if err := os.WriteFile(oldPath, []byte("cbz"), 0o644); err != nil {
+		t.Fatalf("write chapter: %v", err)
+	}
+
+	var persistedID int64
+	var persistedPath string
+	renamed, failed, err := backfillChapterMarkerFiles(
+		context.Background(),
+		[]model.DownloadJob{{ID: 42, FilePath: oldPath, ChapterTitle: "第1话", ChapterOrder: 1}},
+		func(_ context.Context, id int64, path string) error {
+			persistedID = id
+			persistedPath = path
+			return nil
+		},
+		func(string, ...any) {},
+	)
+	if err != nil {
+		t.Fatalf("backfill chapter markers: %v", err)
+	}
+	if renamed != 1 || failed != 0 {
+		t.Fatalf("backfill result = renamed %d, failed %d, want 1, 0", renamed, failed)
+	}
+	newPath := filepath.Join(dir, "#1 第1话.cbz")
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("renamed chapter missing: %v", err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old chapter still exists, stat error = %v", err)
+	}
+	if persistedID != 42 || persistedPath != newPath {
+		t.Fatalf("persisted path = id %d path %q, want 42 %q", persistedID, persistedPath, newPath)
 	}
 }

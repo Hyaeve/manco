@@ -7,7 +7,6 @@ import {
   BookOpen,
   ChevronLeft,
   Download,
-  Languages,
   Loader2,
   Rss,
   Search,
@@ -381,7 +380,7 @@ async function downloadSelected() {
   </div>
 
   <div v-if="subscribeOpen" class="modal-backdrop" @click.self="subscribeOpen = false">
-    <div class="modal">
+    <div class="modal modal-lg subscription-modal">
       <div class="modal-head">
         <div>
           <h2>订阅任务设置</h2>
@@ -401,18 +400,20 @@ async function downloadSelected() {
           <span>下载位置</span>
           <DirectoryPicker v-model="subForm.downloadDir" :suffix="comic?.title" />
         </label>
-        <label class="switch-row">
-          <input v-model="subForm.chapterMarker" type="checkbox" />
-          <span>章节标符（文件名前缀 #序号）</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="subForm.coverBlur" type="checkbox" />
-          <span>封面模糊</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="subForm.convertToSimplified" type="checkbox" />
-          <span><Languages :size="14" /> 下载时执行繁体转简体</span>
-        </label>
+        <div class="subscription-toggle-grid">
+          <label class="switch-row">
+            <input v-model="subForm.chapterMarker" type="checkbox" />
+            <span>章节标符</span>
+          </label>
+          <label class="switch-row">
+            <input v-model="subForm.coverBlur" type="checkbox" />
+            <span>封面模糊</span>
+          </label>
+          <label class="switch-row">
+            <input v-model="subForm.convertToSimplified" type="checkbox" />
+            <span>繁转简</span>
+          </label>
+        </div>
         <label class="switch-row">
           <input v-model="subForm.allChapters" type="checkbox" />
           <span><BookOpen :size="14" /> 订阅全部章节（旧章节一并下载）</span>

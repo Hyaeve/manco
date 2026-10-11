@@ -714,8 +714,8 @@
 /* ===== v0.1.5：侧栏配色 / 壳层 / 滚动条 / 图标 ===== */
 
 .sidebar {
-  background: color-mix(in srgb, #eef4d6 86%, var(--surface));
-  border-right: 1px solid color-mix(in srgb, #c7d49a 62%, var(--border));
+  background: color-mix(in srgb, #fff7c9 94%, var(--surface));
+  border-right: 1px solid color-mix(in srgb, #e5d998 58%, var(--border));
   color: var(--text-muted);
 }
 
@@ -725,12 +725,12 @@
 
 .sidebar nav button:hover {
   color: var(--text);
-  background: color-mix(in srgb, #d7e3a8 55%, var(--surface));
+  background: color-mix(in srgb, #fff0ad 72%, var(--surface));
 }
 
 .sidebar nav button.active {
-  color: #3f4b16;
-  background: color-mix(in srgb, #cddc94 78%, var(--surface));
+  color: #4d4518;
+  background: color-mix(in srgb, #f8e795 82%, var(--surface));
 }
 
 [data-theme='dark'] .sidebar {
@@ -1482,8 +1482,8 @@
 
 /* 侧栏：浅黄、带一点绿色，和内容区保持轻量分层。 */
 .sidebar {
-  background: color-mix(in srgb, #f1f5d8 90%, var(--surface));
-  border-right-color: color-mix(in srgb, #cbd69a 55%, var(--border));
+  background: color-mix(in srgb, #fff8cf 96%, var(--surface));
+  border-right-color: color-mix(in srgb, #e6da99 54%, var(--border));
 }
 
 [data-theme='dark'] .sidebar {
@@ -1910,4 +1910,139 @@
 
 .log-level.debug {
   color: color-mix(in srgb, var(--text-muted) 76%, var(--primary-strong));
+}
+
+/* 订阅任务窗口：三项常驻开关同行，编辑区域保持宽裕。 */
+.subscription-modal {
+  width: min(760px, 100%);
+}
+
+.subscription-modal .modal-body {
+  overflow: visible;
+}
+
+.subscription-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.subscription-toggle-grid .switch-row {
+  min-width: 0;
+  min-height: 42px;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  white-space: nowrap;
+}
+
+.subscription-toggle-grid .switch-row input {
+  flex: 0 0 auto;
+}
+
+/* 本地库详情：先展示作品元数据，再以独立章节卡片进入阅读器。 */
+.local-detail-view {
+  min-width: 0;
+}
+
+.local-detail {
+  grid-template-columns: clamp(170px, 18vw, 220px) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.local-detail-cover {
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(34, 38, 24, 0.12);
+}
+
+.local-detail-info {
+  gap: 10px;
+}
+
+.local-detail-info h2 {
+  margin: 0;
+  font-size: clamp(24px, 2.2vw, 32px);
+  line-height: 1.2;
+}
+
+.local-chapter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.local-chapter-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.local-chapter-cover {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  padding: 0;
+  place-items: center;
+  overflow: hidden;
+  border: 0;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  cursor: pointer;
+}
+
+.local-chapter-cover img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.local-chapter-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px 7px;
+}
+
+.local-chapter-copy strong {
+  display: -webkit-box;
+  min-height: 2.8em;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.local-chapter-copy span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.local-chapter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: auto;
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 760px) {
+  .subscription-toggle-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .local-chapter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }

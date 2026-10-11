@@ -239,3 +239,35 @@ func TestUpdateSubscriptionReactivationResetsCheckCycle(t *testing.T) {
 		t.Fatal("subscription should be enabled after reactivation")
 	}
 }
+
+func TestCompletedDownloadJobsByComic(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	done := createJob(t, repository, "1")
+	if err := repository.UpdateDownloadJob(ctx, done.ID, "completed", 8, 8, "/downloads/测试作品/第1话.cbz", ""); err != nil {
+		t.Fatalf("complete job: %v", err)
+	}
+	createJob(t, repository, "2")
+	other, err := repository.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:     "baozimh",
+		ComicID:      "123",
+		ComicTitle:   "测试作品",
+		ChapterID:    "1",
+		ChapterTitle: "第1话",
+	})
+	if err != nil {
+		t.Fatalf("create other source job: %v", err)
+	}
+	if err := repository.UpdateDownloadJob(ctx, other.ID, "completed", 8, 8, "/downloads/other/第1话.cbz", ""); err != nil {
+		t.Fatalf("complete other source job: %v", err)
+	}
+
+	jobs, err := repository.CompletedDownloadJobsByComic(ctx, "jmcomic", "123")
+	if err != nil {
+		t.Fatalf("list completed jobs: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != done.ID {
+		t.Fatalf("completed jobs = %+v, want only job %d", jobs, done.ID)
+	}
+}

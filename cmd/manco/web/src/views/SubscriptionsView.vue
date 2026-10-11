@@ -6,7 +6,6 @@ import {
   BookOpen,
   CalendarClock,
   FolderOpen,
-  Languages,
   Layers,
   Loader2,
   MoreVertical,
@@ -107,6 +106,7 @@ async function saveEditor() {
     return
   }
   const enablingMarker = Boolean(form.value.chapterMarker) && !editing.value.chapterMarker
+  let markerResult = null
   if (enablingMarker) {
     const confirmed = await askConfirm({
       title: '补全章节标符',
@@ -124,9 +124,15 @@ async function saveEditor() {
       chapterMarker: Boolean(form.value.chapterMarker),
       coverBlur: Boolean(form.value.coverBlur),
     })
-    if (enablingMarker) await api.backfillChapterMarkers(editing.value.id)
+    if (enablingMarker) markerResult = await api.backfillChapterMarkers(editing.value.id)
     Object.assign(editing.value, updated)
-    notify(`已更新《${editing.value.title}》的订阅任务`, 'success')
+    if (enablingMarker) {
+      const renamed = Number(markerResult?.renamed || 0)
+      const failed = Number(markerResult?.failed || 0)
+      notify(`已更新《${editing.value.title}》，补全 ${renamed} 个章节标符${failed ? `，${failed} 个失败` : ''}`, failed ? 'warning' : 'success')
+    } else {
+      notify(`已更新《${editing.value.title}》的订阅任务`, 'success')
+    }
     editorOpen.value = false
   } catch (err) {
     notify(err.message, 'error')
@@ -335,7 +341,7 @@ async function downloadAll(item) {
   </div>
 
   <div v-if="editorOpen" class="modal-backdrop" @click.self="editorOpen = false">
-    <div class="modal">
+    <div class="modal modal-lg subscription-modal">
       <div class="modal-head">
         <div>
           <h2>订阅任务设置</h2>
@@ -354,18 +360,20 @@ async function downloadAll(item) {
           <span>下载位置</span>
           <DirectoryPicker v-model="form.downloadDir" :suffix="editing?.title" />
         </label>
-        <label class="switch-row">
-          <input v-model="form.chapterMarker" type="checkbox" />
-          <span>章节标符（文件名前缀 #序号）</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="form.coverBlur" type="checkbox" />
-          <span>封面模糊</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="form.convertToSimplified" type="checkbox" />
-          <span><Languages :size="14" /> 下载时执行繁体转简体</span>
-        </label>
+        <div class="subscription-toggle-grid">
+          <label class="switch-row">
+            <input v-model="form.chapterMarker" type="checkbox" />
+            <span>章节标符</span>
+          </label>
+          <label class="switch-row">
+            <input v-model="form.coverBlur" type="checkbox" />
+            <span>封面模糊</span>
+          </label>
+          <label class="switch-row">
+            <input v-model="form.convertToSimplified" type="checkbox" />
+            <span>繁转简</span>
+          </label>
+        </div>
       </div>
       <div class="modal-foot">
         <button class="btn secondary" type="button" @click="editorOpen = false">取消</button>

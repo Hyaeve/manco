@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0F766E"/>
-  <path d="M10.5 18.5c7-3 13.1-2.2 20.4 2.1v28.1c-7.3-4.3-13.4-5.1-20.4-2.1V18.5Z" fill="#F8FAFC"/>
-  <path d="M53.5 18.5c-7-3-13.1-2.2-20.4 2.1v28.1c7.3-4.3 13.4-5.1 20.4-2.1V18.5Z" fill="#CCFBF1"/>
-  <rect x="35.5" y="22.5" width="13.5" height="11" rx="4" fill="#F59E0B"/>
-  <path d="M39 28.5h6.5" stroke="#78350F" stroke-width="2.2" stroke-linecap="round"/>
-  <path d="M32 38v11M26.6 43.4 32 49l5.4-5.6" fill="none" stroke="#F59E0B" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="8" y="11" width="10" height="42" rx="5" fill="#DFA51B"/>
+  <rect x="22" y="17" width="10" height="36" rx="5" fill="#F6CE45"/>
+  <rect x="34" y="17" width="10" height="36" rx="5" fill="#FFE58A"/>
+  <rect x="48" y="11" width="10" height="42" rx="5" fill="#DFA51B"/>
+  <path d="M12 28.5h42" stroke="#E85163" stroke-width="4" stroke-linecap="round"/>
+  <path d="M32 39v11m-6-5 6 6 6-6" fill="none" stroke="#3E4637" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

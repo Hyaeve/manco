@@ -219,7 +219,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v0.1.7 && git push origin v0.1.7     # 构建并发布 :v0.1.7
+git tag v0.1.8 && git push origin v0.1.8     # 构建并发布 :v0.1.8
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

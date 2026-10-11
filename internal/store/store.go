@@ -207,6 +207,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
+// CompletedDownloadJobsByComic returns every completed chapter for a work so
+// maintenance actions do not depend on the general job-list page limit.
+
 func (s *Store) ensureColumn(ctx context.Context, table, column, declaration string) error {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
@@ -982,3 +985,22 @@ func (s *Store) UpdateUsername(ctx context.Context, id int64, username string) e
 	}
 	return nil
 }
+func (s *Store) CompletedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
+	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status = 'completed' ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []model.DownloadJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+// RequeueRunningJobs resets jobs that were interrupted by a restart back to

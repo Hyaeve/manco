@@ -51,7 +51,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.7"
+	appVersion    = "v0.1.8"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
@@ -1783,40 +1783,48 @@ func (s *Server) handleBackfillChapterMarkers(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	jobs, err := s.store.ListDownloadJobs(r.Context(), 500)
+	jobs, err := s.store.CompletedDownloadJobsByComic(r.Context(), subscription.SourceID, subscription.ComicID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	renamed, failed, err := backfillChapterMarkerFiles(r.Context(), jobs, s.store.SetDownloadJobFilePath, s.logger.Printf)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "renamed": renamed, "failed": failed, "total": len(jobs)})
+}
+
+func backfillChapterMarkerFiles(ctx context.Context, jobs []model.DownloadJob, setPath func(context.Context, int64, string) error, logf func(string, ...any)) (int, int, error) {
 	renamed := 0
+	failed := 0
 	for _, job := range jobs {
-		if job.SourceID != subscription.SourceID || job.ComicID != subscription.ComicID || job.Status != "completed" || strings.TrimSpace(job.FilePath) == "" {
+		current := filepath.Clean(job.FilePath)
+		if strings.TrimSpace(current) == "" || current == "." {
 			continue
 		}
-		ext := filepath.Ext(job.FilePath)
+		ext := filepath.Ext(current)
 		if ext == "" {
 			continue
 		}
-		target := filepath.Join(filepath.Dir(job.FilePath), downloader.ChapterFileName(job.ChapterTitle, job.ChapterOrder, true, ext))
-		if target == job.FilePath {
+		target := filepath.Clean(filepath.Join(filepath.Dir(current), downloader.ChapterFileName(job.ChapterTitle, job.ChapterOrder, true, ext)))
+		if target == current {
 			continue
 		}
-		if _, statErr := os.Stat(target); statErr == nil {
-			_ = s.store.SetDownloadJobFilePath(r.Context(), job.ID, target)
-			renamed++
-			continue
+		if _, statErr := os.Stat(target); statErr != nil {
+			if err := os.Rename(current, target); err != nil {
+				logf("api: rename chapter marker %s: %v", current, err)
+				failed++
+				continue
+			}
 		}
-		if err := os.Rename(job.FilePath, target); err != nil {
-			s.logger.Printf("api: rename chapter marker %s: %v", job.FilePath, err)
-			continue
-		}
-		if err := s.store.SetDownloadJobFilePath(r.Context(), job.ID, target); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+		if err := setPath(ctx, job.ID, target); err != nil {
+			return renamed, failed, err
 		}
 		renamed++
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "renamed": renamed})
+	return renamed, failed, nil
 }
 
 func (s *Server) handleArchiveSubscription(w http.ResponseWriter, r *http.Request) {

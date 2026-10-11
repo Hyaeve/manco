@@ -288,7 +288,7 @@ function downloadReaderFile() {
         <p class="muted">{{ active.author || '未知作者' }}</p>
         <p v-if="active.description" class="local-detail-desc">{{ active.description }}</p>
         <div class="section-head local-file-head">
-          <h3>文件</h3>
+          <h3>章节</h3>
         </div>
         <div class="local-chapter-grid">
           <article v-for="file in activeFiles" :key="file.path" class="local-chapter-card">
