@@ -472,9 +472,10 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		client = source.NewHTTPClient()
 	}
 	type fetched struct {
-		index int
-		data  []byte
-		err   error
+		index        int
+		data         []byte
+		materialized bool
+		err          error
 	}
 	results := make(chan fetched, len(pages))
 	semaphore := make(chan struct{}, e.pageConcurrency(job.SourceID))
@@ -491,8 +492,8 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 				return
 			}
 			defer func() { <-semaphore }()
-			data, err := fetchImage(ctx, client, account, page)
-			results <- fetched{index: index, data: data, err: err}
+			data, materialized, err := fetchPageImage(ctx, client, account, item, job.ComicID, chapter, page)
+			results <- fetched{index: index, data: data, materialized: materialized, err: err}
 		}()
 	}
 	go func() {
@@ -501,12 +502,14 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}()
 
 	images := make([][]byte, len(pages))
+	materialized := make([]bool, len(pages))
 	completed := 0
 	for result := range results {
 		if result.err != nil {
 			return fmt.Errorf("第 %d 页下载失败: %w", result.index+1, result.err)
 		}
 		images[result.index] = result.data
+		materialized[result.index] = result.materialized
 		completed++
 		_ = e.store.UpdateDownloadProgress(ctx, job.ID, completed)
 	}
@@ -517,7 +520,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 			return fmt.Errorf("第 %d 页为空", index+1)
 		}
 		processed := data
-		if pages[index].DescrambleParts > 0 {
+		if pages[index].DescrambleParts > 0 && !materialized[index] {
 			processed, err = Descramble(data, pages[index].DescrambleParts)
 			if err != nil {
 				return fmt.Errorf("第 %d 页解扰失败: %w", index+1, err)
@@ -702,10 +705,11 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 // describes comic archives.
 func writeBookMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, book model.Comic, comicDir string) error {
 	info := item.Info()
-	if coverURL := strings.TrimSpace(book.Cover); coverURL != "" {
+	coverURL := strings.TrimSpace(book.Cover)
+	if coverURL != "" || canMaterializeCover(item, coverURL) {
 		existing, _ := filepath.Glob(filepath.Join(comicDir, "cover.*"))
 		if len(existing) == 0 {
-			if data, err := fetchImage(ctx, client, account, model.Page{URL: coverURL, Referer: info.Homepage}); err == nil {
+			if data, err := fetchCoverImage(ctx, client, account, item, book); err == nil {
 				_ = os.WriteFile(filepath.Join(comicDir, "cover"+imageExtension(data, coverURL)), data, 0o644)
 			}
 		}
@@ -758,16 +762,19 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 	}
 	info := item.Info()
 	coverURL := strings.TrimSpace(comic.Cover)
-	if coverURL != "" {
+	if coverURL != "" || canMaterializeCover(item, coverURL) {
 		existing, _ := filepath.Glob(filepath.Join(comicDir, "cover.*"))
 		if len(existing) == 0 {
-			data, err := fetchImage(ctx, client, account, model.Page{URL: coverURL, Referer: info.Homepage})
+			data, err := fetchCoverImage(ctx, client, account, item, comic)
 			if err != nil {
-				return nil, fmt.Errorf("cover: %w", err)
-			}
-			coverPath := filepath.Join(comicDir, "cover"+imageExtension(data, coverURL))
-			if err := os.WriteFile(coverPath, data, 0o644); err != nil {
-				return nil, err
+				if _, pluginSource := item.(source.ImageSource); !pluginSource {
+					return nil, fmt.Errorf("cover: %w", err)
+				}
+			} else {
+				coverPath := filepath.Join(comicDir, "cover"+imageExtension(data, coverURL))
+				if err := os.WriteFile(coverPath, data, 0o644); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -841,6 +848,31 @@ func comicPageURL(homepage, sourceID, comicID string) string {
 	default:
 		return base
 	}
+}
+
+func fetchPageImage(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) ([]byte, bool, error) {
+	if materializer, ok := item.(source.ImageSource); ok {
+		data, _, err := materializer.PageImage(ctx, account, comicID, chapter, page)
+		return data, true, err
+	}
+	data, err := fetchImage(ctx, client, account, page)
+	return data, false, err
+}
+
+func fetchCoverImage(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic) ([]byte, error) {
+	if materializer, ok := item.(source.ImageSource); ok {
+		data, _, err := materializer.CoverImage(ctx, account, comic)
+		return data, err
+	}
+	return fetchImage(ctx, client, account, model.Page{URL: comic.Cover, Referer: item.Info().Homepage})
+}
+
+func canMaterializeCover(item source.Source, coverURL string) bool {
+	if strings.TrimSpace(coverURL) != "" {
+		return true
+	}
+	_, ok := item.(source.ImageSource)
+	return ok
 }
 
 func fetchImage(ctx context.Context, client *http.Client, account source.Account, page model.Page) ([]byte, error) {

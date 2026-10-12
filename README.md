@@ -10,7 +10,7 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 - 首次启动进入创建账号页；登录后可在「设置 → 账号设置」中修改用户名和密码。
 - 默认漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**；默认书籍源包含**笔趣阁**及现有公开书籍源。
 - 书籍源：**笔趣阁**、**神凑轻小说**与 **Project Gutenberg**。「资源仓库」页分为「漫画源 / 书籍源 / 拓展仓库」三个栏目，书籍按章节或整本下载为纯文本。
-- 拓展仓库不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持添加、编辑、同步、展开、删除、来源搜索和导入。除 JSON 清单外，还支持 gzip protobuf（Mihon / Keiyoushi `index.pb`）。Android/JVM 插件会明确标记为“仅登记”，不会伪装成可在 Go 后端直接执行的来源。
+- 拓展仓库不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持添加、编辑、同步、展开、删除、来源搜索和导入。除 JSON 清单外，还支持 gzip protobuf（Mihon / Keiyoushi `index.pb`）。内置的 Kototoro JVM 解析器运行时可以加载 Kototoro Parsers 的 DEX/JAR 插件，并执行内容源自己的搜索、浏览、章节、图片和封面接口；Mihon/Aniyomi 的 Android APK 仍只登记清单。
 - 「资源仓库」按期类分为「漫画源 / 书籍源 / 其他源 / 拓展仓库」四个栏目，来源可按类型拖拽排序，顺序持久化到服务端并同步到探索发现。
 - 探索发现浏览结果缓存写入 `/app/data/discover-cache.json`，默认 30 分钟内复用；访问过的作品详情与封面按内容源类型落盘到 `/app/data/discover/<kind>/<中文来源名>/<中文作品名>/`，30 天未访问自动清理。
 - 「本地库」页面浏览已经配置或选择过的下载目录，可查看已下载的漫画 / 书籍、展开文件列表并下载或预览。
@@ -136,7 +136,7 @@ docker compose up -d
 
 ## 漫画源配置
 
-登录后在「资源仓库」页面配置，页面分为「漫画源」「书籍源」「拓展仓库」三个栏目。包子、哔咔、禁漫、笔趣阁等默认源不可删除或改名；拓展仓库不再默认内置，用户可自行添加多个 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库，同步后导入可执行的配置来源：
+登录后在「资源仓库」页面配置，页面分为「漫画源」「书籍源」「其他源」「拓展仓库」四个栏目。包子、哔咔、禁漫、笔趣阁等默认源不可删除或改名；拓展仓库不再默认内置，用户可自行添加多个 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库，同步后导入可执行的配置来源。Kototoro Parsers 的 `plugin.jar` 会安装到 `/app/config/plugins`，由内置 JVM sidecar 加载；插件返回的图片字节由插件自身完成解扰、签名和请求头处理，Manco 不再对插件图片做二次解扰：
 
 如果所在网络无法直连这些站点，先在「设置 → 网络代理」填入可用的 HTTP/HTTPS 代理，然后保存。
 
@@ -150,7 +150,14 @@ docker compose up -d
 
 
 **书籍源** — **神凑轻小说（shencou）** 免登录即可浏览与搜索，按章节下载为 UTF-8 文本；**Project Gutenberg（gutenberg）** 通过 Gutendex 开放接口检索公版书，整本下载为文本。书籍与漫画分开显示在「资源 → 书籍源」标签下。
-三个源都参考 [Kototoro 拓展仓库](https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json) 中同名解析器的访问方式，但 Manco 使用 Go 原生实现，不加载 Android 插件包。
+三个默认源使用 Go 原生实现；同时，Manco 也能加载 [Kototoro 拓展仓库](https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json) 中的 Kototoro Parsers 插件，把返回的页面和封面字节直接写入本地缓存 / CBZ。
+
+Kototoro Parsers 插件的使用方式：
+
+1. 在「资源仓库 → 拓展仓库」添加 `https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json`，类型可选 `json`，保存后同步。
+2. 在「漫画源 / 书籍源 / 其他源」栏目点击「添加源」，选择该仓库中的 `Kototoro Parsers` 并安装 `plugin.jar`。Manco 会把插件安装到 `/app/config/plugins`，按插件声明的 `contentType` 自动归类：漫画、成人漫画、韩漫、美漫等进入漫画源；小说、成人小说等进入书籍源；其余进入其他源。
+3. 来源卡片上的「浏览器验证」会调用插件返回站点验证地址。需要 Cloudflare、Gatekeeper 等验证时，先在浏览器完成验证，再把该站点 Cookie 逐行粘贴回窗口导入；Cookie 会保存在 `/app/data/kototoro-host/preferences/cookies.json`，解析器后续请求会复用该会话。
+4. 插件内容源的浏览、搜索、详情、章节和图片均由内置 JVM sidecar 执行。封面和章节图片不会走普通 HTTP 代理下载，而是由插件自身完成签名、请求头与解扰后再写入发现缓存或 CBZ。
 
 ## 下载与文件命名
 
@@ -182,7 +189,10 @@ docker compose up -d
 | `PATCH` | `/api/sources/{id}` | 设置漫画源是否在发现页隐藏 |
 | `PUT` | `/api/sources/{id}/account` | 保存账号 / Cookie / 域名 |
 | `DELETE` | `/api/sources/{id}/account` | 清除凭据 |
+| `GET` | `/api/sources/{id}/browser-session` | 获取 Kototoro 插件的浏览器验证地址与 User-Agent |
+| `POST` | `/api/sources/{id}/cookies` | 导入 Kototoro 插件运行时 Cookie |
 | `GET` | `/api/sources/{id}/search?q=&page=` | 搜索 |
+| `GET` | `/api/sources/{id}/filters` | 读取来源自身声明的筛选条件 |
 | `GET` | `/api/sources/{id}/browse?kind=&page=` | 浏览 |
 | `GET` | `/api/sources/{id}/comics/{comicId}` | 作品详情 + 章节 |
 | `GET` | `/api/source-repo` | 读取 Kototoro 拓展仓库清单 |
@@ -218,7 +228,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v0.1.9 && git push origin v0.1.9     # 构建并发布 :v0.1.9
+git tag v0.1.10 && git push origin v0.1.10   # 构建并发布 :v0.1.10
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/pluginruntime"
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/source/baozimh"
@@ -23,15 +24,21 @@ import (
 )
 
 type Registry struct {
-	client   *http.Client
-	box      *secret.Box
-	store    *store.Store
-	byID     map[string]source.Source
-	builtins map[string]bool
-	custom   map[string]bool
+	client        *http.Client
+	box           *secret.Box
+	store         *store.Store
+	byID          map[string]source.Source
+	builtins      map[string]bool
+	custom        map[string]bool
+	pluginSources map[string]bool
+	runtime       *pluginruntime.Manager
 }
 
-func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) *Registry {
+func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store, runtimes ...*pluginruntime.Manager) *Registry {
+	var runtimeManager *pluginruntime.Manager
+	if len(runtimes) > 0 {
+		runtimeManager = runtimes[0]
+	}
 	items := []source.Source{
 		picacg.New(client),
 		jmcomic.New(client),
@@ -41,12 +48,14 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store) 
 		gutenberg.New(client),
 	}
 	registry := &Registry{
-		client:   client,
-		box:      box,
-		store:    repository,
-		byID:     make(map[string]source.Source, len(items)),
-		builtins: map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "biquge": true, "shencou": true, "gutenberg": true},
-		custom:   map[string]bool{},
+		client:        client,
+		box:           box,
+		store:         repository,
+		byID:          make(map[string]source.Source, len(items)),
+		builtins:      map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "biquge": true, "shencou": true, "gutenberg": true},
+		custom:        map[string]bool{},
+		pluginSources: map[string]bool{},
+		runtime:       runtimeManager,
 	}
 	for _, item := range items {
 		registry.byID[item.Info().ID] = item
@@ -63,6 +72,13 @@ func (r *Registry) List() []model.SourceInfo {
 		info := item.Info()
 		info.Builtin = r.builtins[info.ID]
 		info.Editable = r.custom[info.ID]
+		switch info.ID {
+		case "baozimh", "jmcomic", "picacg":
+			info.PluginSource = true
+		}
+		if r.pluginSources[info.ID] {
+			info.PluginSource = true
+		}
 		items = append(items, info)
 	}
 	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "biquge": 3, "shencou": 4, "gutenberg": 5}
@@ -106,6 +122,7 @@ func (r *Registry) ReloadCustomSources(ctx context.Context) error {
 		delete(r.byID, id)
 	}
 	r.custom = map[string]bool{}
+	r.pluginSources = map[string]bool{}
 	items, err := r.store.ListCustomSources(ctx)
 	if err != nil {
 		return err
@@ -115,7 +132,17 @@ func (r *Registry) ReloadCustomSources(ctx context.Context) error {
 		if id == "" || r.builtins[id] {
 			continue
 		}
-		adapter, err := generic.New(r.client, item)
+		var adapter source.Source
+		var err error
+		var config pluginruntime.Config
+		if json.Unmarshal(item.Config, &config) == nil && config.Runtime == pluginruntime.RuntimeKototoro {
+			adapter, err = pluginruntime.NewAdapter(r.runtime, item)
+			if err == nil {
+				r.pluginSources[id] = true
+			}
+		} else {
+			adapter, err = generic.New(r.client, item)
+		}
 		if err != nil {
 			continue
 		}
@@ -129,6 +156,14 @@ func (r *Registry) IsBuiltin(id string) bool {
 	return r.builtins[strings.ToLower(strings.TrimSpace(id))]
 }
 
+// Runtime exposes the Kototoro JVM sidecar manager. It is nil when the
+// current build has no plugin runtime, and callers must handle that.
+func (r *Registry) Runtime() *pluginruntime.Manager {
+	if r == nil {
+		return nil
+	}
+	return r.runtime
+}
 func (r *Registry) Get(id string) (source.Source, error) {
 	item, ok := r.byID[id]
 	if !ok {

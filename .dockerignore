@@ -8,6 +8,12 @@ cmd/manco/web/dist
 /manco.exe
 /data
 /downloads
+/.tmp-*
+/kototoro-plugin.jar*
+/runtime/kototoro-host/upstream
+/runtime/kototoro-host/build
+/runtime/kototoro-host/.gradle
+/runtime/kototoro-host/.kotlin
 /.smoke
 
 # VCS / editor

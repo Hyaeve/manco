@@ -164,8 +164,9 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 	homepage := absolute(base, firstString(object, "homepage", "homeUrl", "website", "site"))
 	icon := absolute(base, firstString(object, "icon", "iconUrl", "logo", "pic"))
 	installURL := absolute(base, firstString(object, "jarUrl", "apkUrl", "installUrl", "downloadUrl"))
+	archiveName := firstString(object, "jar", "apk")
 	if installURL == "" {
-		if name := firstString(object, "apk", "jar"); name != "" {
+		if name := archiveName; name != "" {
 			installURL = absolute(base, pluginRelativePath(name))
 		}
 	}
@@ -197,6 +198,15 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 	case installURL != "":
 		runtime = "plugin"
 	}
+	pluginType := NormalizeKind(repoKind)
+	if strings.HasSuffix(strings.ToLower(strings.Split(installURL, "?")[0]), ".jar") {
+		pluginType = "jar"
+	}
+	if runtime == "plugin" && pluginType == "jar" && installURL != "" && isKototoroParser(packageName, name, base) {
+		// Kototoro Parsers publishes a DEX-only JAR that the embedded JVM sidecar
+		// converts and loads. Other plugin ecosystems remain inventory-only.
+		installable = true
+	}
 	idSource := firstNonEmpty(packageName, name) + "|" + firstNonEmpty(version, strconv.Itoa(index))
 	return model.RepositoryExtension{
 		ID:          stableID(idSource),
@@ -204,7 +214,7 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 		PackageName: packageName,
 		Version:     version,
 		Kind:        kind,
-		PluginType:  repoKind,
+		PluginType:  pluginType,
 		Description: firstString(object, "description", "summary"),
 		Homepage:    homepage,
 		Icon:        icon,
@@ -381,6 +391,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func isKototoroParser(packageName, name string, base *url.URL) bool {
+	value := strings.ToLower(strings.Join([]string{packageName, name, base.String()}, " "))
+	return strings.Contains(value, "kototoro") || strings.Contains(value, "org.skepsun")
 }
 
 // pluginRelativePath rewrites bare plugin file names to the `apk/` folder

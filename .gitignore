@@ -3,6 +3,14 @@
 /manco.exe
 /data/
 /downloads/
+/.tmp-*
+/kototoro-plugin.jar*
+
+# Kototoro sidecar build inputs/outputs (vendored upstream is fetched during image build)
+runtime/kototoro-host/upstream/
+runtime/kototoro-host/build/
+runtime/kototoro-host/.gradle/
+runtime/kototoro-host/.kotlin/
 
 # Frontend
 cmd/manco/web/node_modules/

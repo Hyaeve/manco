@@ -96,21 +96,22 @@ type Stats struct {
 }
 
 type SourceInfo struct {
-	Builtin     bool          `json:"builtin,omitempty"`
-	Editable    bool          `json:"editable,omitempty"`
-	ID          string        `json:"id"`
-	Name        string        `json:"name"`
-	Kind        string        `json:"kind,omitempty"`
-	Description string        `json:"description"`
-	Homepage    string        `json:"homepage"`
-	NeedsLogin  bool          `json:"needsLogin"`
-	CanSearch   bool          `json:"canSearch"`
-	CanBrowse   bool          `json:"canBrowse"`
-	Icon        string        `json:"icon,omitempty"`
-	Order       int           `json:"order,omitempty"`
-	Sites       []string      `json:"sites,omitempty"`
-	Filters     []FilterGroup `json:"filters,omitempty"`
-	Hidden      bool          `json:"hidden,omitempty"`
+	Builtin      bool          `json:"builtin,omitempty"`
+	Editable     bool          `json:"editable,omitempty"`
+	ID           string        `json:"id"`
+	Name         string        `json:"name"`
+	Kind         string        `json:"kind,omitempty"`
+	Description  string        `json:"description"`
+	Homepage     string        `json:"homepage"`
+	NeedsLogin   bool          `json:"needsLogin"`
+	CanSearch    bool          `json:"canSearch"`
+	CanBrowse    bool          `json:"canBrowse"`
+	Icon         string        `json:"icon,omitempty"`
+	Order        int           `json:"order,omitempty"`
+	Sites        []string      `json:"sites,omitempty"`
+	Filters      []FilterGroup `json:"filters,omitempty"`
+	Hidden       bool          `json:"hidden,omitempty"`
+	PluginSource bool          `json:"pluginSource,omitempty"`
 }
 
 type FilterOption struct {
@@ -131,6 +132,7 @@ type BrowseOptions struct {
 	Sort     string
 	State    string
 	Region   string
+	Extra    map[string]string
 }
 
 type Comic struct {

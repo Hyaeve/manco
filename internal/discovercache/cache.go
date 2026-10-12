@@ -34,6 +34,10 @@ type Cache struct {
 	maxAge time.Duration
 }
 
+// CoverMaterializer lets a source-specific runtime fetch images that cannot
+// be downloaded with a plain HTTP GET, such as signed plugin images.
+type CoverMaterializer func(context.Context, model.Comic) ([]byte, string, error)
+
 type storedDetail struct {
 	SourceID  string          `json:"sourceId"`
 	Kind      string          `json:"kind"`
@@ -153,7 +157,13 @@ func (c *Cache) PutNamed(ctx context.Context, client *http.Client, sourceID, sou
 	return c.put(ctx, client, sourceID, kind, sourceName, detail)
 }
 
-func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, sourceName string, detail model.ComicDetail) error {
+// PutNamedWithCover stores an entry and lets the caller materialize the cover
+// through the owning source before falling back to a plain HTTP request.
+func (c *Cache) PutNamedWithCover(ctx context.Context, client *http.Client, sourceID, sourceName, kind string, detail model.ComicDetail, materialize CoverMaterializer) error {
+	return c.put(ctx, client, sourceID, kind, sourceName, detail, materialize)
+}
+
+func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, sourceName string, detail model.ComicDetail, materialize ...CoverMaterializer) error {
 	if c == nil {
 		return nil
 	}
@@ -184,7 +194,14 @@ func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, so
 	comic := detail.Comic
 	coverURL := strings.TrimSpace(comic.Cover)
 	coverFile := ""
-	if coverURL != "" && client != nil {
+	if len(materialize) > 0 && materialize[0] != nil {
+		if data, contentType, err := materialize[0](ctx, comic); err == nil && len(data) > 0 {
+			if name, err := c.writeCover(path, data, contentType, coverURL); err == nil {
+				coverFile = name
+			}
+		}
+	}
+	if coverFile == "" && coverURL != "" && client != nil {
 		if name, err := c.downloadCover(ctx, client, path, coverURL); err == nil {
 			coverFile = name
 		}
@@ -382,7 +399,29 @@ func (c *Cache) entryPath(sourceID, kind, comicID string) string {
 	return filepath.Join(c.root, NormalizeKind(kind), slugify(sourceID), slug+"-"+hex.EncodeToString(hash[:6]))
 }
 
+func (c *Cache) writeCover(dir string, data []byte, contentType, address string) (string, error) {
+	if len(data) == 0 {
+		return "", errors.New("cover is empty")
+	}
+	if len(data) > maxCoverBytes {
+		return "", fmt.Errorf("cover exceeds %d bytes", maxCoverBytes)
+	}
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	name := "cover" + extensionFor(contentType, address)
+	target := filepath.Join(dir, name)
+	temp := target + ".part"
+	if err := os.WriteFile(temp, data, 0o644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(temp, target); err != nil {
+		_ = os.Remove(temp)
+		return "", err
+	}
+	return name, nil
+}
+
 func (c *Cache) downloadCover(ctx context.Context, client *http.Client, dir, address string) (string, error) {
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return "", err

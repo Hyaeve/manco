@@ -70,6 +70,23 @@ function sourceFilters(source) {
   return values
 }
 
+async function ensureSourceFilters(source) {
+  if (!source || source.filtersLoaded || (source.filters || []).length) return
+  source.filtersLoading = true
+  try {
+    const result = await api.sourceFilters(source.id)
+    source.filters = Array.isArray(result.items) ? result.items : []
+  } catch (err) {
+    source.filters = []
+    notify(`${source.name} 筛选加载失败：${err.message}`, true)
+  } finally {
+    source.filtersLoaded = true
+    source.filtersLoading = false
+    const panel = panels.value[source.id]
+    if (panel) panel.filters = sourceFilters(source)
+  }
+}
+
 function panelFor(source) {
   if (!panels.value[source.id]) {
     panels.value[source.id] = {
@@ -182,6 +199,7 @@ function fetchPage(source, panel, page) {
 
 async function ensure(source, panel, targetPage) {
   if (!source || !panel || panel.loading) return
+  await ensureSourceFilters(source)
   const wanted = Math.max(1, targetPage)
   const need = wanted * pageSize.value
   panel.loading = true

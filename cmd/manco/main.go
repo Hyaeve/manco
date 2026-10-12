@@ -23,6 +23,7 @@ import (
 	"github.com/hyaeve/manco/internal/iconcache"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/pluginruntime"
 	"github.com/hyaeve/manco/internal/scheduler"
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
@@ -96,11 +97,28 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 			logger.Printf("manco: apply proxy: %v", err)
 		}
 	}
+	pluginManager, err := pluginruntime.New(pluginruntime.Options{
+		ConfigDir: cfg.ConfigDir,
+		DataDir:   cfg.DataDir,
+		Client:    client,
+		Logger:    logger,
+	})
+	if err != nil {
+		logger.Printf("manco: initialize Kototoro runtime: %v", err)
+	} else {
+		defer pluginManager.Close()
+		rawProxy, _ := repository.Setting(ctx, "proxy")
+		proxyUsername, _ := repository.Setting(ctx, "proxy_username")
+		proxyPassword, _ := repository.Setting(ctx, "proxy_password")
+		if err := pluginManager.ConfigureProxy(rawProxy, proxyUsername, proxyPassword); err != nil {
+			logger.Printf("manco: configure Kototoro proxy: %v", err)
+		}
+	}
 	icons, err := iconcache.New(filepath.Join(cfg.DataDir, "icon"), client)
 	if err != nil {
 		return err
 	}
-	registry := sources.NewRegistry(client, box, repository)
+	registry := sources.NewRegistry(client, box, repository, pluginManager)
 	engine := downloader.NewEngine(registry, repository, cfg.DownloadDir, cfg.MaxChapterConcurrency, cfg.MaxPageConcurrency, logger)
 	scanner := scheduler.New(registry, repository, downloadQueue{store: repository, engine: engine}, cfg.ScanInterval, logger)
 
@@ -116,6 +134,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Discover:  discoverItems,
 		Box:       box,
 		Registry:  registry,
+		Runtime:   pluginManager,
 		Engine:    engine,
 		Icons:     icons,
 		Scheduler: scanner,

@@ -1,0 +1,71 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '2.4.0'
+    id 'org.jetbrains.kotlin.plugin.serialization' version '2.4.0'
+    id 'application'
+}
+
+group = 'com.hyaeve.manco'
+version = '1.0.0'
+
+def upstreamRoot = file('upstream')
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:2.4.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:1.11.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-serialization-protobuf-jvm:1.11.0"
+
+    implementation "com.squareup.okhttp3:okhttp:5.4.0"
+    implementation "com.squareup.okio:okio:3.17.0"
+    implementation "org.jsoup:jsoup:1.22.1"
+    implementation "org.mozilla:rhino:1.8.1"
+    implementation "org.json:json:20250517"
+
+    // The upstream parser ABI is an Android/JVM shared source set. These are the
+    // two AndroidX artifacts it uses on the JVM side.
+    implementation "androidx.annotation:annotation:1.9.1"
+    implementation "androidx.collection:collection-jvm:1.5.0"
+
+    // Kototoro's DEX-only repository payloads are converted in-process.
+    implementation "de.femtopedia.dex2jar:dex-translator:2.4.38"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11
+        freeCompilerArgs.addAll(
+            '-opt-in=org.skepsun.kototoro.parsers.InternalParsersApi',
+            '-opt-in=org.koitharu.kotatsu.parsers.InternalParsersApi',
+            '-opt-in=kotlin.contracts.ExperimentalContracts',
+            '-Xannotation-default-target=first-only',
+        )
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+sourceSets {
+    main {
+        kotlin.srcDirs(
+            file('src/main/kotlin'),
+            new File(upstreamRoot, 'parser-api/src/androidMain/kotlin'),
+            new File(upstreamRoot, 'parser-api/src/commonMain/kotlin'),
+            new File(upstreamRoot, 'core-source/src/commonMain/kotlin'),
+            new File(upstreamRoot, 'dex-convert/src/main/kotlin'),
+            new File(upstreamRoot, 'parser-host/src/main/kotlin'),
+            new File(upstreamRoot, 'source-host/src/main/kotlin'),
+        )
+    }
+}
+
+application {
+    mainClass = 'org.skepsun.kototoro.parserhost.MancoParserHostKt'
+}

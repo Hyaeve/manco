@@ -1,0 +1,391 @@
+package org.skepsun.kototoro.parserhost
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.Authenticator
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.Credentials
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import java.io.File
+import kotlinx.serialization.encodeToString
+import org.mozilla.javascript.Context
+import org.mozilla.javascript.ScriptableObject
+import org.skepsun.kototoro.core.source.SourceEndpoint
+import org.skepsun.kototoro.core.source.SourcePreferenceStore
+import org.skepsun.kototoro.dex.DexJarConverter
+import org.skepsun.kototoro.parsers.bitmap.Bitmap
+import org.skepsun.kototoro.parsers.bitmap.Rect
+import org.skepsun.kototoro.source.host.FileSourceImageStore
+import org.skepsun.kototoro.source.host.FileSourcePreferenceStore
+import java.awt.image.BufferedImage
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.PrintStream
+import java.nio.file.Files
+import java.nio.file.Path
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.URI
+import java.util.Locale
+import javax.imageio.ImageIO
+
+@Serializable
+private data class HostConfig(
+    val plugins: List<HostPlugin> = emptyList(),
+    val preferenceDirectory: String = "preferences",
+    val imageDirectory: String = "images",
+    val proxyUrl: String = "",
+    val proxyUsername: String = "",
+    val proxyPassword: String = "",
+)
+
+@Serializable
+private data class HostPlugin(
+    val id: String,
+    val path: String,
+    val version: String = "",
+)
+
+private val hostJson = Json { ignoreUnknownKeys = true }
+
+@Serializable
+private data class HostCookie(
+	val name: String,
+	val value: String,
+	val domain: String,
+	val path: String = "/",
+	val expiresAt: Long = 0L,
+	val secure: Boolean = false,
+	val httpOnly: Boolean = false,
+	val hostOnly: Boolean = false,
+)
+
+private class CookieStore(private val file: File) {
+	fun load(jar: MemoryCookieJar) {
+		if (!file.isFile) return
+		runCatching {
+			val records = hostJson.decodeFromString<List<HostCookie>>(file.readText(Charsets.UTF_8))
+			jar.restore(records)
+		}.onFailure { System.err.println("kototoro-host: read cookie store: ${it.message}") }
+	}
+
+	fun save(jar: MemoryCookieJar) {
+		runCatching {
+			file.parentFile?.mkdirs()
+			file.writeText(hostJson.encodeToString(jar.snapshot()), Charsets.UTF_8)
+		}.onFailure { System.err.println("kototoro-host: write cookie store: ${it.message}") }
+	}
+}
+
+fun main(args: Array<String>) {
+    require(args.isNotEmpty()) { "usage: inspect <jar> | serve <config.json>" }
+    when (args[0]) {
+        "inspect" -> inspect(args)
+        "serve" -> serve(args)
+        else -> error("unknown command: ${args[0]}")
+    }
+}
+
+private fun inspect(args: Array<String>) {
+    require(args.size == 2)
+    val metadata = ParserPluginInspector().inspect(Path.of(args[1]))
+    val payload = buildJsonObject {
+        put("architecture", metadata.architecture.name)
+        put("sha256", metadata.sha256)
+        put("classCount", metadata.classCount)
+        put("maximumClassVersion", metadata.maximumClassVersion)
+    }
+    println(hostJson.encodeToString(JsonObject.serializer(), payload))
+}
+
+private fun serve(args: Array<String>) {
+    require(args.size == 2)
+    val configPath = Path.of(args[1]).toAbsolutePath().normalize()
+    val config = hostJson.decodeFromString(HostConfig.serializer(), Files.readString(configPath))
+	val effectiveConfig = config.copy(
+		proxyUrl = System.getenv("MANCO_KOTOTORO_PROXY_URL") ?: config.proxyUrl,
+		proxyUsername = System.getenv("MANCO_KOTOTORO_PROXY_USERNAME") ?: config.proxyUsername,
+		proxyPassword = System.getenv("MANCO_KOTOTORO_PROXY_PASSWORD") ?: config.proxyPassword,
+	)
+    val base = configPath.parent ?: Path.of(".").toAbsolutePath()
+    val protocolOutput = System.out
+    System.setOut(PrintStream(System.err, true, Charsets.UTF_8))
+
+    val preferenceStore = FileSourcePreferenceStore(resolve(base, config.preferenceDirectory))
+    try {
+		val cookieStore = CookieStore(resolve(base, config.preferenceDirectory).resolve("cookies.json").toFile())
+		val cookieJar = MemoryCookieJar()
+		cookieStore.load(cookieJar)
+		val platform = MancoParserPlatform(preferenceStore, cookieJar, effectiveConfig)
+        val registry = ParserPluginRegistry(platform)
+        try {
+            for (plugin in config.plugins) {
+                val raw = resolve(base, plugin.path)
+                val jvmJar = prepareJvmJar(raw)
+                registry.load(jvmJar, plugin.id)
+            }
+            val images = FileSourceImageStore(resolve(base, config.imageDirectory))
+            val endpoint = SourceEndpoint(
+                ParserSourceRuntime(registry, platform, images),
+                { request, error ->
+                    System.err.println(
+                        "kototoro-host: ${request.call::class.simpleName}: ${error.message ?: error::class.java.name}",
+                    )
+                    error.printStackTrace(System.err)
+                },
+            )
+            val reader = System.`in`.bufferedReader(Charsets.UTF_8)
+            val writer = protocolOutput.bufferedWriter(Charsets.UTF_8)
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (line.isBlank()) continue
+                val response = if (operationOf(line) == "metadata") {
+                    metadataResponse(line, registry)
+                } else {
+                    runBlocking { endpoint.exchange(line) }
+                }
+                cookieStore.save(cookieJar)
+                writer.write(response)
+                writer.newLine()
+                writer.flush()
+            }
+            registry.close()
+        } finally {
+            preferenceStore.close()
+        }
+    } finally {
+        System.setOut(protocolOutput)
+    }
+}
+
+private fun resolve(base: Path, value: String): Path {
+    val path = Path.of(value)
+    return if (path.isAbsolute) path.normalize() else base.resolve(path).normalize()
+}
+
+private fun prepareJvmJar(source: Path): Path {
+    val inspector = ParserPluginInspector()
+    return try {
+        val metadata = inspector.inspect(source)
+        if (metadata.architecture != ParserPluginArchitecture.KOTOTORO) {
+            throw ParserPluginException(ParserPluginFailure.UNSUPPORTED_ARCHITECTURE)
+        }
+        source
+    } catch (error: ParserPluginException) {
+        if (error.failure != ParserPluginFailure.DEX_ONLY) throw error
+        val target = source.resolveSibling(source.fileName.toString() + ".jvm.jar")
+		Files.deleteIfExists(target)
+		DexJarConverter.convert(source, target)
+        val metadata = inspector.inspect(target)
+        if (metadata.architecture != ParserPluginArchitecture.KOTOTORO) {
+            throw ParserPluginException(ParserPluginFailure.UNSUPPORTED_ARCHITECTURE)
+        }
+        target
+    }
+}
+
+private fun operationOf(line: String): String? = try {
+    val envelope = hostJson.parseToJsonElement(line).jsonObject
+    (envelope["call"] as? JsonObject)?.get("operation")?.jsonPrimitive?.content
+} catch (_: Exception) {
+    null
+}
+
+private fun metadataResponse(line: String, registry: ParserPluginRegistry): String {
+    val envelope = hostJson.parseToJsonElement(line).jsonObject
+    val requestId = (envelope["requestId"] as? JsonPrimitive)?.content ?: ""
+    val sources = buildJsonArray {
+        registry.sources().forEach { source ->
+            add(buildJsonObject {
+                put("name", source.source.name)
+                put("title", source.title)
+                put("locale", source.source.locale)
+                put("contentType", source.source.contentType)
+                put("homepage", source.homepage)
+            })
+        }
+    }
+    return buildJsonObject {
+        put("version", 1)
+        put("requestId", requestId)
+        put("result", buildJsonObject {
+            put("operation", "metadata")
+            put("sources", sources)
+        })
+    }.toString()
+}
+
+private class MancoParserPlatform(
+    override val preferences: SourcePreferenceStore,
+    private val memoryCookieJar: MemoryCookieJar,
+    config: HostConfig,
+) : ParserPlatform {
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .cookieJar(memoryCookieJar)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .apply {
+            proxyFor(config.proxyUrl)?.let(::proxy)
+            if (config.proxyUsername.isNotBlank()) {
+                proxyAuthenticator(Authenticator { _, response ->
+                    if (response.request.header("Proxy-Authorization") != null) return@Authenticator null
+                    response.request.newBuilder()
+                        .header("Proxy-Authorization", Credentials.basic(config.proxyUsername, config.proxyPassword))
+                        .build()
+                })
+            }
+        }
+        .build()
+
+    override val httpClient: OkHttpClient get() = client
+    override val cookieJar: CookieJar get() = client.cookieJar
+    override val preferredLocales: List<Locale> get() = listOf(Locale.SIMPLIFIED_CHINESE, Locale.US)
+
+    override fun createBitmap(width: Int, height: Int): Bitmap =
+        AwtBitmap(BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB))
+
+    override fun redrawImageResponse(response: Response, redraw: (Bitmap) -> Bitmap): Response =
+        AwtBitmap.redraw(response, redraw)
+
+    override suspend fun evaluateJs(baseUrl: String, script: String): String? = withContext(Dispatchers.IO) {
+        val context = Context.enter()
+        try {
+            context.optimizationLevel = -1
+            val scope = context.initStandardObjects()
+            ScriptableObject.putProperty(scope, "__mancoBaseUrl", baseUrl)
+            Context.toString(context.evaluateString(scope, script, "source-script", 1, null))
+        } finally {
+            Context.exit()
+        }
+    }
+}
+
+private fun proxyFor(value: String): Proxy? {
+    val address = value.trim()
+    if (address.isEmpty()) return null
+    val uri = URI(address)
+    val host = uri.host ?: error("Invalid proxy host")
+    val scheme = uri.scheme?.lowercase(Locale.ROOT) ?: error("Invalid proxy scheme")
+    val port = when {
+        uri.port >= 0 -> uri.port
+        scheme == "https" -> 443
+        scheme.startsWith("socks") -> 1080
+        else -> 80
+    }
+    val type = if (scheme.startsWith("socks")) Proxy.Type.SOCKS else Proxy.Type.HTTP
+    return Proxy(type, InetSocketAddress(host, port))
+}
+
+private class MemoryCookieJar : CookieJar {
+    private val values = linkedMapOf<String, MutableList<Cookie>>()
+
+    @Synchronized
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        for (cookie in cookies) {
+            val key = cookie.domain.ifBlank { url.host }
+            val current = values.getOrPut(key) { mutableListOf() }
+            current.removeAll { it.name == cookie.name && it.path == cookie.path }
+            current += cookie
+        }
+    }
+
+    @Synchronized
+    override fun loadForRequest(url: HttpUrl): List<Cookie> =
+        values.values.flatten().filter { cookie -> cookie.matches(url) }
+
+    @Synchronized
+    fun snapshot(): List<HostCookie> = values.flatMap { (_, cookies) ->
+        cookies.filter { it.expiresAt > System.currentTimeMillis() }.map {
+            HostCookie(
+                name = it.name,
+                value = it.value,
+                domain = it.domain,
+                path = it.path,
+                expiresAt = it.expiresAt,
+                secure = it.secure,
+                httpOnly = it.httpOnly,
+                hostOnly = it.hostOnly,
+            )
+        }
+    }
+
+    @Synchronized
+    fun restore(records: List<HostCookie>) {
+        values.clear()
+        val now = System.currentTimeMillis()
+        for (record in records) {
+            if (record.expiresAt in 1..now) continue
+            val key = record.domain.ifBlank { continue }
+            val cookie = Cookie.Builder()
+                .name(record.name)
+                .value(record.value)
+                .path(record.path.ifBlank { "/" })
+                .expiresAt(record.expiresAt)
+                .apply {
+                    if (record.hostOnly) hostOnlyDomain(key) else domain(key)
+                    if (record.secure) secure()
+                    if (record.httpOnly) httpOnly()
+                }
+                .build()
+            values.getOrPut(key) { mutableListOf() } += cookie
+        }
+    }
+}
+
+private class AwtBitmap(private val image: BufferedImage) : Bitmap {
+    override val width: Int get() = image.width
+    override val height: Int get() = image.height
+
+    override fun drawBitmap(sourceBitmap: Bitmap, src: Rect, dst: Rect) {
+        val source = requireNotNull((sourceBitmap as? AwtBitmap)?.image) { "Bitmap was not created by this host" }
+        val graphics = image.createGraphics()
+        try {
+            graphics.drawImage(source, dst.left, dst.top, dst.right, dst.bottom, src.left, src.top, src.right, src.bottom, null)
+        } finally {
+            graphics.dispose()
+        }
+    }
+
+    companion object {
+        private const val MAXIMUM_BYTES = 64L * 1024 * 1024
+
+        fun redraw(response: Response, redraw: (Bitmap) -> Bitmap): Response {
+            val bytes = response.use { source ->
+                val body = source.body
+                if (body.contentLength() > MAXIMUM_BYTES) throw IOException("Image exceeds configured limit")
+                body.bytes().also { if (it.size > MAXIMUM_BYTES) throw IOException("Image exceeds configured limit") }
+            }
+            val decoded = ImageIO.read(ByteArrayInputStream(bytes)) ?: throw IOException("Unsupported image format")
+            val mutable = BufferedImage(decoded.width, decoded.height, BufferedImage.TYPE_INT_ARGB).also { copy ->
+                copy.createGraphics().apply { drawImage(decoded, 0, 0, null); dispose() }
+            }
+            val result = requireNotNull((redraw(AwtBitmap(mutable)) as? AwtBitmap)?.image) {
+                "Image redraw must return a bitmap created by this host"
+            }
+            val output = ByteArrayOutputStream()
+            check(ImageIO.write(result, "png", output)) { "PNG encoder unavailable" }
+            return response.newBuilder()
+                .removeHeader("Content-Length")
+                .header("Content-Type", "image/png")
+                .body(output.toByteArray().toResponseBody("image/png".toMediaType()))
+                .build()
+        }
+    }
+}

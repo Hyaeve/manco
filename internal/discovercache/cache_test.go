@@ -76,3 +76,35 @@ func TestNamedSourceCacheRoundTrip(t *testing.T) {
 		t.Fatalf("ServeCover() status=%d bytes=%d", recorder.Code, recorder.Body.Len())
 	}
 }
+
+func TestPutNamedWithCoverUsesMaterializer(t *testing.T) {
+	root := t.TempDir()
+	cache, err := Open(root, time.Hour)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	detail := model.ComicDetail{Comic: model.Comic{
+		ID:       "plugin-work",
+		Title:    "插件作品",
+		SourceID: "plugin-source",
+		Cover:    "https://invalid.example/cover.jpg",
+	}}
+	materializer := func(context.Context, model.Comic) ([]byte, string, error) {
+		return []byte("plugin-cover"), "image/png", nil
+	}
+	if err := cache.PutNamedWithCover(context.Background(), http.DefaultClient, "plugin-source", "插件来源", "comic", detail, materializer); err != nil {
+		t.Fatalf("PutNamedWithCover() error = %v", err)
+	}
+	got, ok := cache.Get("plugin-source", "comic", "plugin-work")
+	if !ok || !got.Comic.Cached || got.Comic.CachedCover == "" {
+		t.Fatalf("materialized cover was not cached: %#v", got.Comic)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/discover/cover", nil)
+	if !cache.ServeCover(recorder, request, "plugin-source", "comic", "plugin-work") {
+		t.Fatal("ServeCover() = false, want true")
+	}
+	if got := recorder.Body.String(); got != "plugin-cover" {
+		t.Fatalf("ServeCover() body = %q", got)
+	}
+}

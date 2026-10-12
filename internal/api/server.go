@@ -39,6 +39,7 @@ import (
 	"github.com/hyaeve/manco/internal/localops"
 	"github.com/hyaeve/manco/internal/logbuf"
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/pluginruntime"
 	"github.com/hyaeve/manco/internal/repository"
 	"github.com/hyaeve/manco/internal/scheduler"
 	"github.com/hyaeve/manco/internal/secret"
@@ -51,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.9"
+	appVersion    = "v0.1.10"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
@@ -78,6 +79,7 @@ type Server struct {
 	discover  *discovercache.Cache
 	box       *secret.Box
 	registry  *sources.Registry
+	runtime   *pluginruntime.Manager
 	engine    *downloader.Engine
 	icons     *iconcache.Cache
 	scheduler *scheduler.Scheduler
@@ -112,6 +114,7 @@ type Options struct {
 	Discover  *discovercache.Cache
 	Box       *secret.Box
 	Registry  *sources.Registry
+	Runtime   *pluginruntime.Manager
 	Engine    *downloader.Engine
 	Icons     *iconcache.Cache
 	Scheduler *scheduler.Scheduler
@@ -133,6 +136,7 @@ func New(options Options) *Server {
 		discover:  options.Discover,
 		box:       options.Box,
 		registry:  options.Registry,
+		runtime:   options.Runtime,
 		engine:    options.Engine,
 		icons:     options.Icons,
 		scheduler: options.Scheduler,
@@ -264,10 +268,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/custom-sources/{id}", s.requireAuth(s.handleDeleteCustomSource))
 	mux.HandleFunc("PATCH /api/sources/{id}", s.requireAuth(s.handleUpdateSource))
 	mux.HandleFunc("PUT /api/sources/{id}/account", s.requireAuth(s.handleSaveAccount))
+	mux.HandleFunc("GET /api/sources/{id}/browser-session", s.requireAuth(s.handleSourceBrowserSession))
+	mux.HandleFunc("POST /api/sources/{id}/cookies", s.requireAuth(s.handleImportSourceCookies))
 	mux.HandleFunc("DELETE /api/sources/{id}/account", s.requireAuth(s.handleDeleteAccount))
 	mux.HandleFunc("GET /api/sources/{id}/search", s.requireAuth(s.handleSearch))
 	mux.HandleFunc("GET /api/search", s.requireAuth(s.handleGlobalSearch))
 	mux.HandleFunc("GET /api/sources/{id}/browse", s.requireAuth(s.handleBrowse))
+	mux.HandleFunc("GET /api/sources/{id}/filters", s.requireAuth(s.handleSourceFilters))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}", s.requireAuth(s.handleComic))
 	mux.HandleFunc("GET /api/discover/cover", s.requireAuth(s.handleDiscoverCover))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/chapters", s.requireAuth(s.handleChapters))
@@ -716,6 +723,170 @@ func (s *Server) handleSourceRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"url": address, "items": payload})
 }
 
+func resolvePluginSourceName(sourceID string) string {
+	switch strings.ToLower(strings.TrimSpace(sourceID)) {
+	case "baozimh", "baozimh.com":
+		return "BAOZIMH"
+	case "jmcomic", "18comic":
+		return "JMCOMIC"
+	case "picacg", "bika":
+		return "PICACG"
+	case "biquge":
+		return "BIQUGE"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) pluginSourceName(ctx context.Context, sourceID string) (string, error) {
+	sourceID = strings.ToLower(strings.TrimSpace(sourceID))
+	if sourceID == "" {
+		return "", errors.New("内容源为空")
+	}
+	item, err := s.store.CustomSource(ctx, sourceID)
+	if err != nil {
+		if fallback := resolvePluginSourceName(sourceID); fallback != "" {
+			return fallback, nil
+		}
+		return "", errors.New("该内容源不是 Kototoro 插件来源")
+	}
+	var config pluginruntime.Config
+	if err := json.Unmarshal(item.Config, &config); err != nil || config.Runtime != pluginruntime.RuntimeKototoro {
+		return "", errors.New("该内容源不是 Kototoro 插件来源")
+	}
+	if strings.TrimSpace(config.SourceName) == "" {
+		return "", errors.New("插件来源缺少 sourceName")
+	}
+	return config.SourceName, nil
+}
+
+func (s *Server) handleSourceBrowserSession(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.registry == nil || s.registry.Runtime() == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	sourceName, err := s.pluginSourceName(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	address, userAgent, err := s.runtime.BrowserSession(ctx, sourceName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "获取浏览器验证地址失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sourceId":   r.PathValue("id"),
+		"sourceName": sourceName,
+		"url":        address,
+		"userAgent":  userAgent,
+	})
+}
+
+func (s *Server) handleImportSourceCookies(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.registry == nil || s.registry.Runtime() == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	var payload struct {
+		SourceName string   `json:"sourceName"`
+		URL        string   `json:"url"`
+		Cookies    []string `json:"cookies"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sourceName := strings.TrimSpace(payload.SourceName)
+	if sourceName == "" {
+		sourceName, _ = s.pluginSourceName(r.Context(), r.PathValue("id"))
+	}
+	if sourceName == "" {
+		writeError(w, http.StatusBadRequest, "该内容源不是 Kototoro 插件来源，无法导入浏览器 Cookie")
+		return
+	}
+	if len(payload.Cookies) == 0 {
+		writeError(w, http.StatusBadRequest, "没有可导入的 Cookie")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	count, err := s.runtime.ImportCookies(ctx, sourceName, strings.TrimSpace(payload.URL), payload.Cookies)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "导入浏览器 Cookie 失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "imported": count})
+}
+
+// importKototoroPlugin installs one Kototoro parser JAR and registers every
+// content source the plugin declares.
+func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, repo model.ExtensionRepository, selected model.RepositoryExtension) {
+	if s.runtime == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	if strings.TrimSpace(selected.InstallURL) == "" {
+		writeError(w, http.StatusBadRequest, "该来源缺少插件安装地址")
+		return
+	}
+	pluginID := "kototoro-" + repository.Slug(firstNonEmptyText(selected.PackageName, selected.Name, selected.ID))
+	sources, err := s.runtime.Install(r.Context(), pluginID, selected.InstallURL)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "安装 Kototoro 解析器失败："+err.Error())
+		return
+	}
+	if len(sources) == 0 {
+		writeError(w, http.StatusBadGateway, "Kototoro 插件未声明任何可用内容源")
+		return
+	}
+	created := make([]model.CustomSource, 0, len(sources))
+	for _, parsed := range sources {
+		if strings.TrimSpace(parsed.Name) == "" {
+			continue
+		}
+		icon := strings.TrimSpace(selected.Icon)
+		homepage := firstNonEmptyText(parsed.Homepage, selected.Homepage)
+		if icon == "" && homepage != "" {
+			icon = strings.TrimRight(homepage, "/") + "/favicon.ico"
+		}
+		sourceID := "ext-" + repository.Slug(pluginID+"-"+parsed.Name)
+		config, _ := json.Marshal(pluginruntime.Config{
+			Runtime:     pluginruntime.RuntimeKototoro,
+			PluginID:    pluginID,
+			SourceName:  parsed.Name,
+			ContentType: parsed.ContentType,
+			Locale:      parsed.Locale,
+			Homepage:    parsed.Homepage,
+		})
+		item := model.CustomSource{
+			ID:          sourceID,
+			Name:        firstNonEmptyText(parsed.Title, parsed.Name),
+			Kind:        pluginruntime.KindForContentType(parsed.ContentType),
+			Description: firstNonEmptyText(selected.Description, "Kototoro 解析器来源"),
+			Homepage:    homepage,
+			Icon:        icon,
+			RepoURL:     repo.URL,
+			Config:      config,
+			Enabled:     true,
+		}
+		saved, err := s.store.UpsertCustomSource(r.Context(), item)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		created = append(created, saved)
+	}
+	if err := s.registry.ReloadCustomSources(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, map[string]any{"sources": created, "plugin": pluginID})
+}
+
 func repositoryView(item model.ExtensionRepository) model.ExtensionRepository {
 	item.Error = item.LastError
 	if item.LastError != "" {
@@ -905,6 +1076,15 @@ func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusNotFound, "仓库扩展不存在")
 		return
 	}
+	if selected.Runtime == "plugin" && strings.TrimSpace(selected.InstallURL) != "" {
+		isKototoroJar := strings.EqualFold(repo.Kind, "jar") || strings.EqualFold(selected.PluginType, "jar")
+		if !isKototoroJar {
+			writeError(w, http.StatusBadRequest, "该来源是 Mihon/Aniyomi 等 Android 插件；当前运行时只执行 Kototoro Parsers JAR 类型")
+			return
+		}
+		s.importKototoroPlugin(w, r, repo, *selected)
+		return
+	}
 	if !selected.Installable || len(selected.Config) == 0 || strings.TrimSpace(selected.Homepage) == "" {
 		writeError(w, http.StatusBadRequest, "该扩展没有可直接导入的选择器配置；JAR/Mihon 插件需要兼容运行时")
 		return
@@ -1019,7 +1199,14 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 		Enabled:     enabled,
 		Hidden:      hidden,
 	}
-	if _, err := generic.New(s.registry.Client(), item); err != nil {
+	var runtimeConfig pluginruntime.Config
+	isPlugin := json.Unmarshal(item.Config, &runtimeConfig) == nil && runtimeConfig.Runtime == pluginruntime.RuntimeKototoro
+	if isPlugin {
+		if strings.TrimSpace(runtimeConfig.PluginID) == "" || strings.TrimSpace(runtimeConfig.SourceName) == "" {
+			writeError(w, http.StatusBadRequest, "插件来源缺少 pluginId 或 sourceName")
+			return
+		}
+	} else if _, err := generic.New(s.registry.Client(), item); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1399,6 +1586,26 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": result, "errors": errorsFound, "page": page})
 }
 
+func (s *Server) handleSourceFilters(w http.ResponseWriter, r *http.Request) {
+	item, _, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	filterSource, ok := item.(source.FilterSource)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []model.FilterGroup{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	filters, err := filterSource.Filters(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "加载来源筛选失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": filters})
+}
+
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	item, account, ok := s.resolveSource(w, r)
 	if !ok {
@@ -1409,6 +1616,19 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		Sort:     strings.TrimSpace(r.URL.Query().Get("sort")),
 		State:    strings.TrimSpace(r.URL.Query().Get("state")),
 		Region:   strings.TrimSpace(r.URL.Query().Get("region")),
+	}
+	for key, values := range r.URL.Query() {
+		if len(values) == 0 {
+			continue
+		}
+		value := strings.TrimSpace(values[0])
+		if value == "" || (key != "demographic" && key != "rating" && !strings.HasPrefix(key, "tag:")) {
+			continue
+		}
+		if options.Extra == nil {
+			options.Extra = map[string]string{}
+		}
+		options.Extra[key] = value
 	}
 	if options.Category == "" {
 		options.Category = strings.TrimSpace(r.URL.Query().Get("kind"))
@@ -1454,6 +1674,21 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 	comicID := r.PathValue("comicId")
 	if s.discover != nil {
 		if cached, ok := s.discover.Get(sourceID, kind, comicID); ok {
+			if len(cached.Chapters) == 0 {
+				ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+				chapters, chaptersErr := item.Chapters(ctx, account, cached.Comic.ID)
+				cancel()
+				if chaptersErr == nil && len(chapters) > 0 {
+					cached.Chapters = chapters
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+						defer cancel()
+						if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, cached); err != nil {
+							s.logger.Printf("api: cache discover chapters %s/%s: %v", sourceID, cached.Comic.ID, err)
+						}
+					}()
+				}
+			}
 			writeJSON(w, http.StatusOK, cached)
 			go s.refreshDiscoverDetail(sourceID, kind, comicID)
 			return
@@ -1474,7 +1709,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			if err := s.discover.PutNamed(ctx, s.registry.Client(), sourceID, item.Info().Name, kind, detail); err != nil {
+			if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, detail); err != nil {
 				s.logger.Printf("api: cache discover %s/%s: %v", sourceID, comic.ID, err)
 			}
 		}()
@@ -1507,14 +1742,37 @@ func (s *Server) cacheDiscoverItems(info model.SourceInfo, kind string, items []
 			if strings.TrimSpace(comic.ID) == "" {
 				continue
 			}
-			if err := s.discover.PutNamed(ctx, s.registry.Client(), info.ID, info.Name, kind, model.ComicDetail{Comic: comic}); err != nil {
+			if err := s.putDiscoverDetail(ctx, info.ID, info.Name, kind, model.ComicDetail{Comic: comic}); err != nil {
 				s.logger.Printf("api: cache discover browse %s/%s: %v", info.ID, comic.ID, err)
 			}
 		}
 	}()
 }
 
+// putDiscoverDetail stores discover metadata and lets image-capable sources
+// materialize covers through their own runtime before falling back to HTTP.
+func (s *Server) putDiscoverDetail(ctx context.Context, sourceID, sourceName, kind string, detail model.ComicDetail) error {
+	if s.discover == nil {
+		return nil
+	}
+	var materialize discovercache.CoverMaterializer
+	if s.registry != nil {
+		if adapter, err := s.registry.Get(sourceID); err == nil {
+			if imageSource, ok := adapter.(source.ImageSource); ok {
+				account, accountErr := s.registry.Account(ctx, sourceID)
+				if accountErr == nil {
+					materialize = func(ctx context.Context, comic model.Comic) ([]byte, string, error) {
+						return imageSource.CoverImage(ctx, account, comic)
+					}
+				}
+			}
+		}
+	}
+	return s.discover.PutNamedWithCover(ctx, s.registry.Client(), sourceID, sourceName, kind, detail, materialize)
+}
+
 func (s *Server) annotateDiscover(sourceID, kind string, comic model.Comic) model.Comic {
+
 	comic.SourceID = source.FirstNonEmpty(comic.SourceID, sourceID)
 	if s.discover == nil {
 		return comic
@@ -1544,7 +1802,7 @@ func (s *Server) refreshDiscoverDetail(sourceID, kind, comicID string) {
 	if err != nil {
 		return
 	}
-	if err := s.discover.PutNamed(ctx, s.registry.Client(), sourceID, adapter.Info().Name, kind, model.ComicDetail{Comic: comic, Chapters: chapters}); err != nil {
+	if err := s.putDiscoverDetail(ctx, sourceID, adapter.Info().Name, kind, model.ComicDetail{Comic: comic, Chapters: chapters}); err != nil {
 		s.logger.Printf("api: refresh discover %s/%s: %v", sourceID, comicID, err)
 	}
 }
@@ -3388,6 +3646,15 @@ func withRecovery(next http.Handler, logger *log.Logger) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+func firstNonEmptyText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func decodeJSON(r *http.Request, out any) error {

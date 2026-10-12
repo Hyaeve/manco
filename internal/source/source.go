@@ -77,6 +77,19 @@ type ContentSource interface {
 	ChapterContent(ctx context.Context, account Account, bookID string, chapter model.Chapter) (string, error)
 }
 
+// ImageSource is implemented by sources that materialize page and cover
+// bytes through a source-specific runtime instead of a plain HTTP GET.
+type ImageSource interface {
+	PageImage(ctx context.Context, account Account, comicID string, chapter model.Chapter, page model.Page) ([]byte, string, error)
+	CoverImage(ctx context.Context, account Account, comic model.Comic) ([]byte, string, error)
+}
+
+// FilterSource is implemented by sources that discover their filter controls
+// lazily instead of exposing a static list from Info.
+type FilterSource interface {
+	Filters(ctx context.Context) ([]model.FilterGroup, error)
+}
+
 // KindOf reports the source kind, defaulting to comic when unspecified.
 func KindOf(info model.SourceInfo) string {
 	if info.Kind == KindBook {

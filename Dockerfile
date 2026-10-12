@@ -21,17 +21,33 @@ ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags "-s -w" -o /out/manco ./cmd/manco
 
-# --- Stage 3: minimal runtime ------------------------------------------------
+# --- Stage 3: build the Kototoro JVM parser host -----------------------------
+FROM gradle:9.3.1-jdk21 AS kototoro
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN git clone --filter=blob:none https://github.com/skepsun/kototoro.git upstream \
+    && git -C upstream checkout 31f98eb8182fb39790d2cf89e6d121cd4e798d6d
+COPY runtime/kototoro-host/ /build/host/
+RUN sh /build/host/prepare-sources.sh /build/upstream /build/host/upstream
+WORKDIR /build/host
+RUN gradle --no-daemon installDist
+
+# --- Stage 4: minimal runtime ------------------------------------------------
 FROM alpine:3.22
-# x86_64 target: docker-compose.yml pins platform: linux/amd64.
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata openjdk21-jre-headless
 ENV TZ=Asia/Shanghai \
     MANCO_ADDR=:15600 \
     MANCO_DATA_DIR=/app/data \
     MANCO_CONFIG_DIR=/app/config \
-    MANCO_DOWNLOAD_DIR=/app/downloads
+    MANCO_DOWNLOAD_DIR=/app/downloads \
+    JAVA_TOOL_OPTIONS=-Djava.awt.headless=true
 WORKDIR /app
 COPY --from=backend /out/manco /usr/local/bin/manco
+COPY --from=kototoro /build/host/build/install/manco-kototoro-host /usr/local/lib/manco/kototoro-host
+COPY --from=kototoro /build/upstream/LICENSE /usr/share/licenses/manco/kototoro/LICENSE
 RUN mkdir -p /app/data /app/config /app/downloads
 EXPOSE 15600
 VOLUME ["/app/data", "/app/config", "/app/downloads"]

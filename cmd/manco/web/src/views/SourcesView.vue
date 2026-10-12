@@ -49,6 +49,10 @@ const forms = reactive({})
 const repositoryForm = reactive({ name: '', url: '', kind: 'json' })
 const editingRepositoryId = ref('')
 const dragId = ref('')
+const browserOpen = ref(false)
+const browserSource = ref(null)
+const browserSession = reactive({ url: '', userAgent: '' })
+const browserCookies = ref('')
 
 const repositoryKinds = [
   { value: 'json', label: 'JSON 清单' },
@@ -226,6 +230,70 @@ async function saveCategories() {
   }
 }
 
+function isPluginSource(item) {
+  return Boolean(item?.pluginSource)
+}
+
+function parseBrowserCookies(raw) {
+  const text = String(raw || '')
+  const rows = []
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim()
+    if (!line) continue
+    if (/^cookie:/i.test(line)) line = line.replace(/^cookie:/i, '').trim()
+    if (line.includes('\t')) {
+      const parts = line.split('\t')
+      if (parts.length >= 2) line = `${parts[0]}=${parts[1]}`
+    }
+    if (!line.includes('=')) continue
+    if (!/;\s*path=/i.test(line)) line += '; Path=/'
+    rows.push(line)
+  }
+  return [...new Set(rows)]
+}
+
+async function openBrowserCheck(item) {
+  busy.value = `browser-${item.id}`
+  browserSource.value = item
+  browserCookies.value = ''
+  browserSession.url = ''
+  browserSession.userAgent = ''
+  try {
+    const session = await api.sourceBrowserSession(item.id)
+    browserSession.url = session.url || item.homepage || ''
+    browserSession.userAgent = session.userAgent || ''
+    browserOpen.value = true
+  } catch (err) {
+    notify(`${item.name}：${err.message}`, 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function importBrowserCookies() {
+  const item = browserSource.value
+  if (!item) return
+  const cookies = parseBrowserCookies(browserCookies.value)
+  if (!cookies.length) {
+    notify('请粘贴至少一条 Cookie（每行一条）', 'warning')
+    return
+  }
+  busy.value = `browser-${item.id}`
+  try {
+    const result = await api.importSourceCookies(item.id, {
+      sourceName: '',
+      url: browserSession.url || item.homepage || '',
+      cookies,
+    })
+    notify(`${item.name} 已导入 ${result.imported || cookies.length} 条浏览器 Cookie`, 'success')
+    browserOpen.value = false
+  } catch (err) {
+    notify(`${item.name}：${err.message}`, 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
 function openEditor(item) {
   if (!forms[item.id]) return
   editorSource.value = item
@@ -380,6 +448,18 @@ async function removeRepository(item) {
   }
 }
 
+function isKototoroPlugin(repository, extension) {
+  const identity = `${repository?.url || ''} ${extension?.packageName || ''} ${extension?.name || ''} ${extension?.pluginType || ''}`.toLowerCase()
+  const installUrl = String(extension?.installUrl || '').split('?')[0].toLowerCase()
+  const kind = String(repository?.kind || '').toLowerCase()
+  const jarLike = installUrl.endsWith('.jar') || installUrl.endsWith('.dex') || kind === 'jar'
+  return extension?.runtime === 'plugin' && (extension?.pluginType === 'jar' || jarLike)
+}
+
+function canInstallExtension(repository, extension) {
+  return Boolean(extension?.installable || isKototoroPlugin(repository, extension))
+}
+
 function openAddSource() {
   if (!repositories.value.length) {
     notify('请先在拓展仓库栏目添加仓库', 'warning')
@@ -391,19 +471,22 @@ function openAddSource() {
 }
 
 async function importExtension(repository, extension) {
-  if (!extension.installable) {
-    notify('该来源是 Android/JVM 插件（JAR/DEX），需要兼容插件运行时才能浏览与下载；当前仅登记清单', 'warning')
+  if (!canInstallExtension(repository, extension)) {
+    notify('该来源当前没有可用的导入方式，暂时只能保留仓库清单', 'warning')
     return
   }
   busy.value = `extension-${extension.id}`
   try {
     const result = await api.importRepositoryExtension(repository.id, extension.id)
-    const source = result.source
-    if (source && !sources.value.some((item) => item.id === source.id)) {
+    const imported = Array.isArray(result.sources) && result.sources.length
+      ? result.sources
+      : (result.source ? [result.source] : [])
+    for (const source of imported) {
+      if (sources.value.some((item) => item.id === source.id)) continue
       sources.value = [...sources.value, source]
     }
-    notify(`${extension.name} 已加入资源库`, 'success')
-    if (source) activeKind.value = ['book', 'other'].includes(source.kind) ? source.kind : 'comic'
+    notify(`${extension.name} 已加入资源库${imported.length ? `（${imported.length} 个内容源）` : ''}`, 'success')
+    if (imported[0]) activeKind.value = ['book', 'other'].includes(imported[0].kind) ? imported[0].kind : 'comic'
     addSourceOpen.value = false
     await load()
   } catch (err) {
@@ -536,6 +619,17 @@ function onDragEnd() {
         </div>
         <div class="source-card-actions">
         <button
+          v-if="isPluginSource(item)"
+          class="icon-btn source-verify-button"
+          type="button"
+          aria-label="浏览器验证"
+          :disabled="busy === `browser-${item.id}`"
+          @click="openBrowserCheck(item)"
+        >
+          <Loader2 v-if="busy === `browser-${item.id}`" :size="17" class="spin" />
+          <ShieldCheck v-else :size="17" />
+        </button>
+        <button
           class="icon-btn source-category-button"
           type="button"
           aria-label="筛选分类"
@@ -611,14 +705,14 @@ function onDragEnd() {
             <button
               class="btn small"
               type="button"
-              :class="{ secondary: !extension.installable }"
+              :class="{ secondary: !canInstallExtension(repository, extension) }"
               :disabled="busy === `extension-${extension.id}`"
               @click="importExtension(repository, extension)"
             >
               <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
-              <Check v-else-if="extension.installable" :size="14" />
+              <Check v-else-if="canInstallExtension(repository, extension)" :size="14" />
               <ShieldCheck v-else :size="14" />
-              {{ extension.installable ? '添加来源' : '需插件运行时' }}
+              {{ canInstallExtension(repository, extension) ? '安装来源' : '暂不支持' }}
             </button>
           </article>
         </div>
@@ -669,14 +763,14 @@ function onDragEnd() {
             <button
               class="btn small"
               type="button"
-              :class="{ secondary: !extension.installable }"
+              :class="{ secondary: !canInstallExtension(selectedRepository, extension) }"
               :disabled="busy === `extension-${extension.id}`"
               @click="importExtension(selectedRepository, extension)"
             >
               <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
-              <Check v-else-if="extension.installable" :size="14" />
+              <Check v-else-if="canInstallExtension(selectedRepository, extension)" :size="14" />
               <ShieldCheck v-else :size="14" />
-              {{ extension.installable ? '添加' : '需插件运行时' }}
+              {{ canInstallExtension(selectedRepository, extension) ? '安装' : '暂不支持' }}
             </button>
           </article>
         </div>
@@ -727,6 +821,45 @@ function onDragEnd() {
     </div>
   </div>
 
+
+  <div v-if="browserOpen && browserSource" class="modal-backdrop" @click.self="browserOpen = false">
+    <section class="modal browser-verify-modal">
+      <header class="modal-head">
+        <h2>浏览器验证 · {{ browserSource.name }}</h2>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="browserOpen = false">
+          <X :size="17" />
+        </button>
+      </header>
+      <div class="modal-body">
+        <p class="muted small">先在浏览器打开验证地址并完成站点验证，再把该站点 Cookie 粘贴到下方导入。导入后解析器请求会复用这组会话。</p>
+        <label class="field">
+          <span>验证地址</span>
+          <input class="input" :value="browserSession.url" readonly />
+        </label>
+        <label class="field">
+          <span>导入 Cookie</span>
+          <textarea
+            v-model="browserCookies"
+            class="textarea cookie-textarea"
+            placeholder="每行一条，例如：cf_clearance=...; Path=/; Domain=.example.com"
+          ></textarea>
+        </label>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn secondary" type="button" @click="browserOpen = false">取消</button>
+        <button
+          class="btn"
+          type="button"
+          :disabled="busy === `browser-${browserSource.id}`"
+          @click="importBrowserCookies"
+        >
+          <Loader2 v-if="busy === `browser-${browserSource.id}`" :size="15" class="spin" />
+          <ShieldCheck v-else :size="15" />
+          导入 Cookie
+        </button>
+      </footer>
+    </section>
+  </div>
   <div v-if="editorOpen && editorSource && forms[editorSource.id]" class="modal-backdrop" @click.self="editorOpen = false">
     <div class="modal modal-lg">
       <div class="modal-head">

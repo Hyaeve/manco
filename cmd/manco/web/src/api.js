@@ -56,6 +56,10 @@ export const api = {
   saveAccount: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAccount: (id) => request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'DELETE' }),
+  sourceBrowserSession: (id) =>
+    request(`/api/sources/${encodeURIComponent(id)}/browser-session`),
+  importSourceCookies: (id, payload) =>
+    request(`/api/sources/${encodeURIComponent(id)}/cookies`, { method: 'POST', body: JSON.stringify(payload) }),
   search: (id, query, page = 1) =>
     request(`/api/sources/${encodeURIComponent(id)}/search?q=${encodeURIComponent(query)}&page=${page}`),
   globalSearch: (query, kind = '', page = 1) => {
@@ -63,6 +67,7 @@ export const api = {
     if (kind) params.set('kind', kind)
     return request(`/api/search?${params.toString()}`)
   },
+  sourceFilters: (id) => request(`/api/sources/${encodeURIComponent(id)}/filters`),
   browse: (id, filters = {}, page = 1) => {
     const params = new URLSearchParams({ page: String(page) })
     for (const [key, value] of Object.entries(filters)) {
