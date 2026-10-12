@@ -168,9 +168,15 @@ func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, so
 		kind = NormalizeKind("")
 	}
 	existing, existingPath, exists := c.findBySourceAndID(sourceID, detail.Comic.ID)
-	path := c.entryPathNamed(sourceID, sourceName, kind, detail.Comic.ID)
+	path := c.entryPathNamed(sourceID, sourceName, kind, detail.Comic.Title, detail.Comic.ID)
 	if exists && existingPath != "" {
-		path = existingPath
+		if existingPath != path {
+			if err := migrateEntryPath(existingPath, path); err != nil {
+				path = existingPath
+			}
+		} else {
+			path = existingPath
+		}
 	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
@@ -322,8 +328,11 @@ func (c *Cache) findBySourceAndIDLegacy(sourceID, comicID string) (storedDetail,
 	return storedDetail{}, "", false
 }
 
-func (c *Cache) entryPathNamed(sourceID, sourceName, kind, comicID string) string {
-	slug := slugify(comicID)
+func (c *Cache) entryPathNamed(sourceID, sourceName, kind, comicTitle, comicID string) string {
+	slug := slugify(comicTitle)
+	if slug == "" {
+		slug = slugify(comicID)
+	}
 	if slug == "" {
 		slug = "item"
 	}
@@ -331,8 +340,37 @@ func (c *Cache) entryPathNamed(sourceID, sourceName, kind, comicID string) strin
 	if sourceDir == "" {
 		sourceDir = slugify(sourceID)
 	}
-	hash := sha256.Sum256([]byte(sourceID + "\x00" + comicID))
-	return filepath.Join(c.root, NormalizeKind(kind), sourceDir, slug+"-"+hex.EncodeToString(hash[:6]))
+	return c.uniqueEntryPath(filepath.Join(c.root, NormalizeKind(kind), sourceDir, slug), comicID)
+}
+
+func (c *Cache) uniqueEntryPath(path, comicID string) string {
+	if _, err := os.Stat(filepath.Join(path, "item.json")); err != nil {
+		return path
+	}
+	entry, err := readEntry(path)
+	if err == nil && entry.Comic.ID == comicID {
+		return path
+	}
+	hash := sha256.Sum256([]byte(comicID))
+	return path + "-" + hex.EncodeToString(hash[:4])
+}
+
+func migrateEntryPath(source, target string) error {
+	if source == "" || target == "" || source == target {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(source, "item.json")); err != nil {
+		return err
+	}
+	if _, err := os.Stat(target); err == nil {
+		return errors.New("target discover cache path already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(source, target)
 }
 
 func (c *Cache) entryPath(sourceID, kind, comicID string) string {

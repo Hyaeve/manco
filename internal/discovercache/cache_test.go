@@ -50,14 +50,21 @@ func TestNamedSourceCacheRoundTrip(t *testing.T) {
 	}
 
 	var foundNamedDir bool
+	var foundTitleDir bool
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr == nil && entry.IsDir() && entry.Name() == "包子漫画" {
 			foundNamedDir = true
+		}
+		if walkErr == nil && entry.IsDir() && entry.Name() == "测试作品" {
+			foundTitleDir = true
 		}
 		return nil
 	})
 	if !foundNamedDir {
 		t.Fatalf("cache did not preserve the localized source directory under %s", root)
+	}
+	if !foundTitleDir {
+		t.Fatalf("cache did not preserve the localized work-title directory under %s", root)
 	}
 
 	recorder := httptest.NewRecorder()

@@ -6,11 +6,10 @@ services:
     ports:
       - 15600:15600
     volumes:
-      - ./data:/data
       - ./config:/app/config
-      # 运行数据固定写入 /data；配置单独写入 /app/config。
+      - ./data:/app/data
+      # 自定义下载目录示例；不需要时删除，下载位置在订阅任务里选择容器内目录。
+      - /vol3/1000/家庭影音/:/家庭影音:shared
     environment:
       - TZ=Asia/Shanghai
-      - MANCO_DATA_DIR=/data
-      - MANCO_CONFIG_DIR=/app/config
     restart: unless-stopped

@@ -163,7 +163,12 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 	kind := sourceKind(object)
 	homepage := absolute(base, firstString(object, "homepage", "homeUrl", "website", "site"))
 	icon := absolute(base, firstString(object, "icon", "iconUrl", "logo", "pic"))
-	installURL := absolute(base, firstString(object, "jarUrl", "apkUrl", "installUrl", "downloadUrl", "apk", "jar"))
+	installURL := absolute(base, firstString(object, "jarUrl", "apkUrl", "installUrl", "downloadUrl"))
+	if installURL == "" {
+		if name := firstString(object, "apk", "jar"); name != "" {
+			installURL = absolute(base, pluginRelativePath(name))
+		}
+	}
 	if installURL == "" {
 		if resources, ok := object["resources"].(map[string]any); ok {
 			installURL = absolute(base, firstString(resources, "jarUrl", "apkUrl", "url"))
@@ -185,6 +190,13 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 		homepage = sources[0].HomeURL
 	}
 	installable := len(config) > 0 && homepage != ""
+	runtime := ""
+	switch {
+	case len(config) > 0:
+		runtime = "selector"
+	case installURL != "":
+		runtime = "plugin"
+	}
 	idSource := firstNonEmpty(packageName, name) + "|" + firstNonEmpty(version, strconv.Itoa(index))
 	return model.RepositoryExtension{
 		ID:          stableID(idSource),
@@ -198,6 +210,7 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 		Icon:        icon,
 		InstallURL:  installURL,
 		Installable: installable,
+		Runtime:     runtime,
 		Config:      config,
 		Sources:     sources,
 		Raw:         marshalRaw(object),
@@ -368,6 +381,20 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// pluginRelativePath rewrites bare plugin file names to the `apk/` folder
+// used by Kototoro/Tachiyomi repositories, whose index only stores the base
+// name of the shipped payload.
+func pluginRelativePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "/") || strings.Contains(value, "\\") {
+		return value
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.IsAbs() {
+		return value
+	}
+	return "apk/" + value
 }
 
 func absolute(base *url.URL, value string) string {

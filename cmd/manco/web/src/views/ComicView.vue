@@ -2,9 +2,9 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ArrowDownWideNarrow,
-  ArrowUpWideNarrow,
   BookOpen,
+  ClockArrowDown,
+  ClockArrowUp,
   ChevronLeft,
   Download,
   Loader2,
@@ -299,10 +299,10 @@ async function downloadSelected() {
   </div>
   <div v-else>
     <div class="detail-hero" :style="heroStyle">
+      <button class="detail-cover-back" type="button" aria-label="返回" title="返回" @click="goBack">
+        <ChevronLeft :size="22" />
+      </button>
       <div class="detail-cover-wrap">
-        <button class="detail-cover-back" type="button" aria-label="返回" title="返回" @click="goBack">
-          <ChevronLeft :size="20" />
-        </button>
         <div class="detail-cover">
         <img v-if="comic.cover" :src="cover()" :alt="comic.title" />
         <span v-else class="cover-fallback"><BookOpen :size="28" /></span>
@@ -315,7 +315,7 @@ async function downloadSelected() {
             <button class="btn secondary" type="button" :disabled="busy || !selected.size" @click="downloadSelected">
               <Loader2 v-if="busy" :size="16" class="spin" />
               <Download v-else :size="16" />
-              下载所选（{{ selected.size }}）
+              下载
             </button>
             <button class="btn" type="button" :disabled="busy" @click="openSubscribe">
               <Rss :size="16" />
@@ -347,8 +347,7 @@ async function downloadSelected() {
           全选
         </button>
         <button class="btn ghost small" type="button" @click="sortDesc = !sortDesc">
-          <component :is="sortDesc ? ArrowDownWideNarrow : ArrowUpWideNarrow" :size="16" />
-          {{ sortDesc ? '最新在前' : '最旧在前' }}
+          <component :is="sortDesc ? ClockArrowDown : ClockArrowUp" :size="18" />
         </button>
         <span class="muted small">共 {{ chapters.length }} 章</span>
         <span class="spacer" />

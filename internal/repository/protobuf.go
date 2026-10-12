@@ -145,6 +145,7 @@ func parseProtoExtension(raw []byte, base *url.URL, pluginType string) (model.Re
 	}
 	item.Kind = classifySource(item)
 	item.ID = stableID(item.PackageName + "|" + item.Version)
+	item.Runtime = "plugin"
 	item.Raw = marshalRaw(map[string]any{
 		"name":        item.Name,
 		"packageName": item.PackageName,

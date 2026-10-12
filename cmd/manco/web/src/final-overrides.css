@@ -2046,3 +2046,279 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ===== v0.1.9：侧栏更浅、详情页对齐、配色与章节排序 ===== */
+
+/* 侧栏：更淡的暖黄绿色 */
+.sidebar {
+  background: color-mix(in srgb, #fffee8 93%, #dfeec9);
+  border-right-color: color-mix(in srgb, #e4e7b6 62%, var(--border));
+}
+
+.sidebar nav button:hover {
+  background: color-mix(in srgb, #fdf8ca 76%, #e8f1d6);
+}
+
+.sidebar nav button.active {
+  color: #4f4715;
+  background: color-mix(in srgb, #f9ee9f 82%, #eef4dd);
+}
+
+[data-theme='dark'] .sidebar {
+  background: #232a1d;
+  border-right-color: #343d28;
+}
+
+/* 保存按钮：琥珀暖色，替代黄绿色 */
+.settings-save-button {
+  background: #c8892f;
+  border-color: #ac7423;
+  color: #fff9ee;
+}
+
+.settings-save-button:hover:not(:disabled) {
+  background: #b27726;
+}
+
+/* 作品详情：抬高顶部区域，封面/标题/操作同一水平线，返回按钮位于封面之上 */
+.detail-hero {
+  grid-template-columns: 208px minmax(0, 1fr);
+  align-items: start;
+  padding-top: 58px;
+}
+
+.detail-cover-wrap {
+  gap: 0;
+}
+
+.detail-cover-back {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: auto;
+  height: auto;
+  padding: 6px 12px 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.detail-cover-back svg {
+  width: 26px;
+  height: 26px;
+}
+
+.detail-cover-back:hover {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.detail-info-head {
+  align-items: flex-start;
+}
+
+/* 订阅按钮：浅黄色 */
+.detail-actions .btn:not(.secondary) {
+  background: #f6e08a;
+  border-color: #e6cd67;
+  color: #5a4d13;
+}
+
+.detail-actions .btn:not(.secondary):hover:not(:disabled) {
+  background: #f1d76b;
+}
+
+/* 章节排序：纯图标按钮 */
+.detail-chapter-head .btn.ghost.small {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+}
+
+/* 本地库详情：复用作品详情风格，章节海报网格 */
+.local-chapter-poster-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 14px;
+}
+
+.local-chapter-poster {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.local-chapter-poster:hover {
+  border-color: var(--primary);
+}
+
+.local-chapter-poster-cover {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.local-chapter-poster-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.local-chapter-poster-name {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* 下载列表：左图右文，失败项内嵌勾选不撞高行 */
+.download-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.download-row {
+  display: grid;
+  grid-template-columns: 28px 48px minmax(200px, 2.4fr) 130px minmax(140px, 1.2fr) minmax(160px, 1.6fr) 150px auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.download-select {
+  display: grid;
+  place-items: center;
+}
+
+.download-check {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--primary-strong);
+  cursor: pointer;
+}
+
+.download-cover {
+  display: grid;
+  width: 48px;
+  height: 66px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.download-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.download-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.download-main .comic-title {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.download-main .comic-title:hover {
+  color: var(--primary-strong);
+}
+
+.download-chapter {
+  color: var(--text-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.download-status {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.download-error {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 12px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.download-progress {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.download-file {
+  overflow-wrap: anywhere;
+}
+
+.download-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 1100px) {
+  .download-row {
+    grid-template-columns: 26px 44px minmax(150px, 1fr) 110px auto;
+  }
+
+  .download-file,
+  .download-progress,
+  .download-time {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .download-row {
+    grid-template-columns: 22px 40px minmax(130px, 1fr) auto;
+  }
+
+  .download-status {
+    display: none;
+  }
+}

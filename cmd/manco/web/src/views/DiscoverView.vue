@@ -3,8 +3,10 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
+  BookMarked,
   ChevronLeft,
   ChevronRight,
+  Film,
   Grid2X2,
   ImageOff,
   List,
@@ -295,6 +297,19 @@ function filterOptions(group) {
 function sourceKindLabel(kind) {
   return { comic: '漫画源', book: '书籍源', other: '其他源' }[kind] || '来源'
 }
+
+function rememberOpenPosition() {
+  rememberPosition()
+}
+
+function latestLabel(item) {
+  const updated = String(item.updatedAt || '').trim()
+  const chapters = Number(item.chapterCount || 0)
+  if (/完结|完結|已完|completed|finished/i.test(String(item.status || ''))) {
+    return `完结至 ${updated || (chapters ? `第 ${chapters} 话` : '最后章节')}`
+  }
+  return `更新至 ${updated || (chapters ? `第 ${chapters} 话` : '最新章节')}`
+}
 </script>
 
 <template>
@@ -303,17 +318,21 @@ function sourceKindLabel(kind) {
       <div class="inline discover-head-left">
         <div class="segmented" role="tablist" aria-label="资源类型">
           <button type="button" :class="{ active: activeKind === 'comic' }" @click="switchKind('comic')">
+            <BookOpen :size="18" />
             漫画源 <span class="segmented-count">{{ kindCount('comic') }}</span>
           </button>
           <button type="button" :class="{ active: activeKind === 'book' }" @click="switchKind('book')">
+            <BookMarked :size="18" />
             书籍源 <span class="segmented-count">{{ kindCount('book') }}</span>
           </button>
           <button type="button" :class="{ active: activeKind === 'other' }" @click="switchKind('other')">
+            <Film :size="18" />
             其他源 <span class="segmented-count">{{ kindCount('other') }}</span>
           </button>
         </div>
       </div>
       <div v-if="activeSource && activePanel" class="source-search discover-search">
+        <Loader2 v-if="activePanel.loading" :size="16" class="spin" />
         <Search :size="16" />
         <input
           v-model="activePanel.query"
@@ -322,10 +341,6 @@ function sourceKindLabel(kind) {
           placeholder="搜索作品"
           @keyup.enter="submitSearch"
         />
-        <button class="btn small" type="button" :disabled="!activeSource.canSearch || activePanel.loading" @click="submitSearch">
-          <Loader2 v-if="activePanel.loading" :size="15" class="spin" />
-          <span v-else>搜索</span>
-        </button>
       </div>
     </div>
 
@@ -353,16 +368,6 @@ function sourceKindLabel(kind) {
     </div>
 
     <section v-else-if="activeSource && activePanel" class="source-page">
-      <header class="source-page-head">
-        <div class="inline">
-          <img v-if="activeSource.icon" class="source-favicon" :src="activeSource.icon" alt="" />
-          <div>
-            <h2>{{ activeSource.name }}</h2>
-
-          </div>
-        </div>
-        <span v-if="activePanel.loading" class="muted small">加载中</span>
-      </header>
 
       <div class="source-column-tools">
         <div class="source-filter-grid">
@@ -404,15 +409,15 @@ function sourceKindLabel(kind) {
           :key="`${item.sourceId}-${item.id}`"
           class="comic-card source-comic-card"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+          @click="rememberOpenPosition"
         >
           <div class="comic-cover">
             <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
             <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
           </div>
           <div class="comic-body">
-            <img v-if="activeSource.icon" class="comic-source-corner" :src="activeSource.icon" alt="" />
             <span class="comic-title">{{ item.title }}</span>
-            <span class="comic-meta">{{ item.author || '未知作者' }}</span>
+            <span class="comic-meta">{{ latestLabel(item) }}</span>
           </div>
         </RouterLink>
       </div>
@@ -422,6 +427,7 @@ function sourceKindLabel(kind) {
           :key="`${item.sourceId}-${item.id}`"
           class="source-list-card"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+          @click="rememberOpenPosition"
         >
           <div class="source-list-cover">
             <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />

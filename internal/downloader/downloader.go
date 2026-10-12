@@ -729,6 +729,29 @@ func writeBookMetadata(ctx context.Context, client *http.Client, account source.
 	return os.WriteFile(filepath.Join(comicDir, "book.json"), payload, 0o644)
 }
 
+// comicGenre merges source-provided tags with the media type so the rendered
+// ComicInfo.xml always records whether the entry is a comic or a book.
+func comicGenre(comic model.Comic, info model.SourceInfo) string {
+	values := make([]string, 0, len(comic.Tags)+1)
+	seen := map[string]bool{}
+	for _, tag := range comic.Tags {
+		text := strings.TrimSpace(tag)
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		values = append(values, text)
+	}
+	label := "漫画"
+	if source.KindOf(info) == source.KindBook {
+		label = "书籍"
+	}
+	if !seen[label] {
+		values = append(values, label)
+	}
+	return strings.Join(values, ",")
+}
+
 func writeComicMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic, comicDir, chapterTitle string, chapterOrder float64, pageCount int) ([]byte, error) {
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return nil, err
@@ -754,7 +777,7 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 		Number:      comicNumber(chapterOrder),
 		Writer:      comic.Author,
 		Summary:     comic.Description,
-		Genre:       strings.Join(comic.Tags, ","),
+		Genre:       comicGenre(comic, info),
 		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
 		PageCount:   pageCount,
 		Manga:       "YesAndRightToLeft",

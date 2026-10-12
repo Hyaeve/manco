@@ -224,10 +224,6 @@ async function remove(item, removeFile) {
         重试选中（{{ selected.size }}）
       </button>
     </template>
-    <RouterLink class="btn secondary small" to="/discover">
-      <Compass :size="15" />
-      去发现页新建下载
-    </RouterLink>
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
       <RefreshCw :size="15" :class="{ spin: loading }" />
       刷新
@@ -251,106 +247,82 @@ async function remove(item, removeFile) {
     <p>当前筛选条件下没有任务。</p>
   </div>
   <div v-else class="card table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>作品 / 章节</th>
-          <th v-if="filter === 'failed'" style="width: 34px"></th>
-          <th>状态</th>
-          <th>进度</th>
-          <th>输出文件</th>
-          <th>更新时间</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="item in visible" :key="item.id">
-          <td v-if="filter === 'failed'">
-            <input
-              type="checkbox"
-              :checked="selected.has(item.id)"
-              :disabled="!['failed', 'canceled'].includes(item.status)"
-              @click="toggleSelect(item, visible.indexOf(item), $event)"
-            />
-          </td>
-          <td>
-            <div class="inline">
-              <img
-                v-if="item.comicCover"
-                :src="cover(item)"
-                alt=""
-                style="width: 34px; height: 48px; object-fit: cover; border-radius: 4px"
-              />
-              <span v-else class="cover-fallback" style="width: 34px; height: 48px; position: static">
-                <BookOpen :size="16" />
-              </span>
-              <span>
-                <RouterLink
-                  class="comic-title"
-                  :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
-                >
-                  {{ item.comicTitle }}
-                </RouterLink>
-                <span class="muted small" style="display: block">{{ item.chapterTitle }}</span>
-              </span>
-            </div>
-          </td>
-          <td>
-            <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
-            <span v-if="item.error" class="muted small" style="display: block; max-width: 220px">
-              {{ item.error }}
-            </span>
-          </td>
-          <td style="min-width: 150px">
-            <div class="progress" v-if="item.totalPages">
-              <span :style="{ width: `${percent(item)}%` }" />
-            </div>
-            <span class="muted small">
-              {{ item.completedPages }} / {{ item.totalPages || '?' }} 页
-              <template v-if="item.status === 'completed'"> · CBZ</template>
-            </span>
-          </td>
-          <td class="muted small" style="max-width: 260px; word-break: break-all">
-            <span v-if="item.filePath">{{ item.filePath }}</span>
-            <span v-else>—</span>
-          </td>
-          <td class="muted small">{{ new Date(item.updatedAt).toLocaleString() }}</td>
-          <td>
-            <div class="inline">
-              <button
-                v-if="['failed', 'canceled', 'paused'].includes(item.status)"
-                class="btn secondary small"
-                type="button"
-                :disabled="busy === item.id"
-                @click="retry(item)"
-              >
-                <RotateCcw :size="14" />
-                重试
-              </button>
-              <button
-                v-if="item.status === 'completed' && item.filePath"
-                class="btn secondary small"
-                type="button"
-                :disabled="busy === item.id"
-                title="删除任务记录和已下载的 CBZ 文件"
-                @click="remove(item, true)"
-              >
-                <FolderOpen :size="14" />
-                删除文件
-              </button>
-              <button
-                class="btn danger small"
-                type="button"
-                :disabled="busy === item.id"
-                title="只删除任务记录"
-                @click="remove(item, false)"
-              >
-                <Trash2 :size="14" />
-              </button>
-            </div>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="download-list">
+      <article v-for="(item, index) in visible" :key="item.id" class="download-row">
+        <div class="download-select">
+          <input
+            v-if="['failed', 'canceled'].includes(item.status)"
+            class="download-check"
+            type="checkbox"
+            :checked="selected.has(item.id)"
+            :aria-label="`选择 ${item.comicTitle} ${item.chapterTitle}`"
+            @click="toggleSelect(item, index, $event)"
+          />
+        </div>
+        <div class="download-cover">
+          <img v-if="item.comicCover" :src="cover(item)" alt="" loading="lazy" />
+          <span v-else class="cover-fallback"><BookOpen :size="16" /></span>
+        </div>
+        <div class="download-main">
+          <RouterLink
+            class="comic-title"
+            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+          >
+            {{ item.comicTitle }}
+          </RouterLink>
+          <span class="download-chapter">{{ item.chapterTitle }}</span>
+        </div>
+        <div class="download-status">
+          <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
+          <span v-if="item.error" class="download-error">{{ item.error }}</span>
+        </div>
+        <div class="download-progress">
+          <div v-if="item.totalPages" class="progress">
+            <span :style="{ width: `${percent(item)}%` }" />
+          </div>
+          <span class="muted small">
+            {{ item.completedPages }} / {{ item.totalPages || '?' }} 页
+            <template v-if="item.status === 'completed'"> · CBZ</template>
+          </span>
+        </div>
+        <div class="download-file muted small">
+          <span v-if="item.filePath">{{ item.filePath }}</span>
+          <span v-else>—</span>
+        </div>
+        <div class="download-time muted small">{{ new Date(item.updatedAt).toLocaleString() }}</div>
+        <div class="download-actions">
+          <button
+            v-if="['failed', 'canceled', 'paused'].includes(item.status)"
+            class="btn secondary small"
+            type="button"
+            :disabled="busy === item.id"
+            @click="retry(item)"
+          >
+            <RotateCcw :size="14" />
+            重试
+          </button>
+          <button
+            v-if="item.status === 'completed' && item.filePath"
+            class="btn secondary small"
+            type="button"
+            :disabled="busy === item.id"
+            title="删除任务记录和已下载的 CBZ 文件"
+            @click="remove(item, true)"
+          >
+            <FolderOpen :size="14" />
+            删除文件
+          </button>
+          <button
+            class="btn danger small"
+            type="button"
+            :disabled="busy === item.id"
+            title="只删除任务记录"
+            @click="remove(item, false)"
+          >
+            <Trash2 :size="14" />
+          </button>
+        </div>
+      </article>
+    </div>
   </div>
 </template>

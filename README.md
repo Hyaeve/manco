@@ -12,7 +12,7 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 - 书籍源：**笔趣阁**、**神凑轻小说**与 **Project Gutenberg**。「资源仓库」页分为「漫画源 / 书籍源 / 拓展仓库」三个栏目，书籍按章节或整本下载为纯文本。
 - 拓展仓库不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持添加、编辑、同步、展开、删除、来源搜索和导入。除 JSON 清单外，还支持 gzip protobuf（Mihon / Keiyoushi `index.pb`）。Android/JVM 插件会明确标记为“仅登记”，不会伪装成可在 Go 后端直接执行的来源。
 - 「资源仓库」按期类分为「漫画源 / 书籍源 / 其他源 / 拓展仓库」四个栏目，来源可按类型拖拽排序，顺序持久化到服务端并同步到探索发现。
-- 探索发现浏览结果缓存写入 `/data/discover-cache.json`，默认 30 分钟内复用；访问过的作品详情与封面按类型落盘到 `/data/discover/<kind>/<source>/`，30 天未访问自动清理。
+- 探索发现浏览结果缓存写入 `/app/data/discover-cache.json`，默认 30 分钟内复用；访问过的作品详情与封面按内容源类型落盘到 `/app/data/discover/<kind>/<中文来源名>/<中文作品名>/`，30 天未访问自动清理。
 - 「本地库」页面浏览已经配置或选择过的下载目录，可查看已下载的漫画 / 书籍、展开文件列表并下载或预览。
 - 本地库支持右键海报进入多选，底部胶囊工具栏可全选、清空、繁转简或合并；合并以第一个所选为母本，后续副本文件移入母本目录，执行前会弹出项目内确认窗口。
 - 「运行日志」支持原始文本与结构化列表切换，并记住上次选择；同一份日志也会输出到容器标准输出，可用 `docker logs -f Manco` 查看。
@@ -66,21 +66,18 @@ Manco/
 services:
   manco:
     image: ghcr.io/hyaeve/manco:latest
-    container_name: manco
-    platform: linux/amd64
-    restart: unless-stopped
+    container_name: Manco
+    network_mode: bridge
     ports:
-      - "15600:15600"
-    environment:
-      TZ: "Asia/Shanghai"
-      MANCO_DATA_DIR: "/data"
-      MANCO_CONFIG_DIR: "/app/config"
+      - 15600:15600
     volumes:
-      - ./data:/data
       - ./config:/app/config
-      # 下载位置在「系统设置 → 下载设置」和订阅任务设置里选择/填写。
-      # 需要自定义下载目录时，按需添加宿主机目录映射，例如：
-      # - /vol4/1000/downloads/manco:/downloads
+      - ./data:/app/data
+      # 自定义下载目录示例；不需要时删除，下载位置在订阅任务里选择容器内目录。
+      - /vol3/1000/家庭影音/:/家庭影音:shared
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
 ```
 
 ```bash
@@ -113,21 +110,23 @@ docker compose up -d
 
 | 容器路径 | 宿主机路径 | 说明 |
 | --- | --- | --- |
-| `/data` | `./data` | SQLite 数据库、会话、探索发现缓存、图标索引与加密密钥 |
+| `/app/data` | `./data` | SQLite 数据库、会话、探索发现缓存、图标索引与加密密钥 |
 | `/app/config` | `./config` | 系统设置、来源与账号、拓展仓库、订阅等模块化 JSON 配置 |
 
 | 自定义下载目录 | 按需映射 | 在「系统设置 → 下载设置」为订阅选择/填写容器内路径，如 `/downloads/manco` |
 
 `/app/config` 按模块分别保存为 `settings.json`、`accounts.json`、`sources.json`、`repositories.json`、`subscriptions.json`。系统登录密码以 bcrypt 哈希保存，来源账号的密码、Token 与 Cookie 在写入前使用 `MANCO_SECRET` 派生密钥加密。
 
+> **从旧版升级**：旧版本把配置写在数据目录里（如 `<data>/config` 或 `/data/config`，密钥为 `data/.secret`）。首次启动新版本时，Manco 会自动把这些文件补齐到 `MANCO_CONFIG_DIR`（默认 `/app/config`），并使用 `secret.key` 作为密钥文件名；已存在的文件不会被覆盖。建议升级前先整体备份旧的 `data` 目录。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MANCO_ADDR` | `:15600` | 监听地址 |
-| `MANCO_SECRET` | 自动生成 `data/.secret` | 凭据加密密钥，建议显式设置并备份 |
-| `MANCO_DATA_DIR` | `data`（compose 中为 `/data`） | 运行数据目录，包含 SQLite、探索缓存和图标索引 |
-| `MANCO_CONFIG_DIR` | `config`（compose 中为 `/app/config`） | 用户配置目录，保存设置、来源、仓库与订阅配置 |
+| `MANCO_SECRET` | 自动生成 `config/secret.key` | 凭据加密密钥，建议显式设置并备份 |
+| `MANCO_DATA_DIR` | `/app/data`（镜像默认，compose 中为 `/app/data`） | 运行数据目录，包含 SQLite、探索缓存和图标索引 |
+| `MANCO_CONFIG_DIR` | `/app/config`（镜像默认，compose 中为 `/app/config`） | 用户配置目录，保存设置、来源、仓库与订阅配置 |
 | `MANCO_DOWNLOAD_DIR` | `downloads` | 下载目录 |
 | `MANCO_SOURCE_REPO` | 空 | 可选的源清单地址；默认不内置第三方仓库 |
 | `MANCO_SCAN_INTERVAL` | `30m` | 无 Cron 数据的旧订阅兼容扫描间隔 |
@@ -219,7 +218,7 @@ docker compose up -d
 发新版本：
 
 ```bash
-git tag v0.1.8 && git push origin v0.1.8     # 构建并发布 :v0.1.8
+git tag v0.1.9 && git push origin v0.1.9     # 构建并发布 :v0.1.9
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

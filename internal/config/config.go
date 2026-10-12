@@ -54,6 +54,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("create download directory: %w", err)
 	}
 	cfg.DBPath = filepath.Join(cfg.DataDir, "manco.db")
+	if err := migrateLegacyConfig(cfg.DataDir, cfg.ConfigDir); err != nil {
+		return Config{}, err
+	}
 	envSecret := strings.TrimSpace(os.Getenv("MANCO_SECRET"))
 	if envSecret != "" {
 		cfg.Secret = envSecret

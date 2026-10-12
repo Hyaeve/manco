@@ -227,6 +227,7 @@ type RepositoryExtension struct {
 	Icon        string             `json:"icon,omitempty"`
 	InstallURL  string             `json:"installUrl,omitempty"`
 	Installable bool               `json:"installable"`
+	Runtime     string             `json:"runtime,omitempty"`
 	Config      json.RawMessage    `json:"config,omitempty"`
 	Sources     []RepositorySource `json:"sources,omitempty"`
 	Raw         json.RawMessage    `json:"raw,omitempty"`

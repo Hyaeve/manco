@@ -392,7 +392,7 @@ function openAddSource() {
 
 async function importExtension(repository, extension) {
   if (!extension.installable) {
-    notify('该来源是 Android/JVM 插件，当前版本只能登记清单，不能直接执行', 'warning')
+    notify('该来源是 Android/JVM 插件（JAR/DEX），需要兼容插件运行时才能浏览与下载；当前仅登记清单', 'warning')
     return
   }
   busy.value = `extension-${extension.id}`
@@ -618,7 +618,7 @@ function onDragEnd() {
               <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
               <Check v-else-if="extension.installable" :size="14" />
               <ShieldCheck v-else :size="14" />
-              {{ extension.installable ? '添加来源' : '仅登记' }}
+              {{ extension.installable ? '添加来源' : '需插件运行时' }}
             </button>
           </article>
         </div>
@@ -676,7 +676,7 @@ function onDragEnd() {
               <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
               <Check v-else-if="extension.installable" :size="14" />
               <ShieldCheck v-else :size="14" />
-              {{ extension.installable ? '添加' : '不可执行' }}
+              {{ extension.installable ? '添加' : '需插件运行时' }}
             </button>
           </article>
         </div>

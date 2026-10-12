@@ -7,6 +7,8 @@ import {
   ChevronRight,
   Download,
   FileText,
+  ClockArrowDown,
+  ClockArrowUp,
   FolderOpen,
   Languages,
   ListChecks,
@@ -32,6 +34,9 @@ const selectionMode = ref(false)
 const selectedPaths = ref([])
 const selectionAnchor = ref(-1)
 const batchWorking = ref(false)
+const chapterQuery = ref('')
+const chapterApplied = ref('')
+const chapterSortDesc = ref(false)
 
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
@@ -49,6 +54,21 @@ const comicCount = computed(() => items.value.filter((item) => item.kind !== 'bo
 const bookCount = computed(() => items.value.filter((item) => item.kind === 'book').length)
 
 const activeFiles = computed(() => active.value?.files || [])
+const activeChapterFiles = computed(() => {
+  const keyword = chapterApplied.value.trim().toLowerCase()
+  const list = (activeFiles.value || []).filter((file) => {
+    if (!keyword) return true
+    return String(file.name || '').toLowerCase().includes(keyword)
+  })
+  const rows = [...list]
+  rows.sort((a, b) => {
+    const left = String(a.name || '')
+    const right = String(b.name || '')
+    const result = left.localeCompare(right, 'zh-Hans-CN', { numeric: true })
+    return chapterSortDesc.value ? -result : result
+  })
+  return rows
+})
 const readerTitle = computed(() => reader.value?.file?.name || '')
 const readerImages = computed(() => reader.value?.images || [])
 const readerText = computed(() => reader.value?.text || '')
@@ -202,6 +222,9 @@ function fileSize(bytes) {
 
 async function openDetail(item) {
   active.value = item
+  chapterQuery.value = ''
+  chapterApplied.value = ''
+  chapterSortDesc.value = false
   for (const file of item.files || []) {
     if ((file.ext !== 'cbz' && file.ext !== 'zip') || file.thumbnail) continue
     try {
@@ -216,6 +239,15 @@ async function openDetail(item) {
 
 function closeDetail() {
   active.value = null
+}
+
+function applyChapterSearch() {
+  chapterApplied.value = chapterQuery.value
+}
+
+function clearChapterSearch() {
+  chapterQuery.value = ''
+  chapterApplied.value = ''
 }
 
 async function openReader(file) {
@@ -264,55 +296,70 @@ function downloadReaderFile() {
 
 <template>
   <div v-if="active" class="local-detail-view">
-    <div class="toolbar">
-      <button class="btn secondary small" type="button" @click="closeDetail">
-        <ChevronLeft :size="15" />
-        返回本地库
+    <div class="detail-hero local-detail-hero">
+      <button class="detail-cover-back" type="button" aria-label="返回本地库" @click="closeDetail">
+        <ChevronLeft :size="22" />
+        返回
       </button>
-      <span class="spacer" />
-      <span class="muted small">{{ activeFiles.length }} 个文件 · {{ fileSize(active.size) }}</span>
-    </div>
-
-    <div class="local-detail">
-      <div class="local-detail-cover">
-        <img v-if="active.cover" :src="coverUrl(active)" :alt="active.title" />
-        <span v-else class="cover-fallback"><BookOpen :size="34" /></span>
+      <div class="detail-cover-wrap">
+        <div class="detail-cover">
+          <img v-if="active.cover" :src="coverUrl(active)" :alt="active.title" />
+          <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
+        </div>
       </div>
-      <div class="local-detail-info">
-        <div class="inline">
+      <div class="detail-info">
+        <div class="detail-info-head">
+          <h2>{{ active.title }}</h2>
+        </div>
+        <div class="meta detail-meta-line">
           <span class="badge" :class="active.kind === 'book' ? 'primary' : ''">
             {{ active.kind === 'book' ? '书籍' : '漫画' }}
           </span>
+          <span>{{ active.author || '未知作者' }}</span>
         </div>
-        <h2>{{ active.title }}</h2>
-        <p class="muted">{{ active.author || '未知作者' }}</p>
-        <p v-if="active.description" class="local-detail-desc">{{ active.description }}</p>
-        <div class="section-head local-file-head">
-          <h3>章节</h3>
-        </div>
-        <div class="local-chapter-grid">
-          <article v-for="file in activeFiles" :key="file.path" class="local-chapter-card">
-            <button class="local-chapter-cover" type="button" @click="openReader(file)">
-              <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" />
-              <BookOpen v-else :size="26" />
-            </button>
-            <div class="local-chapter-copy">
-              <strong :title="file.name">{{ file.name }}</strong>
-              <span>{{ file.ext === 'txt' ? '文本' : '漫画章节' }} · {{ fileSize(file.size) }}</span>
-            </div>
-            <div class="local-chapter-actions">
-              <button class="btn ghost icon" type="button" :aria-label="`阅读 ${file.name}`" @click="openReader(file)">
-                <BookOpen :size="15" />
-              </button>
-              <a class="btn ghost icon" :href="fileUrl(file, true)" :aria-label="`下载 ${file.name}`">
-                <Download :size="15" />
-              </a>
-            </div>
-          </article>
-          <div v-if="!activeFiles.length" class="empty">没有可阅读的文件</div>
-        </div>
+        <p class="description">{{ active.description || '暂无简介' }}</p>
       </div>
     </div>
+
+    <section class="detail-chapters">
+      <div class="detail-chapter-head">
+        <span class="muted small">共 {{ activeChapterFiles.length }} 项</span>
+        <span class="spacer" />
+        <form class="chapter-search" @submit.prevent="applyChapterSearch">
+          <Search :size="15" />
+          <input v-model="chapterQuery" class="input" placeholder="搜索章节" @keyup.enter="applyChapterSearch" />
+          <button v-if="chapterQuery" class="icon-btn" type="button" aria-label="清除" @click="clearChapterSearch">
+            <X :size="14" />
+          </button>
+        </form>
+        <button
+          class="btn ghost small"
+          type="button"
+          :aria-label="chapterSortDesc ? '按名称降序' : '按名称升序'"
+          @click="chapterSortDesc = !chapterSortDesc"
+        >
+          <component :is="chapterSortDesc ? ClockArrowDown : ClockArrowUp" :size="18" />
+        </button>
+      </div>
+
+      <div v-if="!activeChapterFiles.length" class="empty">没有可阅读的章节</div>
+      <div v-else class="local-chapter-poster-grid">
+        <button
+          v-for="file in activeChapterFiles"
+          :key="file.path"
+          class="local-chapter-poster"
+          type="button"
+          :title="file.name"
+          @click="openReader(file)"
+        >
+          <span class="local-chapter-poster-cover">
+            <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" />
+            <BookOpen v-else :size="24" />
+          </span>
+          <span class="local-chapter-poster-name">{{ file.name }}</span>
+        </button>
+      </div>
+    </section>
   </div>
 
   <div v-else>
