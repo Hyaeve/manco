@@ -60,6 +60,14 @@ export const api = {
     request(`/api/sources/${encodeURIComponent(id)}/browser-session`),
   importSourceCookies: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/cookies`, { method: 'POST', body: JSON.stringify(payload) }),
+  pluginAuthCapabilities: (id) =>
+    request(`/api/sources/${encodeURIComponent(id)}/plugin-auth`),
+  pluginCredentialLogin: (id, payload) =>
+    request(`/api/sources/${encodeURIComponent(id)}/plugin-auth/login`, { method: 'POST', body: JSON.stringify(payload) }),
+  pluginPreferences: (id) =>
+    request(`/api/sources/${encodeURIComponent(id)}/plugin-preferences`),
+  updatePluginPreference: (id, payload) =>
+    request(`/api/sources/${encodeURIComponent(id)}/plugin-preferences`, { method: 'PUT', body: JSON.stringify(payload) }),
   search: (id, query, page = 1) =>
     request(`/api/sources/${encodeURIComponent(id)}/search?q=${encodeURIComponent(query)}&page=${page}`),
   globalSearch: (query, kind = '', page = 1) => {

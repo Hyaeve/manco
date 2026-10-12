@@ -52,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.10"
+	appVersion    = "v0.1.11"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
@@ -268,6 +268,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/custom-sources/{id}", s.requireAuth(s.handleDeleteCustomSource))
 	mux.HandleFunc("PATCH /api/sources/{id}", s.requireAuth(s.handleUpdateSource))
 	mux.HandleFunc("PUT /api/sources/{id}/account", s.requireAuth(s.handleSaveAccount))
+	mux.HandleFunc("GET /api/sources/{id}/plugin-auth", s.requireAuth(s.handlePluginAuthCapabilities))
+	mux.HandleFunc("POST /api/sources/{id}/plugin-auth/login", s.requireAuth(s.handlePluginCredentialLogin))
+	mux.HandleFunc("GET /api/sources/{id}/plugin-preferences", s.requireAuth(s.handlePluginPreferences))
+	mux.HandleFunc("PUT /api/sources/{id}/plugin-preferences", s.requireAuth(s.handlePluginPreferenceUpdate))
 	mux.HandleFunc("GET /api/sources/{id}/browser-session", s.requireAuth(s.handleSourceBrowserSession))
 	mux.HandleFunc("POST /api/sources/{id}/cookies", s.requireAuth(s.handleImportSourceCookies))
 	mux.HandleFunc("DELETE /api/sources/{id}/account", s.requireAuth(s.handleDeleteAccount))
@@ -821,8 +825,125 @@ func (s *Server) handleImportSourceCookies(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "imported": count})
 }
 
-// importKototoroPlugin installs one Kototoro parser JAR and registers every
-// content source the plugin declares.
+func (s *Server) handlePluginAuthCapabilities(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.registry == nil || s.registry.Runtime() == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	sourceName, err := s.pluginSourceName(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	capabilities, err := s.runtime.AuthCapabilities(ctx, sourceName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "读取插件认证能力失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sourceId":     r.PathValue("id"),
+		"sourceName":   sourceName,
+		"capabilities": capabilities,
+	})
+}
+
+func (s *Server) handlePluginCredentialLogin(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.registry == nil || s.registry.Runtime() == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	var payload struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sourceName, err := s.pluginSourceName(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	result, err := s.runtime.LoginCredentials(ctx, sourceName, payload.Username, payload.Password)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "插件账号登录失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"sourceId":   r.PathValue("id"),
+		"sourceName": sourceName,
+		"result":     result,
+	})
+}
+
+func (s *Server) handlePluginPreferences(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.registry == nil || s.registry.Runtime() == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	sourceName, err := s.pluginSourceName(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	preferences, err := s.runtime.Preferences(ctx, sourceName)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "读取插件设置失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sourceId":    r.PathValue("id"),
+		"sourceName":  sourceName,
+		"preferences": preferences,
+	})
+}
+
+func (s *Server) handlePluginPreferenceUpdate(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.registry == nil || s.registry.Runtime() == nil {
+		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		return
+	}
+	var payload struct {
+		Revision string         `json:"revision"`
+		NodeID   string         `json:"nodeId"`
+		Value    map[string]any `json:"value"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	sourceName, err := s.pluginSourceName(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	preferences, err := s.runtime.UpdatePreference(ctx, sourceName, payload.Revision, payload.NodeID, payload.Value)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "更新插件设置失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":          true,
+		"sourceId":    r.PathValue("id"),
+		"sourceName":  sourceName,
+		"preferences": preferences,
+	})
+}
+
+// importKototoroPlugin installs one Kototoro parser JAR and returns the
+// candidate sources it declares. Installing a repository extension must not
+// silently add every source: the user chooses candidates explicitly from the
+// resource-library add-source dialog.
 func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, repo model.ExtensionRepository, selected model.RepositoryExtension) {
 	if s.runtime == nil {
 		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
@@ -842,7 +963,7 @@ func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, re
 		writeError(w, http.StatusBadGateway, "Kototoro 插件未声明任何可用内容源")
 		return
 	}
-	created := make([]model.CustomSource, 0, len(sources))
+	candidates := make([]map[string]any, 0, len(sources))
 	for _, parsed := range sources {
 		if strings.TrimSpace(parsed.Name) == "" {
 			continue
@@ -861,30 +982,26 @@ func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, re
 			Locale:      parsed.Locale,
 			Homepage:    parsed.Homepage,
 		})
-		item := model.CustomSource{
-			ID:          sourceID,
-			Name:        firstNonEmptyText(parsed.Title, parsed.Name),
-			Kind:        pluginruntime.KindForContentType(parsed.ContentType),
-			Description: firstNonEmptyText(selected.Description, "Kototoro 解析器来源"),
-			Homepage:    homepage,
-			Icon:        icon,
-			RepoURL:     repo.URL,
-			Config:      config,
-			Enabled:     true,
-		}
-		saved, err := s.store.UpsertCustomSource(r.Context(), item)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		created = append(created, saved)
+		candidates = append(candidates, map[string]any{
+			"id":          sourceID,
+			"name":        firstNonEmptyText(parsed.Title, parsed.Name),
+			"sourceName":  parsed.Name,
+			"kind":        pluginruntime.KindForContentType(parsed.ContentType),
+			"contentType": parsed.ContentType,
+			"locale":      parsed.Locale,
+			"description": firstNonEmptyText(selected.Description, "Kototoro 解析器来源"),
+			"homepage":    homepage,
+			"icon":        icon,
+			"repoUrl":     repo.URL,
+			"config":      json.RawMessage(config),
+			"pluginId":    pluginID,
+		})
 	}
-	if err := s.registry.ReloadCustomSources(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = s.configs.PersistSources(r.Context(), s.store)
-	writeJSON(w, http.StatusOK, map[string]any{"sources": created, "plugin": pluginID})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plugin":     pluginID,
+		"candidates": candidates,
+		"sources":    candidates,
+	})
 }
 
 func repositoryView(item model.ExtensionRepository) model.ExtensionRepository {
@@ -1167,8 +1284,8 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 		writeError(w, http.StatusConflict, "默认资源源不可修改")
 		return
 	}
-	if id == "" || strings.TrimSpace(payload.Name) == "" || strings.TrimSpace(payload.Homepage) == "" {
-		writeError(w, http.StatusBadRequest, "源 ID、名称和首页地址不能为空")
+	if id == "" || strings.TrimSpace(payload.Name) == "" {
+		writeError(w, http.StatusBadRequest, "源 ID 和名称不能为空")
 		return
 	}
 	if len(payload.Config) == 0 {
@@ -1206,9 +1323,15 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 			writeError(w, http.StatusBadRequest, "插件来源缺少 pluginId 或 sourceName")
 			return
 		}
-	} else if _, err := generic.New(s.registry.Client(), item); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	} else {
+		if strings.TrimSpace(payload.Homepage) == "" {
+			writeError(w, http.StatusBadRequest, "普通来源的首页地址不能为空")
+			return
+		}
+		if _, err := generic.New(s.registry.Client(), item); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	saved, err := s.store.UpsertCustomSource(r.Context(), item)
 	if err != nil {
@@ -1685,6 +1808,25 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 						defer cancel()
 						if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, cached); err != nil {
 							s.logger.Printf("api: cache discover chapters %s/%s: %v", sourceID, cached.Comic.ID, err)
+						}
+					}()
+				}
+			}
+			if strings.TrimSpace(cached.Comic.Description) == "" {
+				ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+				fresh, freshErr := item.Detail(ctx, account, cached.Comic.ID)
+				cancel()
+				if freshErr == nil {
+					fresh.SourceID = sourceID
+					if len(cached.Chapters) > 0 {
+						fresh.ChapterCount = len(cached.Chapters)
+					}
+					cached.Comic = fresh
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+						defer cancel()
+						if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, cached); err != nil {
+							s.logger.Printf("api: refresh discover detail %s/%s: %v", sourceID, cached.Comic.ID, err)
 						}
 					}()
 				}
@@ -2379,6 +2521,14 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	}
 	if items == nil {
 		items = []model.DownloadJob{}
+	}
+	for index := range items {
+		if strings.TrimSpace(items[index].FilePath) == "" {
+			continue
+		}
+		if info, statErr := os.Stat(items[index].FilePath); statErr == nil && !info.IsDir() {
+			items[index].Size = info.Size()
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

@@ -55,15 +55,9 @@ async function loadRoots() {
     parent.value = ''
     children.value = []
     breadcrumbs.value = []
-    const preferred = draft.value.trim()
-    if (preferred) {
-      try {
-        await loadDirectory(preferred)
-      } catch {
-        const fallback = defaultDir.value || roots.value.find((item) => item.default)?.path || roots.value[0]?.path
-        if (fallback) await loadDirectory(fallback)
-      }
-    }
+		// Always open on the mount list. The previous value may point to a
+		// volume that is no longer mounted, so it must never block selecting a
+		// different available directory.
   } catch (err) {
     error.value = err.message
   } finally {

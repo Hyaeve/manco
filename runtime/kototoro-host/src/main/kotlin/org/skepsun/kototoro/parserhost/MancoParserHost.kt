@@ -28,6 +28,7 @@ import org.mozilla.javascript.Context
 import org.mozilla.javascript.ScriptableObject
 import org.skepsun.kototoro.core.source.SourceEndpoint
 import org.skepsun.kototoro.core.source.SourcePreferenceStore
+import org.skepsun.kototoro.parsers.ContentParserCredentialsAuthProvider
 import org.skepsun.kototoro.dex.DexJarConverter
 import org.skepsun.kototoro.parsers.bitmap.Bitmap
 import org.skepsun.kototoro.parsers.bitmap.Rect
@@ -156,10 +157,15 @@ private fun serve(args: Array<String>) {
             while (true) {
                 val line = reader.readLine() ?: break
                 if (line.isBlank()) continue
-                val response = if (operationOf(line) == "metadata") {
+                val operation = operationOf(line)
+                val response = if (operation == "metadata") {
                     metadataResponse(line, registry)
                 } else {
-                    runBlocking { endpoint.exchange(line) }
+                    when (operation) {
+                        "authCapabilities" -> authCapabilitiesResponse(line, registry)
+                        "loginCredentials" -> loginCredentialsResponse(line, registry)
+                        else -> runBlocking { endpoint.exchange(line) }
+                    }
                 }
                 cookieStore.save(cookieJar)
                 writer.write(response)
@@ -207,6 +213,87 @@ private fun operationOf(line: String): String? = try {
 } catch (_: Exception) {
     null
 }
+
+private fun authCapabilitiesResponse(line: String, registry: ParserPluginRegistry): String {
+    val envelope = hostJson.parseToJsonElement(line).jsonObject
+    val requestId = (envelope["requestId"] as? JsonPrimitive)?.content ?: ""
+    val call = envelope["call"]?.jsonObject
+    val sourceName = call?.get("sourceName")?.jsonPrimitive?.content?.trim().orEmpty()
+    if (sourceName.isEmpty()) return customError(requestId, "INVALID_ARGUMENT", "sourceName is required")
+    return runCatching {
+        runBlocking {
+            registry.withParser(sourceName) { handle ->
+                val provider = handle.parser.authorizationProvider
+                val credentials = handle.parser is ContentParserCredentialsAuthProvider
+                val authorized = runCatching { provider?.isAuthorized() == true }.getOrDefault(false)
+                val username = if (authorized && provider != null) {
+                    runCatching { provider.getUsername() }.getOrDefault("")
+                } else ""
+                val authUrl = runCatching { provider?.authUrl.orEmpty() }.getOrDefault("")
+                    .ifBlank { runCatching { "https://${handle.parser.domain}" }.getOrDefault("") }
+                buildJsonObject {
+                    put("credentialsSupported", credentials)
+                    put("browserSupported", authUrl.isNotBlank())
+                    put("authorized", authorized)
+                    put("username", username)
+                    put("authUrl", authUrl)
+                }
+            }
+        }
+    }.fold(
+        onSuccess = { customResponse(requestId, it) },
+        onFailure = { customError(requestId, "RUNTIME_FAILURE", it.message ?: "auth capabilities failed") },
+    )
+}
+
+private fun loginCredentialsResponse(line: String, registry: ParserPluginRegistry): String {
+    val envelope = hostJson.parseToJsonElement(line).jsonObject
+    val requestId = (envelope["requestId"] as? JsonPrimitive)?.content ?: ""
+    val call = envelope["call"]?.jsonObject
+    val sourceName = call?.get("sourceName")?.jsonPrimitive?.content?.trim().orEmpty()
+    val username = call?.get("username")?.jsonPrimitive?.content?.trim().orEmpty()
+    val password = call?.get("password")?.jsonPrimitive?.content.orEmpty()
+    if (sourceName.isEmpty() || username.isEmpty() || password.isEmpty()) {
+        return customError(requestId, "INVALID_ARGUMENT", "sourceName, username and password are required")
+    }
+    return runCatching {
+        runBlocking {
+            registry.withParser(sourceName) { handle ->
+                val credentials = handle.parser as? ContentParserCredentialsAuthProvider
+                    ?: throw IllegalStateException("该内容源不支持账号密码登录")
+                val accepted = credentials.login(username, password)
+                val provider = handle.parser.authorizationProvider
+                val authorized = accepted && runCatching { provider?.isAuthorized() == true }.getOrDefault(accepted)
+                val currentUser = if (authorized && provider != null) {
+                    runCatching { provider.getUsername() }.getOrDefault(username)
+                } else ""
+                buildJsonObject {
+                    put("accepted", accepted)
+                    put("authorized", authorized)
+                    put("username", currentUser)
+                }
+            }
+        }
+    }.fold(
+        onSuccess = { customResponse(requestId, it) },
+        onFailure = { customError(requestId, "RUNTIME_FAILURE", it.message ?: "login failed") },
+    )
+}
+
+private fun customResponse(requestId: String, result: JsonObject): String = buildJsonObject {
+    put("version", 1)
+    put("requestId", requestId)
+    put("result", result)
+}.toString()
+
+private fun customError(requestId: String, code: String, message: String): String = buildJsonObject {
+    put("version", 1)
+    put("requestId", requestId)
+    put("error", buildJsonObject {
+        put("code", code)
+        put("message", message)
+    })
+}.toString()
 
 private fun metadataResponse(line: String, registry: ParserPluginRegistry): String {
     val envelope = hostJson.parseToJsonElement(line).jsonObject

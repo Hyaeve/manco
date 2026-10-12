@@ -299,8 +299,8 @@ async function downloadSelected() {
   </div>
   <div v-else>
     <div class="detail-hero" :style="heroStyle">
-      <button class="detail-cover-back" type="button" aria-label="返回" title="返回" @click="goBack">
-        <ChevronLeft :size="22" />
+      <button class="detail-cover-back" type="button" aria-label="返回" @click="goBack">
+        <ChevronLeft :size="22" :stroke-width="1.6" />
       </button>
       <div class="detail-cover-wrap">
         <div class="detail-cover">
@@ -312,12 +312,12 @@ async function downloadSelected() {
         <div class="detail-info-head">
           <h2>{{ comic.title }}</h2>
           <div class="detail-actions">
-            <button class="btn secondary" type="button" :disabled="busy || !selected.size" @click="downloadSelected">
+            <button class="btn download-btn" type="button" :disabled="busy || !selected.size" @click="downloadSelected">
               <Loader2 v-if="busy" :size="16" class="spin" />
               <Download v-else :size="16" />
-              下载
+              下载 ({{ selected.size }})
             </button>
-            <button class="btn" type="button" :disabled="busy" @click="openSubscribe">
+            <button class="btn subscribe-btn" type="button" :disabled="busy" @click="openSubscribe">
               <Rss :size="16" />
               订阅
             </button>
@@ -342,12 +342,12 @@ async function downloadSelected() {
 
     <section class="detail-chapters">
       <div class="detail-chapter-head">
-        <button class="btn ghost small" type="button" @click="toggleAll">
+        <button class="btn ghost small select-all-btn" type="button" @click="toggleAll">
           <component :is="allSelected ? SquareCheck : Square" :size="16" />
-          全选
+          <span>全选</span>
         </button>
-        <button class="btn ghost small" type="button" @click="sortDesc = !sortDesc">
-          <component :is="sortDesc ? ClockArrowDown : ClockArrowUp" :size="18" />
+        <button class="btn ghost small sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
+          <component :is="sortDesc ? ClockArrowDown : ClockArrowUp" :size="17" :stroke-width="1.7" />
         </button>
         <span class="muted small">共 {{ chapters.length }} 章</span>
         <span class="spacer" />

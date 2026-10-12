@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -32,6 +32,9 @@ const loadingSources = ref(true)
 const sourcesError = ref('')
 const savedFilters = ref(readSavedFilters())
 const viewMode = ref(localStorage.getItem(VIEW_STORAGE_KEY) === 'list' ? 'list' : 'grid')
+const sourceStripRef = ref(null)
+const stripCanLeft = ref(false)
+const stripCanRight = ref(false)
 
 const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
 const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
@@ -119,6 +122,10 @@ const hasNextPage = computed(() => {
   return panel.sourceHasMore || panel.items.length > panel.page * pageSize.value
 })
 
+onUnmounted(() => {
+  window.removeEventListener('resize', updateStripBounds)
+})
+
 async function loadSources() {
   const nav = readDiscoverNav()
   try {
@@ -147,7 +154,10 @@ async function loadSources() {
   }
 }
 
-onMounted(loadSources)
+onMounted(() => {
+  window.addEventListener('resize', updateStripBounds)
+  loadSources().then(() => nextTick(updateStripBounds))
+})
 
 watch(
   () => [route.query.kind, route.query.source],
@@ -160,6 +170,37 @@ watch(
   },
 )
 
+function updateStripBounds() {
+  const element = sourceStripRef.value
+  if (!element) {
+    stripCanLeft.value = false
+    stripCanRight.value = false
+    return
+  }
+  stripCanLeft.value = element.scrollLeft > 2
+  stripCanRight.value = element.scrollLeft + element.clientWidth < element.scrollWidth - 2
+}
+
+function scrollStrip(direction) {
+  const element = sourceStripRef.value
+  if (!element) return
+  element.scrollBy({ left: direction * Math.max(160, element.clientWidth * 0.7), behavior: 'smooth' })
+}
+
+function handleStripWheel(event) {
+  const element = sourceStripRef.value
+  if (!element || element.scrollWidth <= element.clientWidth) return
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+  if (delta === 0) return
+  if (delta < 0 && element.scrollLeft <= 0) return
+  if (delta > 0 && element.scrollLeft + element.clientWidth >= element.scrollWidth - 1) return
+  event.preventDefault()
+  element.scrollBy({ left: delta, behavior: 'auto' })
+}
+
+watch(sources, () => {
+  nextTick(updateStripBounds)
+})
 watch(viewMode, (value) => {
   localStorage.setItem(VIEW_STORAGE_KEY, value)
   const panel = activePanel.value
@@ -362,18 +403,44 @@ function latestLabel(item) {
       </div>
     </div>
 
-    <nav v-if="sources.length && !loadingSources" class="discover-source-strip" aria-label="来源">
+    <div v-if="sources.length && !loadingSources" class="discover-source-row">
       <button
-        v-for="source in sources"
-        :key="source.id"
+        class="strip-arrow"
         type="button"
-        :class="{ active: source.id === activeId }"
-        @click="selectSource(source.id)"
+        :class="{ disabled: !stripCanLeft }"
+        aria-label="向左滚动来源"
+        @click="scrollStrip(-1)"
       >
-        <img v-if="source.icon" class="source-tab-icon" :src="source.icon" alt="" />
-        <span>{{ source.name }}</span>
+        <ChevronLeft :size="16" />
       </button>
-    </nav>
+      <nav
+        ref="sourceStripRef"
+        class="discover-source-strip"
+        aria-label="来源"
+        @scroll="updateStripBounds"
+        @wheel="handleStripWheel"
+      >
+        <button
+          v-for="source in sources"
+          :key="source.id"
+          type="button"
+          :class="{ active: source.id === activeId }"
+          @click="selectSource(source.id)"
+        >
+          <img v-if="source.icon" class="source-tab-icon" :src="source.icon" alt="" />
+          <span>{{ source.name }}</span>
+        </button>
+      </nav>
+      <button
+        class="strip-arrow"
+        type="button"
+        :class="{ disabled: !stripCanRight }"
+        aria-label="向右滚动来源"
+        @click="scrollStrip(1)"
+      >
+        <ChevronRight :size="16" />
+      </button>
+    </div>
 
     <div v-if="sourcesError" class="alert error">{{ sourcesError }}</div>
     <div v-else-if="loadingSources" class="source-loading">
@@ -389,8 +456,7 @@ function latestLabel(item) {
 
       <div class="source-column-tools">
         <div class="source-filter-grid">
-          <label v-for="group in activeSource.filters || []" :key="group.key" class="field compact">
-            <span>{{ group.label }}</span>
+          <label v-for="group in activeSource.filters || []" :key="group.key" class="field compact filter-chip">
             <RoundedSelect
               v-model="activePanel.filters[group.key]"
               :label="group.label"
@@ -398,12 +464,12 @@ function latestLabel(item) {
               @change="changeFilter"
             />
           </label>
+          <span class="spacer" />
           <div class="view-mode-control" role="group" aria-label="视图模式">
             <button
               class="icon-btn view-mode-button"
               type="button"
               :aria-label="viewMode === 'grid' ? '当前是网格视图，点击切换列表' : '当前是列表视图，点击切换网格'"
-              :title="viewMode === 'grid' ? '当前：网格视图' : '当前：列表视图'"
               @click="viewMode = viewMode === 'grid' ? 'list' : 'grid'"
             >
               <component :is="viewMode === 'grid' ? Grid2X2 : List" :size="17" />

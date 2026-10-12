@@ -360,6 +360,59 @@ func (m *Manager) ImportCookies(ctx context.Context, sourceName, address string,
 	return count, nil
 }
 
+// AuthCapabilities reports whether a Kototoro parser supports credential or
+// browser authorization. The sidecar reads this from the parser interface
+// instead of guessing from the source name.
+func (m *Manager) AuthCapabilities(ctx context.Context, sourceName string) (map[string]any, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return nil, errors.New("内容源名称为空")
+	}
+	return m.Call(ctx, "authCapabilities", map[string]any{"sourceName": sourceName})
+}
+
+// LoginCredentials delegates username/password login to parsers that implement
+// Kototoro's optional credential auth provider.
+func (m *Manager) LoginCredentials(ctx context.Context, sourceName, username, password string) (map[string]any, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	username = strings.TrimSpace(username)
+	if sourceName == "" || username == "" || password == "" {
+		return nil, errors.New("内容源、账号和密码不能为空")
+	}
+	return m.Call(ctx, "loginCredentials", map[string]any{
+		"sourceName": sourceName,
+		"username":   username,
+		"password":   password,
+	})
+}
+
+// Preferences returns the parser-declared settings screen (domain, user agent,
+// toggles and text preferences), matching what Kototoro displays.
+func (m *Manager) Preferences(ctx context.Context, sourceName string) (map[string]any, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	if sourceName == "" {
+		return nil, errors.New("内容源名称为空")
+	}
+	return m.Call(ctx, "preferences", map[string]any{"sourceName": sourceName})
+}
+
+// UpdatePreference applies one parser-declared preference and returns the
+// refreshed screen, so the UI can refresh derived defaults and revisions.
+func (m *Manager) UpdatePreference(ctx context.Context, sourceName, revision, nodeID string, value map[string]any) (map[string]any, error) {
+	sourceName = strings.TrimSpace(sourceName)
+	revision = strings.TrimSpace(revision)
+	nodeID = strings.TrimSpace(nodeID)
+	if sourceName == "" || revision == "" || nodeID == "" || value == nil {
+		return nil, errors.New("内容源、修订、配置项和值不能为空")
+	}
+	return m.Call(ctx, "updatePreference", map[string]any{
+		"sourceName": sourceName,
+		"revision":   revision,
+		"nodeId":     nodeID,
+		"value":      value,
+	})
+}
+
 func asString(value any) string {
 	switch typed := value.(type) {
 	case string:

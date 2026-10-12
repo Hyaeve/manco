@@ -1810,9 +1810,9 @@
   padding-right: 0;
 }
 
-/* 本地库：桌面端一行六张，详情章节使用封面网格。 */
+/* 本地库：桌面端一行七张，与探索发现网格保持一致。 */
 .local-library-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -2147,25 +2147,91 @@
 /* 本地库详情：复用作品详情风格，章节海报网格 */
 .local-chapter-poster-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 14px;
+}
+
+@media (max-width: 1400px) {
+  .local-chapter-poster-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .local-chapter-poster-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+.chapter-sort-wrap {
+  position: relative;
+}
+
+.chapter-sort-menu {
+  position: absolute;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  min-width: 170px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.14);
+}
+
+.chapter-sort-menu.below { top: calc(100% + 6px); }
+.chapter-sort-menu.above { bottom: calc(100% + 6px); }
+
+.chapter-sort-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chapter-sort-group + .chapter-sort-group {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.chapter-sort-label {
+  padding: 2px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.chapter-sort-group button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chapter-sort-group button:hover,
+.chapter-sort-group button.active {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
 }
 
 .local-chapter-poster {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--text);
   text-align: left;
   cursor: pointer;
 }
 
-.local-chapter-poster:hover {
-  border-color: var(--primary);
+.local-chapter-poster:hover .local-chapter-poster-name {
+  color: var(--primary-strong);
 }
 
 .local-chapter-poster-cover {
@@ -2321,4 +2387,318 @@
   .download-status {
     display: none;
   }
+}
+
+/* 下载列表：列表栏目 + 右键多选 + 底部胶囊 */
+.download-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.download-head,
+.download-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 2.4fr) 150px 110px 170px 132px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.download-head {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.download-row {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.download-row.selected {
+  border-color: var(--primary-strong);
+  box-shadow: 0 0 0 2px rgba(201, 154, 80, 0.32);
+}
+
+.download-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.download-cover {
+  display: grid;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 60px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+
+.download-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.download-titles {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.download-titles .comic-title {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-titles .comic-title:hover {
+  color: var(--primary-strong);
+}
+
+.download-chapter {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-status {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.download-error {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--danger);
+  font-size: 12px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.download-size,
+.download-time {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.download-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.selection-pill {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+  transform: translateX(-50%);
+}
+
+.selection-count {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .download-head,
+  .download-row {
+    grid-template-columns: minmax(220px, 2.4fr) 130px 96px 140px 112px;
+  }
+}
+
+@media (max-width: 860px) {
+  .download-head {
+    display: none;
+  }
+  .download-row {
+    grid-template-columns: minmax(180px, 2fr) 110px 92px;
+  }
+  .download-time,
+  .download-actions {
+    display: none;
+  }
+}
+
+/* 作品详情：下载/订阅按钮与章节工具条微调 */
+.download-btn {
+  background: color-mix(in srgb, var(--primary) 22%, var(--surface));
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
+}
+.download-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 34%, var(--surface));
+}
+.subscribe-btn {
+  background: color-mix(in srgb, var(--primary-soft) 82%, var(--surface));
+  color: var(--primary-strong);
+  border: 1px solid color-mix(in srgb, var(--primary) 38%, var(--border));
+}
+.subscribe-btn:hover:not(:disabled) {
+  background: var(--primary-soft);
+}
+.select-all-btn {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+}
+.detail-cover-back svg {
+  stroke-width: 1.6;
+}
+
+/* 探索发现：来源条横向滚动 + 筛选收窄 + 视图按钮靠右 */
+.discover-source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.discover-source-row .discover-source-strip {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.strip-arrow {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.strip-arrow:hover:not(.disabled) {
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+.strip-arrow.disabled {
+  color: var(--text-muted);
+  opacity: 0.4;
+  cursor: default;
+}
+.source-filter-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.source-filter-grid .filter-chip {
+  flex: 0 1 180px;
+  min-width: 120px;
+  max-width: 200px;
+}
+.source-filter-grid .filter-chip .rounded-select {
+  width: 100%;
+}
+.source-filter-grid .view-mode-control {
+  margin-left: auto;
+}
+.source-filter-grid .view-mode-button {
+  border-radius: 10px;
+}
+
+/* v0.1.11：侧栏更浅的淡黄绿色 */
+.sidebar {
+  background: color-mix(in srgb, #fdffe7 92%, #e6efd4);
+  border-right: 1px solid color-mix(in srgb, #e2e6b8 60%, var(--border));
+}
+.sidebar nav button:hover {
+  background: color-mix(in srgb, #fbffd8 72%, #eef4da);
+}
+.sidebar nav button.active {
+  color: #4a431a;
+  background: color-mix(in srgb, #f6f3b6 74%, #eff3dc);
+}
+[data-theme='dark'] .sidebar {
+  background: #20261a;
+  border-right-color: #303824;
+}
+
+/* 资源仓库：内容源选中态、底部胶囊、插件鉴权表单 */
+.source-card-selected {
+  border-color: var(--primary-strong);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+.source-selection-bar {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+  transform: translateX(-50%);
+}
+.plugin-auth-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plugin-preference-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.plugin-preference-row:last-child {
+  border-bottom: 0;
+}
+.plugin-preference-row > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+.plugin-preference-row input,
+.plugin-preference-row select {
+  flex: 0 0 55%;
+  max-width: 55%;
+}
+/* 添加内容源窗口：固定大小，列表内部滚动 */
+.source-add-modal .modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.source-add-toolbar .source-repository-search {
+  margin-left: auto;
 }

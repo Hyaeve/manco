@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   Boxes,
   Check,
@@ -53,6 +53,18 @@ const browserOpen = ref(false)
 const browserSource = ref(null)
 const browserSession = reactive({ url: '', userAgent: '' })
 const browserCookies = ref('')
+const sourceSelection = ref(new Set())
+const sourceAnchor = ref(-1)
+const extensionCandidates = ref([])
+const candidateFilter = ref('all')
+const candidateLoading = ref(false)
+const candidateLoadedRepos = ref(new Set())
+const pluginAuth = ref(null)
+const pluginPreferences = ref(null)
+const pluginPreferenceValues = ref({})
+const pluginAuthLoading = ref(false)
+const pluginPrefLoading = ref(false)
+const pluginLoginBusy = ref(false)
 
 const repositoryKinds = [
   { value: 'json', label: 'JSON 清单' },
@@ -82,11 +94,88 @@ const selectedRepository = computed(() => repositories.value.find((item) => item
 const selectedExtensions = computed(() => {
   const keyword = sourceSearch.value.trim().toLowerCase()
   const rows = selectedRepository.value?.extensions || []
-  if (!keyword) return rows
-  return rows.filter((item) => `${item.name} ${item.packageName || ''}`.toLowerCase().includes(keyword))
+  const kind = activeKind.value
+  return rows.filter((item) => {
+    if (kind !== 'repository' && (item.kind || 'comic') !== kind) return false
+    if (!keyword) return true
+    return `${item.name} ${item.packageName || ''} ${item.description || ''}`.toLowerCase().includes(keyword)
+  })
 })
 
+const candidateCategories = computed(() => {
+  const values = new Set()
+  for (const item of extensionCandidates.value) {
+    const value = String(item.contentType || item.kind || '').trim()
+    if (value) values.add(value)
+  }
+  return ['all', ...Array.from(values).sort()]
+})
+
+function candidateCategoryLabel(value) {
+  return {
+    all: '全部分类',
+    MANGA: '漫画',
+    MANHWA: '韩漫',
+    MANHUA: '国漫',
+    HENTAI_MANGA: '成人漫画',
+    COMICS: '美漫',
+    NOVEL: '小说',
+    HENTAI_NOVEL: '成人小说',
+    ONE_SHOT: '短篇',
+    DOUJINSHI: '同人',
+    IMAGE_SET: '图集',
+    ARTIST_CG: '画师 CG',
+    GAME_CG: '游戏 CG',
+    VIDEO: '视频',
+    OTHER: '其他',
+  }[value] || value || '其他'
+}
+
+const candidateFilterOptions = computed(() =>
+  candidateCategories.value.map((value) => ({ value, label: candidateCategoryLabel(value) })),
+)
+
+const candidateCategoryIcon = (value) => value || 'OTHER'
+
+const visibleCandidates = computed(() => {
+  const keyword = sourceSearch.value.trim().toLowerCase()
+  return extensionCandidates.value.filter((item) => {
+    if (activeKind.value !== 'repository' && (item.kind || 'comic') !== activeKind.value) return false
+    if (candidateFilter.value !== 'all' && String(item.contentType || item.kind) !== candidateFilter.value) return false
+    if (!keyword) return true
+    return `${item.name} ${item.sourceName || ''} ${item.description || ''}`.toLowerCase().includes(keyword)
+  })
+})
+
+const selectableVisibleSources = computed(() => visibleSources.value.filter((item) => !item.builtin))
+const selectedSources = computed(() => sources.value.filter((item) => sourceSelection.value.has(item.id)))
+const allVisibleSourcesSelected = computed(
+  () => selectableVisibleSources.value.length > 0 && selectableVisibleSources.value.every((item) => sourceSelection.value.has(item.id)),
+)
+
 onMounted(load)
+
+onMounted(() => window.addEventListener('keydown', onSourceKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onSourceKeydown))
+
+function onSourceKeydown(event) {
+  if (event.key === 'Escape' && sourceSelection.value.size) clearSourceSelection()
+}
+
+watch(addRepositoryID, () => {
+  extensionCandidates.value = []
+  candidateFilter.value = 'all'
+})
+
+watch(selectedRepository, (repository) => {
+  if (addSourceOpen.value) loadRepositoryCandidates(repository)
+})
+
+watch(activeKind, () => {
+  if (addSourceOpen.value) loadRepositoryCandidates(selectedRepository.value)
+})
+
+watch(activeKind, () => clearSourceSelection())
 
 async function load() {
   loading.value = true
@@ -139,6 +228,73 @@ async function load() {
 
 function accountOf(id) {
   return accounts.value[id] || null
+}
+
+function isSourceSelected(item) {
+  return sourceSelection.value.has(item.id)
+}
+
+function enterSourceSelection(item, index, event) {
+  if (item.builtin) return
+  event?.preventDefault?.()
+  const next = new Set(sourceSelection.value)
+  if (event?.shiftKey && sourceAnchor.value >= 0) {
+    const start = Math.min(sourceAnchor.value, index)
+    const end = Math.max(sourceAnchor.value, index)
+    for (let cursor = start; cursor <= end; cursor += 1) {
+      const row = visibleSources.value[cursor]
+      if (row && !row.builtin) next.add(row.id)
+    }
+  } else {
+    next.add(item.id)
+  }
+  sourceSelection.value = next
+  sourceAnchor.value = index
+}
+
+function toggleSourceSelection(item, index, event) {
+  if (item.builtin) {
+    openEditor(item)
+    return
+  }
+  if (!sourceSelection.value.size) {
+    enterSourceSelection(item, index, event)
+    return
+  }
+  enterSourceSelection(item, index, event?.shiftKey ? event : {})
+}
+
+function selectAllSources() {
+  sourceSelection.value = new Set(selectableVisibleSources.value.map((item) => item.id))
+  sourceAnchor.value = selectableVisibleSources.value.length ? 0 : -1
+}
+
+function clearSourceSelection() {
+  sourceSelection.value = new Set()
+  sourceAnchor.value = -1
+}
+
+async function removeSelectedSources() {
+  const rows = selectedSources.value.filter((item) => !item.builtin)
+  if (!rows.length) return
+  const confirmed = await askConfirm({
+    title: '卸载内容源',
+    message: `确定从当前资源库卸载 ${rows.length} 个内容源吗？之后仍可从拓展仓库重新添加。`,
+    confirmText: '卸载',
+    danger: true,
+  })
+  if (!confirmed) return
+  busy.value = 'source-batch-delete'
+  try {
+    for (const item of rows) await api.deleteCustomSource(item.id)
+    notify(`已卸载 ${rows.length} 个内容源`, 'success')
+    clearSourceSelection()
+    await load()
+  } catch (err) {
+    notify(`卸载失败：${err.message}`, 'error')
+  } finally {
+    busy.value = ''
+  }
 }
 
 function connected(id) {
@@ -298,6 +454,115 @@ function openEditor(item) {
   if (!forms[item.id]) return
   editorSource.value = item
   editorOpen.value = true
+  loadPluginSettings(item)
+}
+
+async function loadPluginSettings(item) {
+  pluginAuth.value = null
+  pluginPreferences.value = null
+  pluginPreferenceValues.value = {}
+  if (!isPluginSource(item)) return
+  pluginAuthLoading.value = true
+  pluginPrefLoading.value = true
+  try {
+    const [authResult, prefResult] = await Promise.allSettled([
+      api.pluginAuthCapabilities(item.id),
+      api.pluginPreferences(item.id),
+    ])
+    if (authResult.status === 'fulfilled') pluginAuth.value = authResult.value
+    if (prefResult.status === 'fulfilled') {
+      pluginPreferences.value = prefResult.value
+      const nodes = prefResult.value?.preferences?.screen?.nodes || prefResult.value?.preferences?.nodes || []
+      const values = {}
+      for (const node of nodes) {
+        const raw = node.value
+        if (raw && typeof raw === 'object' && 'value' in raw) values[node.id] = raw.value
+        else if (raw && typeof raw === 'object' && 'values' in raw) values[node.id] = Array.from(raw.values || [])
+      }
+      pluginPreferenceValues.value = values
+    }
+  } finally {
+    pluginAuthLoading.value = false
+    pluginPrefLoading.value = false
+  }
+}
+
+function pluginPreferenceValue(node) {
+  const value = pluginPreferenceValues.value[node.id]
+  return value === undefined ? '' : value
+}
+
+function setPluginPreferenceValue(node, value) {
+  pluginPreferenceValues.value = { ...pluginPreferenceValues.value, [node.id]: value }
+}
+
+function pluginPreferenceNodes() {
+  const payload = pluginPreferences.value || {}
+  const screen = payload.preferences?.screen || payload.preferences?.update?.screen || payload.update?.screen || payload.screen || payload.preferences || {}
+  return Array.isArray(screen.nodes) ? screen.nodes.filter((node) => node.visible !== false) : []
+}
+
+function applyPluginPreferenceScreen(payload) {
+  pluginPreferences.value = payload
+  const screen = payload?.preferences?.screen || payload?.preferences?.update?.screen || payload?.update?.screen || payload?.screen || payload?.preferences || {}
+  const values = {}
+  for (const node of screen.nodes || []) {
+    const raw = node.value
+    if (raw && typeof raw === 'object' && 'value' in raw) values[node.id] = raw.value
+    else if (raw && typeof raw === 'object' && 'values' in raw) values[node.id] = Array.from(raw.values || [])
+  }
+  pluginPreferenceValues.value = { ...pluginPreferenceValues.value, ...values }
+}
+
+async function savePluginPreference(node) {
+  const item = editorSource.value
+  if (!item || !node?.id) return
+  const payload = pluginPreferences.value || {}
+  const screen = payload.preferences?.screen || payload.preferences?.update?.screen || payload.update?.screen || payload.screen || payload.preferences || {}
+  const current = pluginPreferenceValue(node)
+  let value
+  if (node.kind === 'TOGGLE') value = { type: 'boolean', value: Boolean(current) }
+  else if (node.kind === 'MULTI_CHOICE') value = { type: 'stringSet', values: Array.isArray(current) ? current : [] }
+  else value = { type: 'string', value: String(current ?? '') }
+  pluginPrefLoading.value = true
+  try {
+    const result = await api.updatePluginPreference(item.id, {
+      revision: screen.revision || '',
+      nodeId: node.id,
+      value,
+    })
+    applyPluginPreferenceScreen(result)
+    notify(`${item.name}：${node.title || '设置'}已保存`, 'success')
+  } catch (err) {
+    notify(`保存解析器设置失败：${err.message}`, 'error')
+  } finally {
+    pluginPrefLoading.value = false
+  }
+}
+
+async function loginPluginCredentials() {
+  const item = editorSource.value
+  const form = item ? forms[item.id] : null
+  if (!item || !form) return
+  pluginLoginBusy.value = true
+  try {
+    const result = await api.pluginCredentialLogin(item.id, { username: form.username, password: form.password })
+    if (result?.result?.authorized === false || result?.result?.accepted === false) {
+      throw new Error('站点未接受这组账号密码')
+    }
+    await api.saveAccount(item.id, {
+      username: form.username,
+      password: form.password,
+      login: false,
+      settings: {},
+    })
+    notify(`${item.name} 登录成功`, 'success')
+    await loadPluginSettings(item)
+  } catch (err) {
+    notify(`${item.name}：${err.message}`, 'error')
+  } finally {
+    pluginLoginBusy.value = false
+  }
 }
 
 async function saveSource(item, login = false) {
@@ -305,10 +570,8 @@ async function saveSource(item, login = false) {
   if (!form) return
   busy.value = `source-${item.id}`
   try {
-    await api.saveAccount(item.id, {
-      username: form.username,
-      password: form.password,
-      cookie: form.cookie,
+
+    const payload = {
       homeUrl: form.homeUrl,
       login,
       settings: {
@@ -317,7 +580,11 @@ async function saveSource(item, login = false) {
         batchSize: Number(form.batchSize) || 0,
         batchIntervalMinutes: Number(form.batchIntervalMinutes) || 0,
       },
-    })
+    }
+    if (form.username) payload.username = form.username
+    if (form.password) payload.password = form.password
+    if (form.cookie) payload.cookie = form.cookie
+    await api.saveAccount(item.id, payload)
     form.cookie = ''
     notify(login ? `${item.name} 登录成功，设置已保存` : `${item.name} 设置已保存`, 'success')
     editorOpen.value = false
@@ -467,30 +734,92 @@ function openAddSource() {
     return
   }
   sourceSearch.value = ''
+  extensionCandidates.value = []
+  candidateFilter.value = 'all'
   addSourceOpen.value = true
+  loadRepositoryCandidates(selectedRepository.value)
 }
 
-async function importExtension(repository, extension) {
+async function loadRepositoryCandidates(repository) {
+  if (!repository) return
+  const cachedKey = `${repository.id}:${activeKind.value}`
+  if (candidateLoadedRepos.value.has(cachedKey)) return
+  const extensions = (repository.extensions || []).filter((extension) => canInstallExtension(repository, extension))
+  if (!extensions.length) {
+    extensionCandidates.value = []
+    candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
+    return
+  }
+  candidateLoading.value = true
+  const collected = []
+  const errors = []
+  for (const extension of extensions) {
+    try {
+      const result = await api.importRepositoryExtension(repository.id, extension.id)
+      const candidates = Array.isArray(result.candidates) ? result.candidates : (Array.isArray(result.sources) ? result.sources : [])
+      collected.push(...candidates)
+    } catch (err) {
+      errors.push(`${extension.name || extension.id}：${err.message}`)
+    }
+  }
+  const seen = new Set()
+  extensionCandidates.value = collected.filter((candidate) => {
+    if (!candidate?.id || seen.has(candidate.id)) return false
+    seen.add(candidate.id)
+    return true
+  })
+  candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
+  candidateLoading.value = false
+  if (extensionCandidates.value.length) {
+    notify(`已加载 ${extensionCandidates.value.length} 个可添加内容源`, 'success')
+  } else if (errors.length) {
+    notify(`内容源加载失败：${errors[0]}`, 'error')
+  }
+}
+
+async function loadExtensionCandidates(repository, extension) {
   if (!canInstallExtension(repository, extension)) {
-    notify('该来源当前没有可用的导入方式，暂时只能保留仓库清单', 'warning')
+    notify('该来源是 Android/JVM 插件，当前仅登记清单，不能直接执行', 'warning')
     return
   }
   busy.value = `extension-${extension.id}`
+  candidateLoading.value = true
   try {
     const result = await api.importRepositoryExtension(repository.id, extension.id)
-    const imported = Array.isArray(result.sources) && result.sources.length
-      ? result.sources
-      : (result.source ? [result.source] : [])
-    for (const source of imported) {
-      if (sources.value.some((item) => item.id === source.id)) continue
-      sources.value = [...sources.value, source]
-    }
-    notify(`${extension.name} 已加入资源库${imported.length ? `（${imported.length} 个内容源）` : ''}`, 'success')
-    if (imported[0]) activeKind.value = ['book', 'other'].includes(imported[0].kind) ? imported[0].kind : 'comic'
-    addSourceOpen.value = false
-    await load()
+    const candidates = Array.isArray(result.candidates) ? result.candidates : (Array.isArray(result.sources) ? result.sources : [])
+    extensionCandidates.value = candidates
+    notify(candidates.length ? `已加载 ${candidates.length} 个可添加内容源` : '该仓库没有可添加内容源', candidates.length ? 'success' : 'info')
   } catch (err) {
-    notify(err.message, 'error')
+    notify(`加载内容源失败：${err.message}`, 'error')
+  } finally {
+    candidateLoading.value = false
+    busy.value = ''
+  }
+}
+
+async function addCandidate(candidate) {
+  if (!candidate || sources.value.some((item) => item.id === candidate.id)) {
+    notify('该内容源已经添加', 'info')
+    return
+  }
+  busy.value = `candidate-${candidate.id}`
+  try {
+    const saved = await api.createCustomSource({
+      id: candidate.id,
+      name: candidate.name || candidate.sourceName,
+      kind: candidate.kind || 'comic',
+      description: candidate.description || '',
+      homepage: candidate.homepage || '',
+      icon: candidate.icon || '',
+      repoUrl: candidate.repoUrl || '',
+      config: candidate.config || {},
+      enabled: true,
+    })
+    sources.value = [...sources.value, saved]
+    extensionCandidates.value = extensionCandidates.value.filter((item) => item.id !== candidate.id)
+    notify(`${saved.name} 已添加`, 'success')
+  } catch (err) {
+    notify(`添加失败：${err.message}`, 'error')
   } finally {
     busy.value = ''
   }
@@ -593,12 +922,13 @@ function onDragEnd() {
     </div>
     <div v-else class="source-grid source-grid-simple">
       <article
-        v-for="item in visibleSources"
+        v-for="(item, index) in visibleSources"
         :key="item.id"
         class="card source-card-simple"
-        :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id }"
+        :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id, 'source-card-selected': isSourceSelected(item) }"
         draggable="true"
         @dragstart="onDragStart(item, $event)"
+        @contextmenu.prevent="enterSourceSelection(item, index, $event)"
         @dragover="onDragOver(item, $event)"
         @drop.prevent="onDrop"
         @dragend="onDragEnd"
@@ -647,6 +977,16 @@ function onDragEnd() {
         </button>
         </div>
       </article>
+    </div>
+    <div v-if="sourceSelection.size" class="source-selection-bar">
+      <span>已选 {{ selectedSources.length }} 项</span>
+      <button class="btn secondary small" type="button" @click="allVisibleSourcesSelected ? clearSourceSelection() : selectAllSources()">
+        {{ allVisibleSourcesSelected ? '取消全选' : '全选' }}
+      </button>
+      <button class="btn secondary small" type="button" @click="clearSourceSelection">清除</button>
+      <button class="btn danger small" type="button" :disabled="busy === 'source-batch-delete'" @click="removeSelectedSources">
+        <Trash2 :size="14" />删除
+      </button>
     </div>
   </template>
 
@@ -707,12 +1047,12 @@ function onDragEnd() {
               type="button"
               :class="{ secondary: !canInstallExtension(repository, extension) }"
               :disabled="busy === `extension-${extension.id}`"
-              @click="importExtension(repository, extension)"
+              @click="loadExtensionCandidates(repository, extension)"
             >
               <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
               <Check v-else-if="canInstallExtension(repository, extension)" :size="14" />
               <ShieldCheck v-else :size="14" />
-              {{ canInstallExtension(repository, extension) ? '安装来源' : '暂不支持' }}
+              {{ canInstallExtension(repository, extension) ? '加载内容源' : '暂不支持' }}
             </button>
           </article>
         </div>
@@ -721,11 +1061,11 @@ function onDragEnd() {
   </template>
 
   <div v-if="addSourceOpen" class="modal-backdrop" @click.self="addSourceOpen = false">
-    <div class="modal modal-lg">
+    <div class="modal modal-lg source-add-modal">
       <div class="modal-head">
         <div>
-          <h2>添加拓展仓库来源</h2>
-          <p class="muted small">从已添加的仓库中选择可执行来源，加入资源库后可在探索发现中使用。</p>
+          <h2>添加内容源</h2>
+          <p class="muted small">从拓展仓库中选择要加入资源库的内容源，添加后可在探索发现中使用。</p>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭" @click="addSourceOpen = false">
           <X :size="18" />
@@ -733,25 +1073,45 @@ function onDragEnd() {
       </div>
       <div class="modal-body">
         <div class="source-add-toolbar">
-          <RoundedSelect v-model="addRepositoryID" label="拓展仓库" :options="repositoryOptions" placeholder="选择仓库" />
+          <RoundedSelect v-model="addRepositoryID" label="" :options="repositoryOptions" placeholder="选择仓库" />
+          <RoundedSelect
+            v-if="extensionCandidates.length"
+            v-model="candidateFilter"
+            label=""
+            :options="candidateFilterOptions"
+            placeholder="全部分类"
+          />
           <label class="source-repository-search">
             <Search :size="15" />
-            <input v-model="sourceSearch" placeholder="搜索当前仓库来源" />
+            <input v-model="sourceSearch" placeholder="搜索内容源" />
           </label>
-          <button
-            v-if="selectedRepository"
-            class="btn secondary small"
-            type="button"
-            :disabled="busy === `repository-${selectedRepository.id}`"
-            @click="syncRepository(selectedRepository)"
-          >
-            <Loader2 v-if="busy === `repository-${selectedRepository.id}`" :size="14" class="spin" />
-            <RefreshCw v-else :size="14" />
-            同步来源
-          </button>
         </div>
-        <div v-if="!selectedExtensions.length" class="empty compact">该仓库还没有来源，请先同步。</div>
-        <div v-else class="source-add-list">
+        <div v-if="candidateLoading" class="empty compact">
+          <Loader2 :size="20" class="spin" />
+          <span>正在加载仓库内容源</span>
+        </div>
+        <div v-else-if="visibleCandidates.length" class="source-add-list">
+          <article v-for="candidate in visibleCandidates" :key="candidate.id" class="source-add-row">
+            <img v-if="candidate.icon" :src="candidate.icon" alt="" />
+            <PackagePlus v-else :size="20" />
+            <div class="extension-meta">
+              <strong>{{ candidate.name }}</strong>
+              <small>{{ candidateCategoryLabel(candidate.contentType || candidate.kind) }} · {{ candidate.sourceName }}</small>
+            </div>
+            <span class="badge">{{ candidate.kind === 'book' ? '书籍' : candidate.kind === 'other' ? '其他' : '漫画' }}</span>
+            <button
+              class="btn small"
+              type="button"
+              :disabled="busy === `candidate-${candidate.id}`"
+              @click="addCandidate(candidate)"
+            >
+              <Loader2 v-if="busy === `candidate-${candidate.id}`" :size="14" class="spin" />
+              <Plus v-else :size="14" />
+              添加
+            </button>
+          </article>
+        </div>
+        <div v-else-if="selectedExtensions.length" class="source-add-list">
           <article v-for="extension in selectedExtensions" :key="extension.id" class="source-add-row">
             <img v-if="extension.icon" :src="extension.icon" alt="" />
             <PackagePlus v-else :size="20" />
@@ -764,16 +1124,17 @@ function onDragEnd() {
               class="btn small"
               type="button"
               :class="{ secondary: !canInstallExtension(selectedRepository, extension) }"
-              :disabled="busy === `extension-${extension.id}`"
-              @click="importExtension(selectedRepository, extension)"
+              :disabled="busy === `extension-${extension.id}` || !canInstallExtension(selectedRepository, extension)"
+              @click="loadExtensionCandidates(selectedRepository, extension)"
             >
               <Loader2 v-if="busy === `extension-${extension.id}`" :size="14" class="spin" />
               <Check v-else-if="canInstallExtension(selectedRepository, extension)" :size="14" />
               <ShieldCheck v-else :size="14" />
-              {{ canInstallExtension(selectedRepository, extension) ? '安装' : '暂不支持' }}
+              {{ canInstallExtension(selectedRepository, extension) ? '加载内容源' : '暂不支持' }}
             </button>
           </article>
         </div>
+        <div v-else class="empty compact">该仓库没有可添加的内容源，或仓库尚未同步。</div>
       </div>
     </div>
   </div>
@@ -876,35 +1237,113 @@ function onDragEnd() {
       </div>
       <div class="modal-body">
         <section class="source-editor-section">
-          <h3>网站与凭据</h3>
-          <label class="field">
-            <span>网站地址（留空自动优选）</span>
-            <SitePicker
-              v-model="forms[editorSource.id].homeUrl"
-              :options="editorSource.sites || []"
-              placeholder="留空自动选择，优选可用地址"
-            />
-          </label>
-          <template v-if="editorSource.id === 'picacg'">
-            <div class="settings-grid">
-              <label class="field">
-                <span>账号（邮箱或用户名）</span>
-                <input v-model="forms[editorSource.id].username" class="input" autocomplete="username" />
-              </label>
-              <label class="field">
-                <span>密码</span>
-                <PasswordInput v-model="forms[editorSource.id].password" autocomplete="current-password" />
-              </label>
+          <h3>{{ isPluginSource(editorSource) ? '解析器账号与设置' : '网站与凭据' }}</h3>
+          <template v-if="isPluginSource(editorSource)">
+            <div v-if="pluginAuthLoading || pluginPrefLoading" class="inline muted small">
+              <Loader2 :size="15" class="spin" />
+              <span>正在读取解析器设置</span>
             </div>
+            <template v-else>
+              <div class="plugin-auth-summary">
+                <span class="badge" :class="pluginAuth?.capabilities?.authorized ? 'success' : ''">
+                  {{ pluginAuth?.capabilities?.authorized ? '已授权' : '未授权' }}
+                </span>
+                <span class="muted small">
+                  {{ pluginAuth?.capabilities?.credentialsSupported ? '支持账号密码登录' : '该来源不需要账号密码' }}
+                  <template v-if="pluginAuth?.capabilities?.browserSupported"> · 支持浏览器验证</template>
+                </span>
+              </div>
+              <div v-if="pluginAuth?.capabilities?.credentialsSupported" class="settings-grid">
+                <label class="field">
+                  <span>账号</span>
+                  <input v-model="forms[editorSource.id].username" class="input" autocomplete="username" />
+                </label>
+                <label class="field">
+                  <span>密码</span>
+                  <PasswordInput v-model="forms[editorSource.id].password" autocomplete="current-password" />
+                </label>
+              </div>
+              <button
+                v-if="pluginAuth?.capabilities?.credentialsSupported"
+                class="btn small"
+                type="button"
+                :disabled="pluginLoginBusy"
+                @click="loginPluginCredentials"
+              >
+                <Loader2 v-if="pluginLoginBusy" :size="14" class="spin" />
+                <KeyRound v-else :size="14" />
+                登录并保存
+              </button>
+              <button
+                v-if="pluginAuth?.capabilities?.browserSupported"
+                class="btn secondary small"
+                type="button"
+                :disabled="busy === `browser-${editorSource.id}`"
+                @click="openBrowserCheck(editorSource)"
+              >
+                <ShieldCheck :size="14" />
+                浏览器验证
+              </button>
+              <div v-for="node in pluginPreferenceNodes()" :key="node.id" class="plugin-preference-row">
+                <label class="field">
+                  <span>{{ node.title }}</span>
+                  <select
+                    v-if="node.kind === 'CHOICE'"
+                    class="input"
+                    :value="pluginPreferenceValue(node)"
+                    @change="setPluginPreferenceValue(node, $event.target.value); savePluginPreference(node)"
+                  >
+                    <option v-for="choice in node.choices || []" :key="choice.value" :value="choice.value">{{ choice.title }}</option>
+                  </select>
+                  <label v-else-if="node.kind === 'TOGGLE'" class="switch-row">
+                    <input
+                      type="checkbox"
+                      :checked="Boolean(pluginPreferenceValue(node))"
+                      @change="setPluginPreferenceValue(node, $event.target.checked); savePluginPreference(node)"
+                    />
+                    <span>{{ node.summary || '启用' }}</span>
+                  </label>
+                  <input
+                    v-else
+                    class="input"
+                    :value="pluginPreferenceValue(node)"
+                    @input="setPluginPreferenceValue(node, $event.target.value)"
+                    @change="savePluginPreference(node)"
+                  />
+                </label>
+              </div>
+            </template>
           </template>
-          <label v-else class="field">
-            <span>Cookie（可选，可拖动调整高度）</span>
-            <textarea
-              v-model="forms[editorSource.id].cookie"
-              class="textarea cookie-textarea"
-              placeholder="粘贴浏览器中的 Cookie"
-            />
-          </label>
+          <template v-else>
+            <label class="field">
+              <span>网站地址（留空自动优选）</span>
+              <SitePicker
+                v-model="forms[editorSource.id].homeUrl"
+                :options="editorSource.sites || []"
+                placeholder="留空自动选择，优选可用地址"
+              />
+            </label>
+            <template v-if="editorSource.id === 'picacg'">
+              <div class="settings-grid">
+                <label class="field">
+                  <span>账号（邮箱或用户名）</span>
+                  <input v-model="forms[editorSource.id].username" class="input" autocomplete="username" />
+                </label>
+                <label class="field">
+                  <span>密码</span>
+                  <PasswordInput v-model="forms[editorSource.id].password" autocomplete="current-password" />
+                </label>
+              </div>
+            </template>
+            <label v-else class="field">
+              <span>Cookie（可选，可拖动调整高度）</span>
+              <textarea
+                v-model="forms[editorSource.id].cookie"
+                class="textarea cookie-textarea"
+                placeholder="粘贴浏览器中的 Cookie"
+              />
+            </label>
+          </template>
         </section>
 
         <section class="source-editor-section">

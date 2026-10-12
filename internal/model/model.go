@@ -70,6 +70,7 @@ type DownloadJob struct {
 	TotalPages          int        `json:"totalPages"`
 	CompletedPages      int        `json:"completedPages"`
 	FilePath            string     `json:"filePath,omitempty"`
+	Size                int64      `json:"size,omitempty"`
 	Error               string     `json:"error,omitempty"`
 	RetryCount          int        `json:"retryCount"`
 	NextRetryAt         *time.Time `json:"nextRetryAt,omitempty"`

@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   BookOpen,
   ChevronLeft,
@@ -16,6 +18,7 @@ import {
   Merge,
   RefreshCw,
   Search,
+  SortAsc,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -36,7 +39,12 @@ const selectionAnchor = ref(-1)
 const batchWorking = ref(false)
 const chapterQuery = ref('')
 const chapterApplied = ref('')
+const chapterSortMode = ref('title')
 const chapterSortDesc = ref(false)
+const sortOpen = ref(false)
+const sortBelow = ref(true)
+const heroTint = ref('')
+let sortWrapRef = null
 
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
@@ -62,13 +70,23 @@ const activeChapterFiles = computed(() => {
   })
   const rows = [...list]
   rows.sort((a, b) => {
-    const left = String(a.name || '')
-    const right = String(b.name || '')
-    const result = left.localeCompare(right, 'zh-Hans-CN', { numeric: true })
+    let result
+    if (chapterSortMode.value === 'time') {
+      const left = a.modTime ? new Date(a.modTime).getTime() : 0
+      const right = b.modTime ? new Date(b.modTime).getTime() : 0
+      result = left - right
+    } else {
+      result = String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN', { numeric: true })
+    }
     return chapterSortDesc.value ? -result : result
   })
   return rows
 })
+const heroStyle = computed(() => ({
+  '--hero-tint': heroTint.value || 'transparent',
+  '--hero-cover': active.value?.cover ? 'url("' + coverUrl(active.value) + '")' : 'none',
+}))
+
 const readerTitle = computed(() => reader.value?.file?.name || '')
 const readerImages = computed(() => reader.value?.images || [])
 const readerText = computed(() => reader.value?.text || '')
@@ -161,7 +179,12 @@ function clearSelection() {
 }
 
 function handleKeydown(event) {
-  if (event.key === 'Escape' && selectionMode.value) clearSelection()
+  if (event.key !== 'Escape') return
+  if (sortOpen.value) {
+    sortOpen.value = false
+    return
+  }
+  if (selectionMode.value) clearSelection()
 }
 
 async function simplifySelection() {
@@ -213,6 +236,10 @@ function fileUrl(file, download = false) {
   return api.localFileUrl(file.path, download)
 }
 
+function chapterName(file) {
+  return String(file.name || '').replace(/\.[^.]+$/, '')
+}
+
 function fileSize(bytes) {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -220,8 +247,63 @@ function fileSize(bytes) {
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
+function extractTint(url) {
+  try {
+    const image = new Image()
+    image.crossOrigin = 'anonymous'
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = 20
+        canvas.height = 30
+        const context = canvas.getContext('2d')
+        context.drawImage(image, 0, 0, 20, 30)
+        const { data } = context.getImageData(0, 0, 20, 30)
+        let r = 0
+        let g = 0
+        let b = 0
+        let count = 0
+        for (let i = 0; i < data.length; i += 4) {
+          r += data[i]
+          g += data[i + 1]
+          b += data[i + 2]
+          count += 1
+        }
+        if (count) {
+          heroTint.value = 'rgb(' + Math.round(r / count) + ', ' + Math.round(g / count) + ', ' + Math.round(b / count) + ')'
+        }
+      } catch {
+        heroTint.value = ''
+      }
+    }
+    image.src = url
+  } catch {
+    heroTint.value = ''
+  }
+}
+
+function toggleSortMenu(event) {
+  const target = event?.currentTarget
+  if (target) {
+    const rect = target.getBoundingClientRect()
+    sortBelow.value = window.innerHeight - rect.bottom > 220
+  }
+  sortOpen.value = !sortOpen.value
+}
+
+function setSortMode(mode) {
+  chapterSortMode.value = mode
+}
+
+function setSortDirection(desc) {
+  chapterSortDesc.value = desc
+  sortOpen.value = false
+}
+
 async function openDetail(item) {
   active.value = item
+  heroTint.value = ''
+  if (item.cover) extractTint(coverUrl(item))
   chapterQuery.value = ''
   chapterApplied.value = ''
   chapterSortDesc.value = false
@@ -295,11 +377,10 @@ function downloadReaderFile() {
 </script>
 
 <template>
-  <div v-if="active" class="local-detail-view">
+  <div v-if="active" class="local-detail-view" :style="heroStyle">
     <div class="detail-hero local-detail-hero">
       <button class="detail-cover-back" type="button" aria-label="返回本地库" @click="closeDetail">
         <ChevronLeft :size="22" />
-        返回
       </button>
       <div class="detail-cover-wrap">
         <div class="detail-cover">
@@ -332,14 +413,24 @@ function downloadReaderFile() {
             <X :size="14" />
           </button>
         </form>
-        <button
-          class="btn ghost small"
-          type="button"
-          :aria-label="chapterSortDesc ? '按名称降序' : '按名称升序'"
-          @click="chapterSortDesc = !chapterSortDesc"
-        >
-          <component :is="chapterSortDesc ? ClockArrowDown : ClockArrowUp" :size="18" />
-        </button>
+        <div class="chapter-sort-wrap">
+          <button class="btn ghost small" type="button" @click="toggleSortMenu">
+            <SortAsc :size="16" />
+            {{ chapterSortMode === 'time' ? '添加时间' : '标题' }}
+            <component :is="chapterSortDesc ? ArrowDown : ArrowUp" :size="14" />
+          </button>
+          <div v-if="sortOpen" class="chapter-sort-menu" :class="sortBelow ? 'below' : 'above'">
+            <div class="chapter-sort-group">
+              <span class="chapter-sort-label">排序方式</span>
+              <button type="button" :class="{ active: chapterSortMode === 'title' }" @click="setSortMode('title')">标题</button>
+              <button type="button" :class="{ active: chapterSortMode === 'time' }" @click="setSortMode('time')">添加时间</button>
+            </div>
+            <div class="chapter-sort-group">
+              <button type="button" @click="setSortDirection(false)"><ArrowUp :size="14" />升序</button>
+              <button type="button" @click="setSortDirection(true)"><ArrowDown :size="14" />降序</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div v-if="!activeChapterFiles.length" class="empty">没有可阅读的章节</div>
@@ -354,9 +445,8 @@ function downloadReaderFile() {
         >
           <span class="local-chapter-poster-cover">
             <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" />
-            <BookOpen v-else :size="24" />
           </span>
-          <span class="local-chapter-poster-name">{{ file.name }}</span>
+          <span class="local-chapter-poster-name">{{ chapterName(file) }}</span>
         </button>
       </div>
     </section>
@@ -378,14 +468,11 @@ function downloadReaderFile() {
           <span class="segmented-count">{{ bookCount }}</span>
         </button>
       </div>
+      <span class="spacer" />
       <label class="search-field local-search">
         <Search :size="16" />
         <input v-model="query" aria-label="筛选本地作品" placeholder="搜索作品或作者" />
       </label>
-      <button class="btn secondary small" type="button" :disabled="loading" @click="load">
-        <RefreshCw :size="15" :class="{ spin: loading }" />
-        刷新
-      </button>
     </div>
 
     <div v-if="loading && !items.length" class="empty">
