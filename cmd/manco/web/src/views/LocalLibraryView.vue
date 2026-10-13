@@ -9,8 +9,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Film,
   FolderOpen,
   Languages,
+  Layers3,
   ListChecks,
   Loader2,
   Merge,
@@ -477,14 +479,17 @@ function downloadReaderFile() {
     <div class="toolbar library-toolbar">
       <div class="segmented" role="tablist" aria-label="本地库类型">
         <button type="button" :class="{ active: kind === 'all' }" @click="kind = 'all'">
+          <Layers3 :size="16" />
           全部
           <span class="segmented-count">{{ items.length }}</span>
         </button>
         <button type="button" :class="{ active: kind === 'comic' }" @click="kind = 'comic'">
+          <BookOpen :size="16" />
           漫画
           <span class="segmented-count">{{ comicCount }}</span>
         </button>
         <button type="button" :class="{ active: kind === 'book' }" @click="kind = 'book'">
+          <Film :size="16" />
           书籍
           <span class="segmented-count">{{ bookCount }}</span>
         </button>

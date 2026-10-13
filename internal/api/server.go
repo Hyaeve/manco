@@ -52,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.16"
+	appVersion    = "v0.1.17"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -428,6 +428,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		SourceID  string                       `json:"sourceId"`
 		Username  string                       `json:"username,omitempty"`
 		Password  string                       `json:"password,omitempty"`
+		UserAgent string                       `json:"userAgent,omitempty"`
 		HomeURL   string                       `json:"homeUrl,omitempty"`
 		UseProxy  bool                         `json:"useProxy"`
 		HasToken  bool                         `json:"hasToken"`
@@ -445,6 +446,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 				SourceID:  account.SourceID,
 				Username:  account.Username,
 				Password:  plainPassword,
+				UserAgent: plain.UserAgent,
 				HomeURL:   account.HomeURL,
 				UseProxy:  source.AccountUsesProxy(plain),
 				HasToken:  account.TokenCipher != "",
@@ -1515,14 +1517,15 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Settings *model.SourceDownloadSettings `json:"settings"`
-		Username string                        `json:"username"`
-		Password string                        `json:"password"`
-		Token    string                        `json:"token"`
-		Cookie   string                        `json:"cookie"`
-		HomeURL  *string                       `json:"homeUrl"`
-		UseProxy *bool                         `json:"useProxy"`
-		Login    bool                          `json:"login"`
+		Settings  *model.SourceDownloadSettings `json:"settings"`
+		Username  string                        `json:"username"`
+		Password  string                        `json:"password"`
+		Token     string                        `json:"token"`
+		Cookie    string                        `json:"cookie"`
+		UserAgent string                        `json:"userAgent"`
+		HomeURL   *string                       `json:"homeUrl"`
+		UseProxy  *bool                         `json:"useProxy"`
+		Login     bool                          `json:"login"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1546,6 +1549,9 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 	if payload.Cookie != "" {
 		account.Cookie = payload.Cookie
 	}
+	// User-Agent is always assigned so clearing the field falls back to the
+	// built-in default instead of silently keeping the previous value.
+	account.UserAgent = strings.TrimSpace(payload.UserAgent)
 	if payload.HomeURL != nil {
 		account.HomeURL = strings.TrimRight(strings.TrimSpace(*payload.HomeURL), "/")
 	}
@@ -1583,6 +1589,11 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	userAgentCipher, err := s.box.Encrypt(account.UserAgent)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if payload.Settings != nil {
 		if account.Extra == nil {
 			account.Extra = map[string]any{}
@@ -1595,13 +1606,14 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.UpsertSourceAccount(r.Context(), model.SourceAccount{
-		SourceID:     id,
-		Username:     account.Username,
-		SecretCipher: secretCipher,
-		TokenCipher:  tokenCipher,
-		CookieCipher: cookieCipher,
-		HomeURL:      account.HomeURL,
-		Extra:        extraJSON,
+		SourceID:        id,
+		Username:        account.Username,
+		SecretCipher:    secretCipher,
+		TokenCipher:     tokenCipher,
+		CookieCipher:    cookieCipher,
+		UserAgentCipher: userAgentCipher,
+		HomeURL:         account.HomeURL,
+		Extra:           extraJSON,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -2000,7 +2012,16 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 		items = []model.Subscription{}
 	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	stats, err := s.store.DownloadJobStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jobStats := make(map[string]model.DownloadJobStats, len(stats))
+	for key, value := range stats {
+		jobStats[key] = value
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "jobStats": jobStats})
 }
 
 func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {

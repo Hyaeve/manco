@@ -3207,3 +3207,87 @@
   .completed-task-chapter { grid-template-columns: minmax(0, 1fr) 28px; }
   .completed-chapter-time { display: none; }
 }
+
+/* v0.1.17：任务列表统一圆角层级（浅色由外向内变白，深色由外向内变亮） */
+.download-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, #c9c9c9);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 82%, #d9d9d9);
+}
+.download-head {
+  display: grid;
+  grid-template-columns: minmax(200px, 2.4fr) 150px 100px 150px 116px;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-radius: 12px 12px 6px 6px;
+  background: color-mix(in srgb, var(--surface) 62%, #c7c7c7);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.download-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 2.4fr) 150px 100px 150px 116px;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.download-row.selected {
+  border-color: var(--primary-strong);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+.download-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.download-main .comic-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.download-chapter {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.download-size {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+[data-theme='dark'] .download-table {
+  border-color: #333;
+  background: #1a1a1a;
+}
+[data-theme='dark'] .download-head {
+  background: #2a2a2a;
+}
+[data-theme='dark'] .download-row {
+  border-color: #3a3a3a;
+  background: #383838;
+}
+.completed-task-head {
+  grid-template-columns: minmax(0, 1fr) auto 22px;
+}
+.subscription-kind-tabs {
+  flex: 0 1 auto;
+}
+@media (max-width: 1080px) {
+  .download-head { display: none; }
+  .download-row { grid-template-columns: minmax(0, 1fr); }
+  .download-size { display: none; }
+}

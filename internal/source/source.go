@@ -21,12 +21,13 @@ const (
 )
 
 type Account struct {
-	Username string
-	Password string
-	Token    string
-	Cookie   string
-	HomeURL  string
-	Extra    map[string]any
+	Username  string
+	Password  string
+	Token     string
+	Cookie    string
+	UserAgent string
+	HomeURL   string
+	Extra     map[string]any
 }
 
 func AccountFromModel(box *secret.Box, stored model.SourceAccount) (Account, error) {
@@ -42,17 +43,22 @@ func AccountFromModel(box *secret.Box, stored model.SourceAccount) (Account, err
 	if err != nil {
 		return Account{}, err
 	}
+	userAgent, err := box.Decrypt(stored.UserAgentCipher)
+	if err != nil {
+		return Account{}, err
+	}
 	extra := map[string]any{}
 	if len(stored.Extra) > 0 {
 		_ = json.Unmarshal(stored.Extra, &extra)
 	}
 	return Account{
-		Username: stored.Username,
-		Password: password,
-		Token:    token,
-		Cookie:   cookie,
-		HomeURL:  stored.HomeURL,
-		Extra:    extra,
+		Username:  stored.Username,
+		Password:  password,
+		Token:     token,
+		Cookie:    cookie,
+		UserAgent: userAgent,
+		HomeURL:   stored.HomeURL,
+		Extra:     extra,
 	}, nil
 }
 

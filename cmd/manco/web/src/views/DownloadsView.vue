@@ -236,6 +236,19 @@ function formatTime(item) {
   return new Date(raw).toLocaleString()
 }
 
+function formatSize(size) {
+  const bytes = Number(size || 0)
+  if (!bytes) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${unit === 0 ? value : value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
+}
+
 // 下载进度：完成态固定满格，进行中按已下载页数实时计算。
 function progressPercent(item) {
   if (item.status === 'completed') return 100
@@ -357,10 +370,6 @@ async function remove(item, removeFile) {
         :aria-expanded="isGroupExpanded(group.key)"
         @click="toggleGroup(group.key)"
       >
-        <span class="completed-task-cover">
-          <img v-if="group.cover" :src="api.imageUrl(group.cover, group.sourceId)" alt="" loading="lazy" />
-          <BookOpen v-else :size="20" />
-        </span>
         <span class="completed-task-title">
           <strong>{{ group.title }}</strong>
           <small>{{ group.author }}</small>
@@ -386,6 +395,7 @@ async function remove(item, removeFile) {
     <div class="download-head">
       <span>作品章节</span>
       <span>状态</span>
+      <span>文件大小</span>
       <span>时间</span>
       <span>操作</span>
     </div>
@@ -398,20 +408,14 @@ async function remove(item, removeFile) {
       @click="selecting ? toggleRow(item, index, $event) : null"
     >
       <div class="download-main">
-        <div class="download-cover">
-          <img v-if="item.comicCover" :src="cover(item)" alt="" loading="lazy" />
-          <span v-else class="cover-fallback"><BookOpen :size="16" /></span>
-        </div>
-        <div class="download-titles">
-          <RouterLink
-            class="comic-title"
-            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
-            @click.stop
-          >
-            {{ item.comicTitle }}
-          </RouterLink>
-          <span class="download-author" :title="item.chapterTitle">{{ item.comicAuthor || '未知作者' }}</span>
-        </div>
+        <RouterLink
+          class="comic-title"
+          :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+          @click.stop
+        >
+          {{ item.comicTitle }}
+        </RouterLink>
+        <span class="download-chapter" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
       </div>
       <div class="download-status">
         <div class="download-status-head">
@@ -423,6 +427,7 @@ async function remove(item, removeFile) {
         </div>
         <span v-if="item.error" class="download-error">{{ item.error }}</span>
       </div>
+      <div class="download-size">{{ formatSize(item.size) }}</div>
       <div class="download-time">{{ formatTime(item) }}</div>
       <div class="download-actions">
         <button

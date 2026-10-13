@@ -59,6 +59,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			secret_cipher TEXT NOT NULL DEFAULT '',
 			token_cipher TEXT NOT NULL DEFAULT '',
 			cookie_cipher TEXT NOT NULL DEFAULT '',
+			user_agent_cipher TEXT NOT NULL DEFAULT '',
 			home_url TEXT NOT NULL DEFAULT '',
 			extra_json TEXT NOT NULL DEFAULT '{}',
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -218,6 +219,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "download_jobs", "chapter_marker", `INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "source_accounts", "user_agent_cipher", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	if err := s.backfillSubscriptionCron(ctx); err != nil {
 		return err
 	}
@@ -225,6 +229,31 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("backfill subscription update baseline: %w", err)
 	}
 	return nil
+}
+
+// DownloadJobStats aggregates per-work completed and failed chapter counts so
+// subscription cards stay accurate even when the task list itself is paged.
+func (s *Store) DownloadJobStats(ctx context.Context) (map[string]model.DownloadJobStats, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT source_id, comic_id,
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
+			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+		FROM download_jobs
+		GROUP BY source_id, comic_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stats := map[string]model.DownloadJobStats{}
+	for rows.Next() {
+		var sourceID, comicID string
+		var succeeded, failed int
+		if err := rows.Scan(&sourceID, &comicID, &succeeded, &failed); err != nil {
+			return nil, err
+		}
+		stats[sourceID+"\x00"+comicID] = model.DownloadJobStats{Succeeded: succeeded, Failed: failed}
+	}
+	return stats, rows.Err()
 }
 
 // CompletedDownloadJobsByComic returns every completed chapter for a work so
@@ -389,26 +418,27 @@ func (s *Store) UpsertSourceAccount(ctx context.Context, account model.SourceAcc
 		extra = json.RawMessage(`{}`)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO source_accounts(source_id, username, secret_cipher, token_cipher, cookie_cipher, home_url, extra_json, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO source_accounts(source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(source_id) DO UPDATE SET
 			username = excluded.username,
 			secret_cipher = excluded.secret_cipher,
 			token_cipher = excluded.token_cipher,
 			cookie_cipher = excluded.cookie_cipher,
+			user_agent_cipher = excluded.user_agent_cipher,
 			home_url = excluded.home_url,
 			extra_json = excluded.extra_json,
 			updated_at = CURRENT_TIMESTAMP`,
-		account.SourceID, account.Username, account.SecretCipher, account.TokenCipher, account.CookieCipher, account.HomeURL, string(extra))
+		account.SourceID, account.Username, account.SecretCipher, account.TokenCipher, account.CookieCipher, account.UserAgentCipher, account.HomeURL, string(extra))
 	return err
 }
 
 func (s *Store) SourceAccount(ctx context.Context, sourceID string) (model.SourceAccount, error) {
-	return s.scanAccount(s.db.QueryRowContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, home_url, extra_json, updated_at FROM source_accounts WHERE source_id = ?`, sourceID))
+	return s.scanAccount(s.db.QueryRowContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at FROM source_accounts WHERE source_id = ?`, sourceID))
 }
 
 func (s *Store) ListSourceAccounts(ctx context.Context) ([]model.SourceAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, home_url, extra_json, updated_at FROM source_accounts ORDER BY source_id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at FROM source_accounts ORDER BY source_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +461,7 @@ type rowScanner interface {
 func (s *Store) scanAccount(row rowScanner) (model.SourceAccount, error) {
 	var account model.SourceAccount
 	var extra string
-	err := row.Scan(&account.ID, &account.SourceID, &account.Username, &account.SecretCipher, &account.TokenCipher, &account.CookieCipher, &account.HomeURL, &extra, &account.UpdatedAt)
+	err := row.Scan(&account.ID, &account.SourceID, &account.Username, &account.SecretCipher, &account.TokenCipher, &account.CookieCipher, &account.UserAgentCipher, &account.HomeURL, &extra, &account.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.SourceAccount{}, ErrNotFound
 	}
@@ -829,7 +859,23 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, jobSelect+` ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 WHEN 'failed' THEN 4 ELSE 5 END, id DESC LIMIT ?`, limit)
+	// 进行中/失败任务和已完成记录分开查询，再用 UNION ALL 合并，避免大量
+	// 活跃任务把已经持久化的完成记录挤出结果集（旧实现统一 LIMIT 会造成这个
+	// 问题，任务列表因此看不到已完成章节）。
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT * FROM (
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			FROM download_jobs WHERE status <> 'completed'
+			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 WHEN 'failed' THEN 4 ELSE 5 END, id DESC
+			LIMIT ?
+		)
+		UNION ALL
+		SELECT * FROM (
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			FROM download_jobs WHERE status = 'completed'
+			ORDER BY COALESCE(finished_at, updated_at, created_at) DESC, id DESC
+			LIMIT ?
+		)`, limit, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -48,25 +48,22 @@ func New(client *http.Client) *Source { return &Source{client: client} }
 
 const (
 	sourceID      = "jmcomic"
-	defaultSite   = "https://18comic.vip"
-	defaultOrigin = "https://cdn-msp.18comic.vip"
+	defaultSite   = "https://www.cdnhjk.net"
+	defaultOrigin = "https://cdn-msp.jmapinodeudzn.net"
 )
 
 // defaultSites lists the public 18comic mirrors used as fallbacks when a
 // configured site is unreachable. The order is the preferred rotation order.
 var defaultSites = []string{
-	defaultSite,
-	"https://18comic.org",
-	"https://18mh.org",
-	"https://jm-comic.me",
-	"https://jm-comic.group",
-	"https://jmcomic.me",
-	"https://jmcomic.rocks",
-	"https://jmcomic1.rocks",
-	"https://jmcomic2.rocks",
-	"https://jm-comic1.rocks",
-	"https://jm-comic2.rocks",
+	"https://www.cdnhjk.net",
+	"https://www.cdngwc.cc",
+	"https://www.cdngwc.net",
+	"https://www.cdngwc.club",
+	"https://www.cdnutc.me",
 }
+
+// defaultUserAgent is used when a source account has no custom UA override.
+const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
 var (
 	albumPattern           = regexp.MustCompile(`/album/(\d+)`)
@@ -75,7 +72,7 @@ var (
 	scramblePattern        = regexp.MustCompile(`var\s+scramble_id\s*=\s*(\d+)`)
 	albumIDPattern         = regexp.MustCompile(`var\s+(?:album_id|aid)\s*=\s*(\d+)`)
 	domainPattern          = regexp.MustCompile(`var\s+data_original_domain\s*=\s*["']([^"']+)["']`)
-	imageHostPattern       = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*|jmapinodeudzn)\.(?:vip|org|cc|site|club|net))`)
+	imageHostPattern       = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*|jmapinodeudzn|cdngwc|cdnhjk|cdnutc)\.(?:vip|org|cc|site|club|net|me|info))`)
 	backgroundImagePattern = regexp.MustCompile(`url\([\'"]?([^\'")]+)[\'"]?\)`)
 )
 
@@ -307,10 +304,7 @@ func (s *Source) get(ctx context.Context, account source.Account, path string, v
 			"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
 			"Upgrade-Insecure-Requests": "1",
 		}
-		for key, value := range source.HeaderCookie(account.Cookie) {
-			headers[key] = value
-		}
-		return headers
+		return jmHeaders(account, base, headers)
 	})
 }
 
@@ -329,9 +323,7 @@ func (s *Source) getMatching(ctx context.Context, account source.Account, paths 
 				"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
 				"Upgrade-Insecure-Requests": "1",
 			}
-			for key, value := range source.HeaderCookie(account.Cookie) {
-				headers[key] = value
-			}
+			headers = jmHeaders(account, base, headers)
 			html, err := source.FetchText(ctx, client, address, headers)
 			if err != nil {
 				lastErr = err
@@ -353,6 +345,21 @@ func (s *Source) getMatching(ctx context.Context, account source.Account, paths 
 // hasAlbumLinks reports whether a page really lists albums.
 func hasAlbumLinks(html string) bool {
 	return albumPattern.MatchString(html)
+}
+
+// jmHeaders merges the account User-Agent and Cookie into the request headers.
+// 18comic mirrors increasingly reject blank or library-default agents, so a
+// custom UA can be configured per source account.
+func jmHeaders(account source.Account, base string, headers map[string]string) map[string]string {
+	ua := strings.TrimSpace(account.UserAgent)
+	if ua == "" {
+		ua = defaultUserAgent
+	}
+	headers["User-Agent"] = ua
+	for key, value := range source.HeaderCookie(account.Cookie) {
+		headers[key] = value
+	}
+	return headers
 }
 
 func parseSearch(html, base string, page int) (model.SearchResult, error) {

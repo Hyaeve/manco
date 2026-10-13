@@ -5,8 +5,10 @@ import {
   Archive,
   BookOpen,
   CalendarClock,
+  Film,
   FolderOpen,
   Layers,
+  Layers3,
   Loader2,
   MoreVertical,
   Pencil,
@@ -27,6 +29,8 @@ import { rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferenc
 const items = ref([])
 const jobs = ref([])
 const sources = ref({})
+const jobStatsData = ref({})
+const kindFilter = ref('all')
 const loading = ref(true)
 const busy = ref(0)
 const openMenu = ref(0)
@@ -43,6 +47,21 @@ const form = ref({
 })
 
 const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 'paused'].includes(job.status)))
+
+function itemKind(item) {
+  const kind = sources.value[item.sourceId]?.kind
+  return kind === 'book' || kind === 'other' ? kind : 'comic'
+}
+
+const visibleItems = computed(() => {
+  if (kindFilter.value === 'all') return items.value
+  return items.value.filter((item) => itemKind(item) === kindFilter.value)
+})
+
+function kindCount(kind) {
+  if (kind === 'all') return items.value.length
+  return items.value.filter((item) => itemKind(item) === kind).length
+}
 
 onMounted(async () => {
   await load()
@@ -75,6 +94,7 @@ async function load(silent = false) {
     }
     items.value = subscriptions.items || []
     jobs.value = downloads.items || []
+    jobStatsData.value = subscriptions.jobStats || {}
   } catch (err) {
     if (!silent) notify(`订阅清单加载失败：${err.message}`, 'error')
   } finally {
@@ -210,9 +230,17 @@ function chapterCount(item) {
 }
 
 function jobStats(item) {
+  const key = `${item.sourceId}\u0000${item.comicId}`
+  const aggregated = jobStatsData.value[key]
+  if (aggregated) {
+    return {
+      success: Number(aggregated.succeeded || 0),
+      failed: Number(aggregated.failed || 0),
+    }
+  }
   const related = jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId)
   return {
-    success: related.filter((job) => job.status === 'success').length,
+    success: related.filter((job) => job.status === 'completed').length,
     failed: related.filter((job) => job.status === 'failed').length,
   }
 }
@@ -259,6 +287,24 @@ async function downloadAll(item) {
 
 <template>
   <div class="toolbar subscription-toolbar">
+    <div class="segmented subscription-kind-tabs" role="tablist" aria-label="订阅来源类型">
+      <button type="button" :class="{ active: kindFilter === 'all' }" @click="kindFilter = 'all'">
+        <Layers3 :size="16" />
+        全部源 <span class="segmented-count">{{ kindCount('all') }}</span>
+      </button>
+      <button type="button" :class="{ active: kindFilter === 'comic' }" @click="kindFilter = 'comic'">
+        <BookOpen :size="16" />
+        漫画源 <span class="segmented-count">{{ kindCount('comic') }}</span>
+      </button>
+      <button type="button" :class="{ active: kindFilter === 'book' }" @click="kindFilter = 'book'">
+        <BookOpen :size="16" />
+        书籍源 <span class="segmented-count">{{ kindCount('book') }}</span>
+      </button>
+      <button type="button" :class="{ active: kindFilter === 'other' }" @click="kindFilter = 'other'">
+        <Film :size="16" />
+        其他源 <span class="segmented-count">{{ kindCount('other') }}</span>
+      </button>
+    </div>
     <span class="spacer" />
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
       <RefreshCw :size="15" :class="{ spin: loading }" />
@@ -275,10 +321,13 @@ async function downloadAll(item) {
     <p>还没有订阅。在探索发现打开作品后即可订阅追更。</p>
     <RouterLink class="btn small" to="/discover">去探索发现</RouterLink>
   </div>
+  <div v-else-if="!visibleItems.length" class="card empty">
+    <p>当前栏目下没有订阅。</p>
+  </div>
 
   <div v-else class="subscription-grid">
     <article
-      v-for="item in items"
+      v-for="item in visibleItems"
       :key="item.id"
       class="subscription-card"
       :class="{ disabled: !item.enabled, 'menu-open': openMenu === item.id }"

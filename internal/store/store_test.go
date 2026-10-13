@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -292,5 +293,41 @@ func TestCompletedDownloadJobsByComic(t *testing.T) {
 	}
 	if len(jobs) != 1 || jobs[0].ID != done.ID {
 		t.Fatalf("completed jobs = %+v, want only job %d", jobs, done.ID)
+	}
+}
+
+func TestListDownloadJobsKeepsCompletedWhenManyActive(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	done := createJob(t, repository, "done-1")
+	if err := repository.UpdateDownloadJob(ctx, done.ID, "completed", 10, 10, "/tmp/done.cbz", ""); err != nil {
+		t.Fatalf("complete job: %v", err)
+	}
+	for index := 0; index < 40; index++ {
+		createJob(t, repository, "active-"+strconv.Itoa(index))
+	}
+
+	jobs, err := repository.ListDownloadJobs(ctx, 20)
+	if err != nil {
+		t.Fatalf("list downloads: %v", err)
+	}
+	found := false
+	for _, job := range jobs {
+		if job.ID == done.ID && job.Status == "completed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("completed job %d missing from %d results", done.ID, len(jobs))
+	}
+
+	stats, err := repository.DownloadJobStats(ctx)
+	if err != nil {
+		t.Fatalf("download stats: %v", err)
+	}
+	key := "jmcomic\x00" + done.ComicID
+	if got := stats[key].Succeeded; got != 1 {
+		t.Fatalf("succeeded = %d, want 1", got)
 	}
 }

@@ -149,6 +149,11 @@ func FetchText(ctx context.Context, client *http.Client, address string, headers
 	request.Header.Set("User-Agent", DefaultUserAgent)
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
+	// A per-source User-Agent (for example 18comic mirrors) must be able to
+	// override the library default.
+	if ua := strings.TrimSpace(headers["User-Agent"]); ua != "" {
+		request.Header.Set("User-Agent", ua)
+	}
 	for key, value := range headers {
 		if strings.TrimSpace(value) != "" {
 			request.Header.Set(key, value)

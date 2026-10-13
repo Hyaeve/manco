@@ -13,15 +13,16 @@ type User struct {
 }
 
 type SourceAccount struct {
-	ID           int64           `json:"id"`
-	SourceID     string          `json:"sourceId"`
-	Username     string          `json:"username,omitempty"`
-	SecretCipher string          `json:"-"`
-	TokenCipher  string          `json:"-"`
-	CookieCipher string          `json:"-"`
-	HomeURL      string          `json:"homeUrl,omitempty"`
-	Extra        json.RawMessage `json:"extra,omitempty"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
+	ID              int64           `json:"id"`
+	SourceID        string          `json:"sourceId"`
+	Username        string          `json:"username,omitempty"`
+	SecretCipher    string          `json:"-"`
+	TokenCipher     string          `json:"-"`
+	CookieCipher    string          `json:"-"`
+	UserAgentCipher string          `json:"-"`
+	HomeURL         string          `json:"homeUrl,omitempty"`
+	Extra           json.RawMessage `json:"extra,omitempty"`
+	UpdatedAt       time.Time       `json:"updatedAt"`
 }
 
 type Subscription struct {
@@ -79,6 +80,12 @@ type DownloadJob struct {
 	UpdatedAt           time.Time  `json:"updatedAt"`
 	StartedAt           *time.Time `json:"startedAt,omitempty"`
 	FinishedAt          *time.Time `json:"finishedAt,omitempty"`
+}
+
+// DownloadJobStats counts persisted task outcomes per work.
+type DownloadJobStats struct {
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
 }
 
 // SourceDownloadSettings stores per-source download limits in the source

@@ -204,6 +204,7 @@ async function load() {
           username: account.username || '',
           password: account.password || '',
           cookie: '',
+          userAgent: account.userAgent || '',
           homeUrl: account.homeUrl || '',
           useProxy: account.useProxy !== false,
           chapterConcurrency: Number(settings.chapterConcurrency ?? 1),
@@ -215,6 +216,7 @@ async function load() {
         forms[item.id].username = account.username || ''
         if (account.password) forms[item.id].password = account.password
         forms[item.id].homeUrl = account.homeUrl || ''
+        forms[item.id].userAgent = account.userAgent || ''
         forms[item.id].useProxy = account.useProxy !== false
         forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency ?? 1)
         forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
@@ -231,6 +233,10 @@ async function load() {
 
 function accountOf(id) {
   return accounts.value[id] || null
+}
+
+function isJMComic(item) {
+  return item && String(item.id).toLowerCase() === 'jmcomic'
 }
 
 function isSourceSelected(item) {
@@ -604,6 +610,7 @@ async function saveSource(item, login = false) {
     if (form.username) payload.username = form.username
     if (form.password) payload.password = form.password
     if (form.cookie) payload.cookie = form.cookie
+    if (form.userAgent) payload.userAgent = form.userAgent
     await api.saveAccount(item.id, payload)
     form.cookie = ''
     notify(login ? `${item.name} 登录成功，设置已保存` : `${item.name} 设置已保存`, 'success')
@@ -1360,6 +1367,16 @@ function onDragEnd() {
                   <PasswordInput v-model="forms[editorSource.id].password" autocomplete="current-password" />
                 </label>
               </div>
+            </template>
+            <template v-else-if="isJMComic(editorSource)">
+              <label class="field">
+                <span>User-Agent（可选）</span>
+                <input
+                  v-model="forms[editorSource.id].userAgent"
+                  class="input"
+                  placeholder="留空使用默认浏览器标识"
+                />
+              </label>
             </template>
             <label v-else class="field">
               <span>Cookie（可选，可拖动调整高度）</span>
