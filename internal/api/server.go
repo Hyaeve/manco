@@ -52,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.15"
+	appVersion    = "v0.1.16"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2326,7 +2326,7 @@ func (s *Server) handleDownloadDirectories(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			mountpoint := unescapeMountPath(fields[4])
-			if mountpoint == "" || mountpoint == "/" {
+			if mountpoint == "" || mountpoint == "/" || mountpoint == defaultDir {
 				continue
 			}
 			skip := false

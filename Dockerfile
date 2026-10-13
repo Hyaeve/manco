@@ -42,15 +42,14 @@ ENV TZ=Asia/Shanghai \
     MANCO_ADDR=:15600 \
     MANCO_DATA_DIR=/app/data \
     MANCO_CONFIG_DIR=/app/config \
-    MANCO_DOWNLOAD_DIR=/app/downloads \
     JAVA_TOOL_OPTIONS=-Djava.awt.headless=true
 WORKDIR /app
 COPY --from=backend /out/manco /usr/local/bin/manco
 COPY --from=kototoro /build/host/build/install/manco-kototoro-host /usr/local/lib/manco/kototoro-host
 COPY --from=kototoro /build/upstream/LICENSE /usr/share/licenses/manco/kototoro/LICENSE
-RUN mkdir -p /app/data /app/config /app/downloads
+RUN mkdir -p /app/data /app/config
 EXPOSE 15600
-VOLUME ["/app/data", "/app/config", "/app/downloads"]
+VOLUME ["/app/data", "/app/config"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -q -O /dev/null http://127.0.0.1:15600/ || exit 1
 ENTRYPOINT ["/usr/local/bin/manco"]

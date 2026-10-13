@@ -127,7 +127,7 @@ docker compose up -d
 | `MANCO_SECRET` | 自动生成 `config/secret.key` | 凭据加密密钥，建议显式设置并备份 |
 | `MANCO_DATA_DIR` | `/app/data`（镜像默认，compose 中为 `/app/data`） | 运行数据目录，包含 SQLite、探索缓存和图标索引 |
 | `MANCO_CONFIG_DIR` | `/app/config`（镜像默认，compose 中为 `/app/config`） | 用户配置目录，保存设置、来源、仓库与订阅配置 |
-| `MANCO_DOWNLOAD_DIR` | `downloads` | 下载目录 |
+| `MANCO_DOWNLOAD_DIR` | `downloads` | 仅作旧任务兼容回退，不参与下载位置目录选择 |
 | `MANCO_SOURCE_REPO` | 空 | 可选的源清单地址；默认不内置第三方仓库 |
 | `MANCO_SCAN_INTERVAL` | `30m` | 无 Cron 数据的旧订阅兼容扫描间隔 |
 | `MANCO_MAX_CHAPTER_CONCURRENCY` | `2` | 同时下载的章节数 |
@@ -230,7 +230,7 @@ Kototoro Parsers 插件的使用方式：
 发新版本：
 
 ```bash
-git tag v0.1.15 && git push origin v0.1.15   # 构建并发布 :v0.1.15
+git tag v0.1.16 && git push origin v0.1.16   # 构建并发布 :v0.1.16
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 
