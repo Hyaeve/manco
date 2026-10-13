@@ -52,23 +52,23 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.11"
+	appVersion    = "v0.1.12"
 )
 
-var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge"}
+var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
 
 var sourceIconSources = map[string]string{
-	"picacg":  "https://bica.mom/favicon.jpeg",
-	"jmcomic": "https://jmcomicapp.net/favicon.ico",
-	"baozimh": "https://www.webmota.com/favicon.ico",
-	"biquge":  "https://www.biquge345.com/favicon.ico",
+	"picacg":   "https://bica.mom/favicon.jpeg",
+	"jmcomic":  "https://jmcomicapp.net/favicon.ico",
+	"baozimh":  "https://www.webmota.com/favicon.ico",
+	"zlibrary": "https://1lib.sk/favicon.ico",
 }
 
 var sourceIconFallbacks = map[string]string{
-	"picacg":  "/source-icons/picacg.png",
-	"jmcomic": "/source-icons/jmcomic.png",
-	"baozimh": "/source-icons/baozimh.png",
-	"biquge":  "/source-icons/biquge345.ico",
+	"picacg":   "/source-icons/picacg.png",
+	"jmcomic":  "/source-icons/jmcomic.png",
+	"baozimh":  "/source-icons/baozimh.png",
+	"zlibrary": "/source-icons/zlibrary.png",
 }
 
 type Server struct {
@@ -160,17 +160,17 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 		CookieSecure:          s.cfg.CookieSecure,
 		SessionTTLDays:        30,
 		SourceConcurrency: map[string]int{
-			"picacg":  s.cfg.MaxChapterConcurrency,
-			"jmcomic": s.cfg.MaxChapterConcurrency,
-			"baozimh": s.cfg.MaxChapterConcurrency,
-			"biquge":  s.cfg.MaxChapterConcurrency,
+			"picacg":   s.cfg.MaxChapterConcurrency,
+			"jmcomic":  s.cfg.MaxChapterConcurrency,
+			"baozimh":  s.cfg.MaxChapterConcurrency,
+			"zlibrary": s.cfg.MaxChapterConcurrency,
 		},
 		StaleDays: map[string]int{
-			"picacg":  0,
-			"jmcomic": 0,
-			"baozimh": 0,
-			"biquge":  0,
-			"*":       30,
+			"picacg":   0,
+			"jmcomic":  0,
+			"baozimh":  0,
+			"zlibrary": 0,
+			"*":        30,
 		},
 	}
 	if value, err := s.store.Setting(ctx, "source_repo"); err == nil && strings.TrimSpace(value) != "" {
@@ -501,18 +501,28 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 	var latest, releaseURL string
-	releaseState, releaseErr := s.fetchGitHubUpdate(ctx, "https://api.github.com/repos/Hyaeve/manco/releases/latest", true, &latest, &releaseURL)
-	if releaseState != http.StatusOK {
-		tagState, tagErr := s.fetchGitHubUpdate(ctx, "https://api.github.com/repos/Hyaeve/manco/tags?per_page=1", false, &latest, &releaseURL)
-		if tagState != http.StatusOK {
-			message := "GitHub 更新服务不可用"
-			if releaseErr != nil {
-				message = releaseErr.Error()
-			} else if tagErr != nil {
-				message = tagErr.Error()
+	// GitHub 的公开 Atom 订阅不消耗 api.github.com 的匿名额度，
+	// 避免用户共享网络出口被 API 限流后检查更新直接失败。
+	atomState, atomErr := s.fetchGitHubAtom(ctx, "https://github.com/Hyaeve/manco/releases.atom", &latest, &releaseURL)
+	if atomState != http.StatusOK || strings.TrimSpace(latest) == "" {
+		atomState, atomErr = s.fetchGitHubAtom(ctx, "https://github.com/Hyaeve/manco/tags.atom", &latest, &releaseURL)
+	}
+	if atomState != http.StatusOK || strings.TrimSpace(latest) == "" {
+		releaseState, releaseErr := s.fetchGitHubUpdate(ctx, "https://api.github.com/repos/Hyaeve/manco/releases/latest", true, &latest, &releaseURL)
+		if releaseState != http.StatusOK {
+			tagState, tagErr := s.fetchGitHubUpdate(ctx, "https://api.github.com/repos/Hyaeve/manco/tags?per_page=1", false, &latest, &releaseURL)
+			if tagState != http.StatusOK {
+				message := "GitHub 更新服务不可用"
+				if atomErr != nil {
+					message = atomErr.Error()
+				} else if releaseErr != nil {
+					message = releaseErr.Error()
+				} else if tagErr != nil {
+					message = tagErr.Error()
+				}
+				writeError(w, http.StatusBadGateway, message)
+				return
 			}
-			writeError(w, http.StatusBadGateway, message)
-			return
 		}
 	}
 	latest = strings.TrimSpace(latest)
@@ -606,8 +616,10 @@ func compareVersions(left, right string) int {
 }
 func (s *Server) sourceDownloadSettings(raw json.RawMessage) model.SourceDownloadSettings {
 	settings := model.SourceDownloadSettings{
-		ChapterConcurrency: s.cfg.MaxChapterConcurrency,
-		PageConcurrency:    s.cfg.MaxPageConcurrency,
+		ChapterConcurrency:   1,
+		PageConcurrency:      2,
+		BatchSize:            20,
+		BatchIntervalMinutes: 20,
 	}
 	extra := map[string]any{}
 	if len(raw) > 0 && json.Unmarshal(raw, &extra) == nil {
@@ -627,6 +639,11 @@ func (s *Server) sourceDownloadSettings(raw json.RawMessage) model.SourceDownloa
 
 func (s *Server) allSourceDownloadSettings(ctx context.Context) map[string]model.SourceDownloadSettings {
 	result := map[string]model.SourceDownloadSettings{}
+	// 每个已注册内容源都先落一份默认下载策略（章 1 线程 / 图 2 线程 /
+	// 每 20 章暂停 20 分钟），这样尚未保存过账号的来源也能拿到一致默认值。
+	for _, info := range s.registry.List() {
+		result[info.ID] = s.sourceDownloadSettings(nil)
+	}
 	accounts, err := s.store.ListSourceAccounts(ctx)
 	if err != nil {
 		return result
@@ -1753,6 +1770,9 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		}
 		options.Extra[key] = value
 	}
+	if options.Sort == "" {
+		options.Sort = strings.TrimSpace(r.URL.Query().Get("order"))
+	}
 	if options.Category == "" {
 		options.Category = strings.TrimSpace(r.URL.Query().Get("kind"))
 	}
@@ -2772,12 +2792,10 @@ func (s *Server) localRoots(ctx context.Context) []string {
 		seen[cleaned] = true
 		roots = append(roots, cleaned)
 	}
-	add("")
-	if subscriptions, err := s.store.ListSubscriptions(ctx); err == nil {
+	if subscriptions, err := s.store.ListAllSubscriptions(ctx); err == nil {
 		for _, item := range subscriptions {
-			if item.DownloadDir != "" {
-				add(item.DownloadDir)
-			}
+			// 本地库目录胶囊按订阅创建顺序排列，包括已归档订阅。
+			add(item.DownloadDir)
 		}
 	}
 	if jobs, err := s.store.ListDownloadJobs(ctx, 500); err == nil {
@@ -2787,6 +2805,8 @@ func (s *Server) localRoots(ctx context.Context) []string {
 			}
 		}
 	}
+	// 最后补默认下载目录，兼容没有订阅记录的旧文件。
+	add("")
 	return roots
 }
 
@@ -3406,7 +3426,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			total += limit
 		}
 		if total < 1 || total > 24 {
-			writeError(w, http.StatusBadRequest, "三个漫画源的总下载线程必须在 1 到 24 之间")
+			writeError(w, http.StatusBadRequest, "资源源的总下载线程必须在 1 到 24 之间")
 			return
 		}
 		raw, _ := json.Marshal(normalized)
@@ -3897,4 +3917,59 @@ func ensurePublicHost(ctx context.Context, host string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) fetchGitHubAtom(ctx context.Context, endpoint string, latest, releaseURL *string) (int, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Accept", "application/atom+xml, application/xml;q=0.9, text/xml;q=0.8")
+	request.Header.Set("User-Agent", "Manco/"+appVersion)
+	response, err := s.registry.Client().Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return response.StatusCode, fmt.Errorf("GitHub 更新服务返回 HTTP %d", response.StatusCode)
+	}
+	var feed struct {
+		Entries []struct {
+			ID    string `xml:"id"`
+			Links []struct {
+				Rel  string `xml:"rel,attr"`
+				Href string `xml:"href,attr"`
+			} `xml:"link"`
+		} `xml:"entry"`
+	}
+	if err := xml.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&feed); err != nil {
+		return 0, err
+	}
+	for _, entry := range feed.Entries {
+		version := strings.TrimSpace(entry.ID)
+		if slash := strings.LastIndex(version, "/"); slash >= 0 {
+			version = version[slash+1:]
+		}
+		if decoded, err := url.PathUnescape(version); err == nil {
+			version = decoded
+		}
+		version = strings.TrimSpace(version)
+		if version == "" {
+			continue
+		}
+		*latest = version
+		for _, link := range entry.Links {
+			if link.Rel == "alternate" && strings.TrimSpace(link.Href) != "" {
+				*releaseURL = strings.TrimSpace(link.Href)
+				break
+			}
+		}
+		if *releaseURL == "" {
+			*releaseURL = "https://github.com/Hyaeve/manco/releases/tag/" + url.PathEscape(version)
+		}
+		return http.StatusOK, nil
+	}
+	return http.StatusOK, nil
 }

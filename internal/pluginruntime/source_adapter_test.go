@@ -3,6 +3,7 @@ package pluginruntime
 import (
 	"testing"
 
+	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 )
 
@@ -24,6 +25,35 @@ func TestKindForContentType(t *testing.T) {
 	for _, test := range tests {
 		if got := KindForContentType(test.value); got != test.want {
 			t.Fatalf("KindForContentType(%q) = %q, want %q", test.value, got, test.want)
+		}
+	}
+}
+
+func TestSortFilterGroups(t *testing.T) {
+	groups := sortFilterGroups(map[string]any{
+		"descriptor": map[string]any{
+			"sortOrders":       []any{"UPDATED", "POPULARITY", "RATING"},
+			"defaultSortOrder": "UPDATED",
+		},
+	})
+	if len(groups) != 1 {
+		t.Fatalf("sortFilterGroups returned %d groups, want 1", len(groups))
+	}
+	group := groups[0]
+	if group.Key != "sort" || group.Default != "UPDATED" {
+		t.Fatalf("unexpected sort group: %+v", group)
+	}
+	want := []model.FilterOption{
+		{Value: "UPDATED", Label: "最新"},
+		{Value: "POPULARITY", Label: "热度"},
+		{Value: "RATING", Label: "评分"},
+	}
+	if len(group.Options) != len(want) {
+		t.Fatalf("options = %+v, want %+v", group.Options, want)
+	}
+	for index := range want {
+		if group.Options[index] != want[index] {
+			t.Fatalf("option %d = %+v, want %+v", index, group.Options[index], want[index])
 		}
 	}
 }

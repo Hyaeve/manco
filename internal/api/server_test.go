@@ -2,11 +2,14 @@ package api
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/sources"
 )
 
 func TestParseLogEntryAddsModuleAndLevel(t *testing.T) {
@@ -84,5 +87,34 @@ func TestBackfillChapterMarkerFilesRenamesAndPersistsPath(t *testing.T) {
 	}
 	if persistedID != 42 || persistedPath != newPath {
 		t.Fatalf("persisted path = id %d path %q, want 42 %q", persistedID, persistedPath, newPath)
+	}
+}
+
+func TestFetchGitHubAtomReadsLatestVersion(t *testing.T) {
+	feed := `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/1411402288/v9.8.7</id>
+    <link rel="alternate" type="text/html" href="https://github.com/Hyaeve/manco/releases/tag/v9.8.7"/>
+  </entry>
+</feed>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/atom+xml")
+		_, _ = w.Write([]byte(feed))
+	}))
+	defer server.Close()
+
+	var latest, releaseURL string
+	status, err := (&Server{registry: sources.NewRegistry(server.Client(), nil, nil)}).fetchGitHubAtom(
+		context.Background(), server.URL, &latest, &releaseURL,
+	)
+	if err != nil {
+		t.Fatalf("fetchGitHubAtom: %v", err)
+	}
+	if status != http.StatusOK || latest != "v9.8.7" {
+		t.Fatalf("status = %d, latest = %q, want 200 and v9.8.7", status, latest)
+	}
+	if releaseURL != "https://github.com/Hyaeve/manco/releases/tag/v9.8.7" {
+		t.Fatalf("releaseURL = %q", releaseURL)
 	}
 }

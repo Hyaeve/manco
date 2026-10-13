@@ -1842,6 +1842,24 @@
   position: relative;
 }
 
+/* 本地库卡片：指针悬浮时封面提亮并轻微放大，移开后恢复。 */
+.local-library-card .local-library-cover img {
+  transform: scale(1);
+  transition: transform 0.28s ease, filter 0.28s ease;
+}
+
+.local-library-card:hover .local-library-cover img,
+.local-library-card:focus-visible .local-library-cover img {
+  transform: scale(1.06);
+  filter: brightness(1.09) saturate(1.03);
+}
+
+/* 本地库右上角搜索框收窄。 */
+.library-toolbar .local-search {
+  flex: 0 1 240px;
+  max-width: 240px;
+}
+
 .local-library-card.selected {
   border-color: var(--primary-strong);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-strong) 48%, transparent);
@@ -2701,4 +2719,82 @@
 }
 .source-add-toolbar .source-repository-search {
   margin-left: auto;
+}
+
+/* v0.1.12：本地库目录胶囊、排序器标题内嵌、极浅黄侧栏 */
+.local-root-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 2px 0 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #d8d8d8 transparent;
+}
+.local-root-strip::-webkit-scrollbar {
+  height: 4px;
+}
+.local-root-strip::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #d8d8d8;
+}
+.local-root-strip button {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.local-root-strip button:hover {
+  border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
+  color: var(--text);
+}
+.local-root-strip button.active {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  font-weight: 600;
+}
+.rounded-select-trigger .select-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rounded-select-trigger .select-caption {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+.source-filter-grid .sort-chip {
+  flex: 0 0 150px;
+  max-width: 170px;
+}
+.source-filter-grid .view-mode-control {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+}
+.sidebar {
+  background: color-mix(in srgb, #fffef8 97%, #fbf4cf);
+  border-right-color: color-mix(in srgb, #eee7c8 45%, var(--border));
+}
+.sidebar nav button:hover {
+  background: color-mix(in srgb, #fffbe8 78%, #f4f0d8);
+}
+.sidebar nav button.active {
+  color: #4a431a;
+  background: color-mix(in srgb, #fbf7dc 86%, #f3f1e2);
+}
+[data-theme='dark'] .sidebar {
+  background: #20261a;
+  border-right-color: #303824;
 }

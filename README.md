@@ -8,8 +8,8 @@ Manco 是一个自托管的漫画订阅下载器：从漫画源搜索、浏览�
 ## 功能
 
 - 首次启动进入创建账号页；登录后可在「设置 → 账号设置」中修改用户名和密码。
-- 默认漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**；默认书籍源包含**笔趣阁**及现有公开书籍源。
-- 书籍源：**笔趣阁**、**神凑轻小说**与 **Project Gutenberg**。「资源仓库」页分为「漫画源 / 书籍源 / 拓展仓库」三个栏目，书籍按章节或整本下载为纯文本。
+- 默认漫画源：**哔咔漫画（picacg）**、**禁漫天堂（jmcomic / 18comic）**、**包子漫画（baozimh）**；默认书籍源：**Z-Library（zlibrary）**。
+- 书籍源：**Z-Library**，支持邮箱密码登录、检索并下载原始 EPUB / PDF / MOBI / AZW3 文件；「资源仓库」页分为「漫画源 / 书籍源 / 其他源 / 拓展仓库」四个栏目。
 - 拓展仓库不内置第三方仓库；可添加多个 Kototoro、Mihon、JAR、Aniyomi、iReader、CloudStream 或 Tsundoku 兼容仓库，支持添加、编辑、同步、展开、删除、来源搜索和导入。除 JSON 清单外，还支持 gzip protobuf（Mihon / Keiyoushi `index.pb`）。内置的 Kototoro JVM 解析器运行时可以加载 Kototoro Parsers 的 DEX/JAR 插件，并执行内容源自己的搜索、浏览、章节、图片和封面接口；Mihon/Aniyomi 的 Android APK 仍只登记清单。
 - 「资源仓库」按期类分为「漫画源 / 书籍源 / 其他源 / 拓展仓库」四个栏目，来源可按类型拖拽排序，顺序持久化到服务端并同步到探索发现。
 - 探索发现浏览结果缓存写入 `/app/data/discover-cache.json`，默认 30 分钟内复用；访问过的作品详情与封面按内容源类型落盘到 `/app/data/discover/<kind>/<中文来源名>/<中文作品名>/`，30 天未访问自动清理。
@@ -136,7 +136,7 @@ docker compose up -d
 
 ## 漫画源配置
 
-登录后在「资源仓库」页面配置，页面分为「漫画源」「书籍源」「其他源」「拓展仓库」四个栏目。包子、哔咔、禁漫、笔趣阁等默认源不可删除或改名；拓展仓库不再默认内置，用户可自行添加多个 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库，同步后导入可执行的配置来源。Kototoro Parsers 的 `plugin.jar` 会安装到 `/app/config/plugins`，由内置 JVM sidecar 加载；插件返回的图片字节由插件自身完成解扰、签名和请求头处理，Manco 不再对插件图片做二次解扰：
+登录后在「资源仓库」页面配置，页面分为「漫画源」「书籍源」「其他源」「拓展仓库」四个栏目。包子、哔咔、禁漫、Z-Library 等默认源不可删除或改名；拓展仓库不再默认内置，用户可自行添加多个 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库，同步后导入可执行的配置来源。Kototoro Parsers 的 `plugin.jar` 会安装到 `/app/config/plugins`，由内置 JVM sidecar 加载；插件返回的图片字节由插件自身完成解扰、签名和请求头处理，Manco 不再对插件图片做二次解扰：
 
 如果所在网络无法直连这些站点，先在「设置 → 网络代理」填入可用的 HTTP/HTTPS 代理，然后保存。
 
@@ -149,8 +149,8 @@ docker compose up -d
 禁漫天堂与包子漫画都已内置多个备用镜像站（镜像列表参考 Kototoro 拓展仓库）。请求某个站点失败时会自动按顺序切换下一个镜像；在「站点域名」里填写的自定义域名会作为最高优先级。
 
 
-**书籍源** — **神凑轻小说（shencou）** 免登录即可浏览与搜索，按章节下载为 UTF-8 文本；**Project Gutenberg（gutenberg）** 通过 Gutendex 开放接口检索公版书，整本下载为文本。书籍与漫画分开显示在「资源 → 书籍源」标签下。
-三个默认源使用 Go 原生实现；同时，Manco 也能加载 [Kototoro 拓展仓库](https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json) 中的 Kototoro Parsers 插件，把返回的页面和封面字节直接写入本地缓存 / CBZ。
+**书籍源** — **Z-Library（zlibrary）** 使用邮箱密码登录，登录后可搜索热门、最近和指定语言/格式的电子书；章节代表整本电子书，下载时保存服务返回的原始 EPUB、PDF、MOBI 或 AZW3 文件，不再转成纯文本。书籍与漫画分开显示在「资源仓库 → 书籍源」栏目下。
+默认源使用 Go 原生实现；同时，Manco 也能加载 [Kototoro 拓展仓库](https://raw.githubusercontent.com/skepsun/kototoro-parsers/repo/index.min.json) 中的 Kototoro Parsers 插件，把返回的页面和封面字节直接写入本地缓存 / CBZ。
 
 Kototoro Parsers 插件的使用方式：
 
@@ -166,6 +166,7 @@ Kototoro Parsers 插件的使用方式：
 - `ComicInfo.xml` 保存作品标题、作者、简介、标签、来源、作品 ID、状态等，遵循 ComicInfo 规范，供漫画阅读器直接读取（本项目本身不接入 Komga）。
 - 名称会过滤 `\ / : * ? " < > |` 等字符，并限制长度，避免 NAS 上的文件系统报错。
 - 图片扩展名按文件头判断，WebP/PNG 原样写入，JPEG 保持原格式；解扰后的禁漫图片统一转为 JPEG/PNG。
+- 书籍输出：`downloads/<书名>/<文件名>.<epub|pdf|mobi|azw3>`，保留 Z-Library 返回的原始文件和扩展名，并在作品目录写入 `book.json` 与封面。
 
 ## 订阅逻辑
 
@@ -228,7 +229,7 @@ Kototoro Parsers 插件的使用方式：
 发新版本：
 
 ```bash
-git tag v0.1.11 && git push origin v0.1.11   # 构建并发布 :v0.1.11
+git tag v0.1.12 && git push origin v0.1.12   # 构建并发布 :v0.1.12
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

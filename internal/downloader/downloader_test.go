@@ -101,3 +101,19 @@ func TestDescrambleRotatesStrips(t *testing.T) {
 		}
 	}
 }
+
+func TestBookFileExtension(t *testing.T) {
+	cases := map[string]string{
+		"Test Book.epub":     ".epub",
+		"book.pdf":           ".pdf",
+		"  spaced.MOBI  ":    ".mobi",
+		"dir/sub/novel.AZW3": ".azw3",
+		"no-extension":       ".bin",
+		"weird.na<me":        ".bin",
+	}
+	for input, want := range cases {
+		if got := bookFileExtension(input); got != want {
+			t.Fatalf("bookFileExtension(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

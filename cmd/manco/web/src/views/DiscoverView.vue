@@ -16,7 +16,14 @@ import {
 import { api } from '../api'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import { notify } from '../stores/notices'
-import { readDiscoverNav, saveDiscoverNav } from '../stores/discover'
+import {
+  discoverPanelsExpired,
+  markDiscoverPanelsLoaded,
+  readDiscoverNav,
+  readDiscoverPanels,
+  resetDiscoverPanels,
+  saveDiscoverNav,
+} from '../stores/discover'
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v3'
 const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
@@ -27,7 +34,7 @@ const allSources = ref([])
 const activeKind = ref('comic')
 const activeId = ref('')
 const jumpInput = ref('')
-const panels = ref({})
+const panels = ref(readDiscoverPanels())
 const loadingSources = ref(true)
 const sourcesError = ref('')
 const savedFilters = ref(readSavedFilters())
@@ -39,6 +46,25 @@ const stripCanRight = ref(false)
 const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
 const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
 const pageSize = computed(() => (viewMode.value === 'list' ? 30 : 49))
+
+// Kototoro 的排序能力会作为 sort 筛选组返回；没有声明的来源统一提供“最新”，
+// 并把排序器固定放在网格/列表按钮左侧。
+const DEFAULT_SORT_GROUP = {
+  key: 'sort',
+  label: '排序',
+  default: '',
+  options: [{ value: '', label: '最新' }],
+}
+
+const activeFilters = computed(() =>
+  (activeSource.value?.filters || []).filter((group) => group.key !== 'sort' && group.key !== 'order'),
+)
+
+const activeSortGroup = computed(() => {
+  const groups = activeSource.value?.filters || []
+  return groups.find((group) => group.key === 'sort') || groups.find((group) => group.key === 'order') || DEFAULT_SORT_GROUP
+})
+
 
 function kindOf(source) {
   if (source.kind === 'book' || source.kind === 'other') return source.kind
@@ -58,6 +84,12 @@ function persistFilters() {
   localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(savedFilters.value))
 }
 
+function sortOptions(options) {
+  const list = (options || []).map((option) => ({ value: String(option.value), label: option.label }))
+  if (!list.length) return [{ value: '', label: '最新' }]
+  return list.some((option) => option.value === '') ? list : [{ value: '', label: '最新' }, ...list]
+}
+
 function sourceFilters(source) {
   const stored = savedFilters.value?.[source.id] || {}
   const values = {}
@@ -70,6 +102,7 @@ function sourceFilters(source) {
       ? String(candidate)
       : String(group.default ?? group.options?.find((option) => !option.disabled)?.value ?? '')
   }
+  if (!('sort' in values)) values.sort = String(stored.sort || '')
   return values
 }
 
@@ -128,6 +161,7 @@ onUnmounted(() => {
 
 async function loadSources() {
   const nav = readDiscoverNav()
+  if (discoverPanelsExpired()) resetDiscoverPanels()
   try {
     const payload = await api.sources()
     allSources.value = payload.items || []
@@ -138,7 +172,7 @@ async function loadSources() {
     activeId.value = found?.id || sources.value[0]?.id || ''
     if (activeId.value) {
       const panel = panelFor(activeSource.value)
-      const restorePage = nav.source === activeId.value && nav.page ? nav.page : 1
+      const restorePage = nav.source === activeId.value && nav.page ? nav.page : panel.page || 1
       await ensure(activeSource.value, panel, restorePage)
       if (nav.source === activeId.value && nav.scrollTop) {
         nextTick(() => {
@@ -152,6 +186,7 @@ async function loadSources() {
   } finally {
     loadingSources.value = false
   }
+  markDiscoverPanelsLoaded()
 }
 
 onMounted(() => {
@@ -265,6 +300,7 @@ async function ensure(source, panel, targetPage) {
   } finally {
     panel.loading = false
     panel.loaded = true
+    markDiscoverPanelsLoaded()
   }
   const maxPage = Math.max(1, Math.ceil(panel.items.length / pageSize.value))
   panel.page = panel.sourceHasMore ? wanted : Math.min(wanted, maxPage)
@@ -456,15 +492,25 @@ function latestLabel(item) {
 
       <div class="source-column-tools">
         <div class="source-filter-grid">
-          <label v-for="group in activeSource.filters || []" :key="group.key" class="field compact filter-chip">
+          <label v-for="group in activeFilters" :key="group.key" class="field compact filter-chip">
             <RoundedSelect
               v-model="activePanel.filters[group.key]"
               :label="group.label"
+              :caption="group.label"
               :options="filterOptions(group)"
               @change="changeFilter"
             />
           </label>
           <span class="spacer" />
+          <div class="filter-chip sort-chip">
+            <RoundedSelect
+              v-model="activePanel.filters[activeSortGroup.key]"
+              :label="activeSortGroup.label"
+              :caption="activeSortGroup.label"
+              :options="sortOptions(activeSortGroup.options)"
+              @change="changeFilter"
+            />
+          </div>
           <div class="view-mode-control" role="group" aria-label="视图模式">
             <button
               class="icon-btn view-mode-button"

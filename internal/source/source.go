@@ -71,10 +71,18 @@ type LoginResult struct {
 	Extra    map[string]any
 }
 
-// ContentSource is implemented by book sources. It returns the full text of a
-// chapter so the downloader can persist one file per chapter.
+// ContentSource is implemented by book sources whose chapter is plain text.
+// The downloader persists one file per chapter. Sources that expose a real
+// ebook file should implement FileContentSource, which takes precedence.
 type ContentSource interface {
 	ChapterContent(ctx context.Context, account Account, bookID string, chapter model.Chapter) (string, error)
+}
+
+// FileContentSource is implemented by book sources that expose a real binary
+// file (for example EPUB, PDF, MOBI or AZW3). The downloader prefers this
+// interface over ContentSource so the original ebook is persisted unchanged.
+type FileContentSource interface {
+	ChapterFile(ctx context.Context, account Account, bookID string, chapter model.Chapter) (data []byte, filename string, err error)
 }
 
 // ImageSource is implemented by sources that materialize page and cover

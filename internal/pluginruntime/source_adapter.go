@@ -264,12 +264,20 @@ func (a *Adapter) Filters(ctx context.Context) ([]model.FilterGroup, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Kototoro 的排序方式在 describe 描述符中声明，与 filters 操作分开返回。
+	// 这里始终读取一次描述符，把内容源的排序能力合并进前端筛选栏。
+	describeResult, _ := a.call(ctx, "describe", map[string]any{"sourceName": a.config.SourceName})
 	options, _ := result["options"].(map[string]any)
 	if options == nil {
 		return nil, errors.New("解析器没有返回筛选配置")
 	}
+	a.filters = nil
+	a.tagGroups = map[string]map[string]map[string]any{}
 	a.filtersReady = true
 	filters := make([]model.FilterGroup, 0, 8)
+	if sortGroups := sortFilterGroups(describeResult); len(sortGroups) > 0 {
+		filters = append(filters, sortGroups...)
+	}
 	addEnumFilter := func(key, label, field string) {
 		items := stringValues(options[field])
 		if len(items) == 0 {
@@ -321,6 +329,56 @@ func (a *Adapter) Filters(ctx context.Context) ([]model.FilterGroup, error) {
 	a.filters = filters
 	a.tagGroups = tagGroups
 	return append([]model.FilterGroup(nil), a.filters...), nil
+}
+
+// sortFilterGroups converts the parser descriptor sortOrders into a filter group
+// that the discover page can render as the sort selector.
+func sortFilterGroups(result map[string]any) []model.FilterGroup {
+	if result == nil {
+		return nil
+	}
+	descriptor, _ := result["descriptor"].(map[string]any)
+	values, _ := result["sortOrders"].([]any)
+	defaultValue := stringValue(result["defaultSortOrder"])
+	if descriptor != nil {
+		if len(values) == 0 {
+			values, _ = descriptor["sortOrders"].([]any)
+		}
+		if defaultValue == "" {
+			defaultValue = stringValue(descriptor["defaultSortOrder"])
+		}
+	}
+	group := model.FilterGroup{Key: "sort", Label: "排序", Default: defaultValue}
+	seen := map[string]bool{}
+	for _, raw := range values {
+		value := stringValue(raw)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		group.Options = append(group.Options, model.FilterOption{Value: value, Label: sortOrderLabel(value)})
+	}
+	if len(group.Options) == 0 {
+		return nil
+	}
+	return []model.FilterGroup{group}
+}
+
+func sortOrderLabel(value string) string {
+	labels := map[string]string{
+		"UPDATED": "最新", "LATEST": "最新", "NEWEST": "最新", "DATE": "最新",
+		"POPULARITY": "热度", "POPULAR": "热度", "TRENDING": "热度",
+		"POPULARITY_HOUR": "今日热门", "POPULARITY_TODAY": "今日热门", "TODAY": "今日热门",
+		"POPULARITY_WEEK": "本周热门", "WEEK": "本周热门",
+		"POPULARITY_MONTH": "本月热门", "MONTH": "本月热门",
+		"POPULARITY_YEAR": "年度热门", "YEAR": "年度热门",
+		"RATING": "评分", "SCORE": "评分",
+		"NAME": "名称", "TITLE": "名称", "ALPHABETICAL": "名称",
+	}
+	if label, ok := labels[strings.ToUpper(strings.TrimSpace(value))]; ok {
+		return label
+	}
+	return value
 }
 
 func stringValues(value any) []string {

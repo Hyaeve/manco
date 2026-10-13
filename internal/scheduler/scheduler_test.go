@@ -57,6 +57,10 @@ func (d *stubDownloads) CreateDownloadJob(_ context.Context, job model.DownloadJ
 
 func (d *stubDownloads) Notify() { d.notified++ }
 
+func (d *stubDownloads) EnsureSeriesMetadata(_ context.Context, _ model.Subscription) (bool, error) {
+	return false, nil
+}
+
 type stubChapters struct {
 	chapters []model.Chapter
 }

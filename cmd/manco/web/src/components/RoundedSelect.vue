@@ -5,6 +5,7 @@ import { Check, ChevronDown } from 'lucide-vue-next'
 const props = defineProps({
   modelValue: { type: String, default: '' },
   label: { type: String, default: '' },
+  caption: { type: String, default: '' },
   placeholder: { type: String, default: '请选择' },
   disabled: Boolean,
   upward: Boolean,
@@ -93,6 +94,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
       <span class="select-label">
         <img v-if="selected?.icon" class="select-icon" :src="selected.icon" alt="" />
         <span :class="{ 'select-placeholder': !selected }">{{ selected?.label || placeholder }}</span>
+        <span v-if="caption" class="select-caption">{{ caption }}</span>
       </span>
       <ChevronDown :size="16" :class="{ expanded: opened }" />
     </button>

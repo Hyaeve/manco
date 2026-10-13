@@ -41,6 +41,8 @@ const chapterQuery = ref('')
 const chapterApplied = ref('')
 const chapterSortMode = ref('title')
 const chapterSortDesc = ref(false)
+const rootOrder = ref([])
+const activeRoot = ref('')
 const sortOpen = ref(false)
 const sortBelow = ref(true)
 const heroTint = ref('')
@@ -50,12 +52,41 @@ const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   return items.value.filter((item) => {
     if (kind.value !== 'all' && item.kind !== kind.value) return false
+    if (activeRoot.value && rootOf(item) !== activeRoot.value) return false
     if (!keyword) return true
     return (
       (item.title || '').toLowerCase().includes(keyword) ||
       (item.author || '').toLowerCase().includes(keyword)
     )
   })
+})
+
+// 本地库目录栏目：按订阅（添加订阅的先后）顺序展示作品父目录。
+function rootOf(item) {
+  return String(item?.path || '').split('|')[0] || ''
+}
+
+function rootLabel(root) {
+  const parts = String(root || '').split('/').filter(Boolean)
+  return parts[parts.length - 1] || root || '下载目录'
+}
+
+const libraryRoots = computed(() => {
+  const used = new Set(items.value.map((item) => rootOf(item)))
+  const ordered = []
+  const seen = new Set()
+  for (const root of rootOrder.value) {
+    if (!root || !used.has(root) || seen.has(root)) continue
+    seen.add(root)
+    ordered.push(root)
+  }
+  for (const item of items.value) {
+    const root = rootOf(item)
+    if (!root || seen.has(root)) continue
+    seen.add(root)
+    ordered.push(root)
+  }
+  return ordered
 })
 
 const comicCount = computed(() => items.value.filter((item) => item.kind !== 'book').length)
@@ -113,6 +144,9 @@ async function load() {
   try {
     const payload = await api.localLibrary()
     items.value = payload.items || []
+    rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : []
+    const availableRoots = new Set(rootOrder.value)
+    if (activeRoot.value && !availableRoots.has(activeRoot.value)) activeRoot.value = ''
     const available = new Set(items.value.map(keyOf))
     selectedPaths.value = selectedPaths.value.filter((path) => available.has(path))
     if (!selectedPaths.value.length) selectionMode.value = false
@@ -240,12 +274,6 @@ function chapterName(file) {
   return String(file.name || '').replace(/\.[^.]+$/, '')
 }
 
-function fileSize(bytes) {
-  if (!bytes) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)))
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`
-}
 
 function extractTint(url) {
   try {
@@ -475,6 +503,19 @@ function downloadReaderFile() {
       </label>
     </div>
 
+    <div v-if="libraryRoots.length" class="local-root-strip" aria-label="本地库目录">
+      <button type="button" :class="{ active: !activeRoot }" @click="activeRoot = ''">全部</button>
+      <button
+        v-for="root in libraryRoots"
+        :key="root"
+        type="button"
+        :class="{ active: activeRoot === root }"
+        @click="activeRoot = root"
+      >
+        {{ rootLabel(root) }}
+      </button>
+    </div>
+
     <div v-if="loading && !items.length" class="empty">
       <Loader2 :size="22" class="spin" />
       <span>正在读取本地库</span>
@@ -505,7 +546,6 @@ function downloadReaderFile() {
         <span class="local-library-body">
           <strong>{{ item.title }}</strong>
           <span>{{ item.author || '未知作者' }}</span>
-          <span>{{ item.files.length }} 个文件 · {{ fileSize(item.size) }}</span>
         </span>
       </button>
     </div>

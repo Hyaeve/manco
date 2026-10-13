@@ -5,7 +5,7 @@ import {
   Activity,
   Bell,
   CircleCheck,
-  CircleUser,
+  UserRound,
   Compass,
   Download,
   HardDrive,
@@ -289,7 +289,7 @@ function activityIcon(level) {
           </div>
           <div class="topbar-menu account-control" @click.stop>
             <button class="account-button" type="button" aria-label="账号菜单" @click="toggleMenu('account', $event)">
-              <CircleUser :size="20" />
+              <UserRound :size="20" />
             </button>
             <div v-if="openMenu === 'account'" class="account-dropdown">
               <button type="button" @click="goSection('account')">

@@ -3,6 +3,8 @@ package baozimh
 import (
 	"testing"
 
+	"strings"
+
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 )
@@ -85,5 +87,43 @@ func TestBasesPutConfiguredSiteFirst(t *testing.T) {
 	}
 	if got[1] != defaultSite {
 		t.Fatalf("second base = %q, want default %q", got[1], defaultSite)
+	}
+}
+
+func TestSearchBasesPreferCnMirror(t *testing.T) {
+	got := (&Source{}).searchBases(source.Account{HomeURL: "https://my-mirror.example/"})
+	if len(got) == 0 || got[0] != "https://cn.my-mirror.example" {
+		t.Fatalf("first search base = %q, want cn mirror", got[0])
+	}
+	if got[1] != "https://my-mirror.example" {
+		t.Fatalf("second search base = %q, want plain mirror", got[1])
+	}
+	if cnVariant("https://cn.baozimh.com") != "" {
+		t.Fatalf("cn host should not be rewritten: %q", cnVariant("https://cn.baozimh.com"))
+	}
+}
+
+func TestParseComicsReadsSearchCards(t *testing.T) {
+	html := `<div class="comics-card">` +
+		`<a href="/comic/xinghai-biaoshi"><amp-img src="//static-tw.baozimh.com/cover/xinghai.jpg"></amp-img>` +
+		`<div class="comics-card__title"><h3>星海镖师</h3></div></a></div>`
+	result := parseComics(html, "https://cn.baozimh.com", 1)
+	if len(result.Items) != 1 {
+		t.Fatalf("parsed %d items, want 1: %#v", len(result.Items), result.Items)
+	}
+	item := result.Items[0]
+	if item.ID != "xinghai-biaoshi" || item.Title != "星海镖师" {
+		t.Fatalf("item = %#v", item)
+	}
+	if !strings.Contains(item.Cover, "xinghai.jpg") {
+		t.Fatalf("cover = %q, want the amp-img source", item.Cover)
+	}
+}
+
+func TestParseComicsReadsPlainImageAnchors(t *testing.T) {
+	html := `<div class="comics-card"><a href="/comic/abc"><img data-src="//static-tw.baozimh.com/cover/abc.jpg"></a><span>作品</span></div>`
+	result := parseComics(html, "https://www.baozimh.com", 1)
+	if len(result.Items) != 1 || result.Items[0].ID != "abc" {
+		t.Fatalf("items = %#v", result.Items)
 	}
 }

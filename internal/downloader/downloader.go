@@ -638,26 +638,47 @@ func convertToSimplifiedText(value string) string {
 	return converted
 }
 
-// downloadBook persists one text file per chapter for book sources, plus a
-// short book.json metadata file shared by all chapters of the work.
 // SimplifiedText exposes the project's stable Traditional-to-Simplified
 // conversion for local library maintenance.
 func SimplifiedText(value string) string {
 	return convertToSimplifiedText(value)
 }
 
+// downloadBook persists one file per chapter for book sources (the original
+// ebook binary when the source implements FileContentSource, otherwise the
+// chapter text), plus a short book.json metadata file shared by the work.
 func (e *Engine) downloadBook(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
-	contentSource, ok := item.(source.ContentSource)
-	if !ok {
-		return errors.New("该书源不支持正文下载")
-	}
+	chapter := model.Chapter{ID: job.ChapterID, ComicID: job.ComicID, Title: job.ChapterTitle, Order: job.ChapterOrder}
+	// Mark the job running before the (potentially large) ebook fetch so the
+	// download list reports progress instead of staying queued.
 	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", 1, 0, "", ""); err != nil {
 		return err
 	}
-	chapter := model.Chapter{ID: job.ChapterID, ComicID: job.ComicID, Title: job.ChapterTitle, Order: job.ChapterOrder}
-	text, err := contentSource.ChapterContent(ctx, account, job.ComicID, chapter)
-	if err != nil {
-		return fmt.Errorf("fetch chapter content: %w", err)
+	var (
+		data     []byte
+		filename string
+		text     string
+		isText   bool
+	)
+	if fileSource, ok := item.(source.FileContentSource); ok {
+		var err error
+		data, filename, err = fileSource.ChapterFile(ctx, account, job.ComicID, chapter)
+		if err != nil {
+			return fmt.Errorf("fetch book file: %w", err)
+		}
+		if len(data) == 0 {
+			return errors.New("书籍文件为空")
+		}
+	} else if contentSource, ok := item.(source.ContentSource); ok {
+		var err error
+		text, err = contentSource.ChapterContent(ctx, account, job.ComicID, chapter)
+		if err != nil {
+			return fmt.Errorf("fetch chapter content: %w", err)
+		}
+		data = []byte(text)
+		isText = true
+	} else {
+		return errors.New("该书源不支持正文下载")
 	}
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
@@ -672,7 +693,10 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		e.logger.Printf("downloader: book detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
 	}
 	if job.ConvertToSimplified {
-		text = convertToSimplifiedText(text)
+		if isText {
+			text = convertToSimplifiedText(text)
+			data = []byte(text)
+		}
 		comicTitle = convertToSimplifiedText(comicTitle)
 		chapterTitle = convertToSimplifiedText(chapterTitle)
 		metadata.Title = convertToSimplifiedText(metadata.Title)
@@ -687,8 +711,16 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return err
 	}
-	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".txt"))
-	if err := os.WriteFile(outputPath, []byte(text), 0o644); err != nil {
+	outputName := chapterTitle
+	extension := ".txt"
+	if !isText {
+		if base := bookFileBaseName(filename); base != "" {
+			outputName = base
+		}
+		extension = bookFileExtension(filename)
+	}
+	outputPath := filepath.Join(comicDir, ChapterFileName(outputName, job.ChapterOrder, job.ChapterMarker, extension))
+	if err := writeFileAtomic(outputPath, data); err != nil {
 		return err
 	}
 	e.metaMu.Lock()
@@ -698,6 +730,48 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		e.logger.Printf("downloader: book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
 	}
 	return e.store.UpdateDownloadJob(ctx, job.ID, "completed", 1, 1, outputPath, "")
+}
+
+// writeFileAtomic keeps book downloads invisible until the complete file has
+// been written, mirroring the CBZ .part-to-final behavior.
+func writeFileAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temp := path + ".part"
+	if err := os.WriteFile(temp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(temp, path); err == nil {
+		return nil
+	}
+	// Windows does not replace an existing destination during Rename.
+	// Retrying after removing the old file keeps manual retries useful.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(temp)
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		_ = os.Remove(temp)
+		return err
+	}
+	return nil
+}
+
+func bookFileBaseName(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if index := strings.LastIndexAny(filename, `/\\`); index >= 0 {
+		filename = filename[index+1:]
+	}
+	return strings.TrimSuffix(filename, filepath.Ext(filename))
+}
+
+func bookFileExtension(filename string) string {
+	extension := strings.ToLower(strings.TrimSpace(filepath.Ext(strings.TrimSpace(filename))))
+	if extension == "" || strings.ContainsAny(extension, `/\\:*?\"<>|`) {
+		return ".bin"
+	}
+	return extension
 }
 
 // writeBookMetadata stores book.json plus a best-effort cover image at the
@@ -731,6 +805,94 @@ func writeBookMetadata(ctx context.Context, client *http.Client, account source.
 		return err
 	}
 	return os.WriteFile(filepath.Join(comicDir, "book.json"), payload, 0o644)
+}
+
+// EnsureSeriesMetadata verifies that a subscribed series still has its
+// series-level cover and metadata files on disk and re-fetches them when one
+// is missing. It returns true when at least one file had to be recreated.
+// Only series directories that already contain downloaded entries are
+// considered, so a freshly created subscription is left untouched.
+func (e *Engine) EnsureSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error) {
+	if strings.TrimSpace(subscription.SourceID) == "" || strings.TrimSpace(subscription.ComicID) == "" {
+		return false, nil
+	}
+	root, err := e.jobDownloadDir(model.DownloadJob{DownloadDir: subscription.DownloadDir})
+	if err != nil {
+		return false, err
+	}
+	series := strings.TrimSpace(subscription.SeriesDir)
+	if series == "" {
+		series = subscription.Title
+	}
+	comicDir := filepath.Join(root, SeriesDirectoryName(series, subscription.ConvertToSimplified))
+	entries, err := os.ReadDir(comicDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if len(entries) == 0 {
+		return false, nil
+	}
+	item, err := e.registry.Get(subscription.SourceID)
+	if err != nil {
+		return false, err
+	}
+	book := source.KindOf(item.Info()) == source.KindBook
+	metadataFile := "ComicInfo.xml"
+	if book {
+		metadataFile = "book.json"
+	}
+	if _, statErr := os.Stat(filepath.Join(comicDir, metadataFile)); statErr == nil {
+		if covers, _ := filepath.Glob(filepath.Join(comicDir, "cover.*")); len(covers) > 0 {
+			return false, nil
+		}
+	}
+	account, err := e.registry.Account(ctx, subscription.SourceID)
+	if err != nil {
+		return false, err
+	}
+	metadata := model.Comic{
+		SourceID: subscription.SourceID,
+		ID:       subscription.ComicID,
+		Title:    subscription.Title,
+		Author:   subscription.Author,
+		Cover:    subscription.Cover,
+	}
+	if detail, detailErr := item.Detail(ctx, account, subscription.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+	} else {
+		e.logger.Printf("downloader: metadata detail %s/%s: %v", subscription.SourceID, subscription.ComicID, detailErr)
+	}
+	if subscription.ConvertToSimplified {
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+		metadata.Status = convertToSimplifiedText(metadata.Status)
+		for index := range metadata.Tags {
+			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
+		}
+	}
+	client := e.registry.Client()
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	e.metaMu.Lock()
+	defer e.metaMu.Unlock()
+	if book {
+		if err := writeBookMetadata(ctx, client, account, item, metadata, comicDir); err != nil {
+			return false, err
+		}
+	} else if _, err := writeComicMetadata(ctx, client, account, item, metadata, comicDir, "", 0, 0); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // comicGenre merges source-provided tags with the media type so the rendered

@@ -53,6 +53,10 @@ func (q downloadQueue) CreateDownloadJob(ctx context.Context, job model.Download
 	return q.store.CreateDownloadJob(ctx, job)
 }
 
+func (q downloadQueue) EnsureSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error) {
+	return q.engine.EnsureSeriesMetadata(ctx, subscription)
+}
+
 func (q downloadQueue) Notify() { q.engine.Notify() }
 
 func run(logger *log.Logger, logs *logbuf.Buffer) error {

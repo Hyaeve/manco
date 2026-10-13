@@ -119,7 +119,9 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 		"q":    {query},
 		"page": {strconv.Itoa(page)},
 	}
-	html, base, err := s.get(ctx, account, "/search", values)
+	// 搜索页只在 cn.<域名> 上提供（上游解析器同样使用该前缀），
+	// 因此搜索优先尝试 cn 镜像，失败再退回常规镜像列表。
+	html, base, err := s.fetch(ctx, account, s.searchBases(account), "/search", values)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
@@ -691,8 +693,57 @@ func (s *Source) bases(account source.Account) []string {
 	return order
 }
 
+// searchBases prefers the cn-prefixed host, because baozimh only serves the
+// /search page from https://cn.<domain>. The plain mirrors are kept as
+// fallbacks so a dead cn mirror does not break search entirely.
+func (s *Source) searchBases(account source.Account) []string {
+	candidates := make([]string, 0, len(defaultSites)+1)
+	candidates = append(candidates, account.HomeURL)
+	candidates = append(candidates, defaultSites...)
+	order := make([]string, 0, len(candidates)*2)
+	seen := map[string]bool{}
+	add := func(value string) {
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		order = append(order, value)
+	}
+	for _, candidate := range candidates {
+		add(cnVariant(candidate))
+		add(candidate)
+	}
+	return order
+}
+
+// cnVariant returns the language-prefixed search host for a mirror, mirroring
+// the upstream parsers ("www.baozimh.com" -> "cn.baozimh.com").
+func cnVariant(site string) string {
+	site = strings.TrimRight(strings.TrimSpace(site), "/")
+	if site == "" {
+		return ""
+	}
+	parsed, err := url.Parse(site)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	host := strings.TrimPrefix(parsed.Host, "www.")
+	if strings.HasPrefix(host, "cn.") || strings.HasPrefix(host, "tw.") {
+		return ""
+	}
+	parsed.Host = "cn." + host
+	return strings.TrimRight(parsed.String(), "/")
+}
+
 func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, string, error) {
-	return source.FetchTextFallback(ctx, s.client, s.bases(account), path, values, func(base string) map[string]string {
+	return s.fetch(ctx, account, s.bases(account), path, values)
+}
+
+// fetch issues a GET request against each base in order, adding the mirror
+// referer and the stored cookies.
+func (s *Source) fetch(ctx context.Context, account source.Account, bases []string, path string, values url.Values) (string, string, error) {
+	return source.FetchTextFallback(ctx, s.client, bases, path, values, func(base string) map[string]string {
 		headers := map[string]string{
 			"Referer":         base + "/",
 			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
@@ -711,33 +762,50 @@ func parseComics(html, base string, page int) model.SearchResult {
 	}
 	items := make([]model.Comic, 0, 30)
 	seen := map[string]bool{}
-	document.Find("a[href*='/comic/']").Each(func(_ int, selection *goquery.Selection) {
-		href, ok := selection.Attr("href")
-		if !ok || strings.Contains(href, "/comic/chapter/") {
+	appendCard := func(selection *goquery.Selection, href, cover, hint string) {
+		hreff := strings.TrimSpace(href)
+		if hreff == "" || strings.Contains(hreff, "/comic/chapter/") {
 			return
 		}
-		matches := comicPattern.FindStringSubmatch(href)
+		matches := comicPattern.FindStringSubmatch(hreff)
 		if len(matches) < 2 || seen[matches[1]] {
 			return
 		}
-		if selection.Find("img").Length() == 0 {
-			return
-		}
 		seen[matches[1]] = true
-		item := model.Comic{
+		title := source.FirstNonEmpty(
+			hint,
+			strings.TrimSpace(selection.AttrOr("title", "")),
+			strings.TrimSpace(selection.Find(".comics-card__title h3, .comic-title, .title, h3, h2, p").First().Text()),
+			strings.TrimSpace(selection.Text()),
+			matches[1],
+		)
+		items = append(items, model.Comic{
 			SourceID: sourceID,
 			ID:       matches[1],
-			Title: source.FirstNonEmpty(
-				strings.TrimSpace(selection.AttrOr("title", "")),
-				strings.TrimSpace(selection.Find(".comic-title, .title, h3, h2, p").First().Text()),
-				strings.TrimSpace(selection.Text()),
-			),
-			Cover: coverAddress(imageFrom(selection)),
+			Title:    title,
+			Cover:    coverAddress(cover),
+		})
+	}
+	// 搜索页把结果渲染为 div.comics-card（封面是懒加载的 amp-img），列表页
+	// 则用普通链接，这里两种都处理，让搜索和浏览共用同一个解析器。
+	document.Find("div.comics-card").Each(func(_ int, card *goquery.Selection) {
+		anchor := card.Find("a[href*='/comic/']").First()
+		if anchor.Length() == 0 {
+			return
 		}
-		if item.Title == "" {
-			item.Title = matches[1]
+		href, _ := anchor.Attr("href")
+		appendCard(card, href, imageFrom(card), strings.TrimSpace(card.Find(".comics-card__title h3, h3").First().Text()))
+	})
+	document.Find("a[href*='/comic/']").Each(func(_ int, selection *goquery.Selection) {
+		href, ok := selection.Attr("href")
+		if !ok {
+			return
 		}
-		items = append(items, item)
+		cover := imageFrom(selection)
+		if cover == "" {
+			return
+		}
+		appendCard(selection, href, cover, "")
 	})
 	hasMore := document.Find("a[rel='next'], .pagination .next, a[href*='page="+strconv.Itoa(page+1)+"']").Length() > 0
 	return model.SearchResult{Items: items, Page: page, Total: len(items), HasMore: hasMore}
@@ -828,10 +896,12 @@ func attr(document *goquery.Document, selector, name string) string {
 
 func imageFrom(selection *goquery.Selection) string {
 	image := selection
-	if selection.Is("img") {
-		image = selection
-	} else {
-		image = selection.Find("img").First()
+	if !selection.Is("img") && !selection.Is("amp-img") {
+		image = selection.Find("img, amp-img").First()
+	}
+	if image.Length() == 0 {
+		// amp-img may wrap a real <img> on some mirrors.
+		image = selection.Find("amp-img img").First()
 	}
 	if image.Length() == 0 {
 		return ""

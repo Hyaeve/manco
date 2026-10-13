@@ -17,6 +17,7 @@ import (
 
 type Downloads interface {
 	CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error)
+	EnsureSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error)
 	Notify()
 }
 
@@ -113,6 +114,13 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 	account, err := s.registry.Account(ctx, subscription.SourceID)
 	if err != nil {
 		return err
+	}
+	// Repair series-level cover/metadata if a previous download lost them,
+	// so subscriptions self-heal on every scheduled or manual check.
+	if repaired, metaErr := s.downloads.EnsureSeriesMetadata(ctx, subscription); metaErr != nil {
+		s.logger.Printf("scheduler: metadata %s/%s: %v", subscription.SourceID, subscription.Title, metaErr)
+	} else if repaired {
+		s.logger.Printf("scheduler: re-fetched series metadata for %s/%s", subscription.SourceID, subscription.Title)
 	}
 	chapters, err := item.Chapters(ctx, account, subscription.ComicID)
 	if err != nil {

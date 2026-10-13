@@ -353,6 +353,87 @@ func TestSeriesDirectoryNameIsStableForSimplifiedTitles(t *testing.T) {
 	}
 }
 
+// TestEnsureSeriesMetadataRepairsMissingFiles verifies that a subscription
+// check re-creates a missing series cover and ComicInfo.xml while leaving an
+// intact series alone.
+func TestEnsureSeriesMetadataRepairsMissingFiles(t *testing.T) {
+	images := map[string][]byte{"/cover.png": pngImage(t, 0x42)}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := images[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	registry := sources.NewRegistry(server.Client(), nil, nil)
+	registry.Register(&staticSource{detail: model.Comic{
+		SourceID:    "stub",
+		ID:          "1",
+		Title:       "测试作品",
+		Author:      "测试作者",
+		Description: "测试简介",
+		Cover:       server.URL + "/cover.png",
+		Tags:        []string{"测试", "漫画"},
+	}})
+
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 2, 2, log.New(io.Discard, "", 0))
+	ctx := context.Background()
+	subscription := model.Subscription{SourceID: "stub", ComicID: "1", Title: "测试作品", DownloadDir: downloadDir}
+
+	// Nothing downloaded yet: no repair happens.
+	repaired, err := engine.EnsureSeriesMetadata(ctx, subscription)
+	if err != nil {
+		t.Fatalf("empty series: %v", err)
+	}
+	if repaired {
+		t.Fatal("unexpected repair for a series without downloads")
+	}
+
+	seriesDir := filepath.Join(downloadDir, "测试作品")
+	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "第1话.cbz"), []byte("zip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err = engine.EnsureSeriesMetadata(ctx, subscription)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if !repaired {
+		t.Fatal("missing metadata was not repaired")
+	}
+	cover, err := os.ReadFile(filepath.Join(seriesDir, "cover.png"))
+	if err != nil {
+		t.Fatalf("read cover: %v", err)
+	}
+	if !bytes.Equal(cover, images["/cover.png"]) {
+		t.Fatal("cover does not match the source")
+	}
+	info, err := os.ReadFile(filepath.Join(seriesDir, "ComicInfo.xml"))
+	if err != nil {
+		t.Fatalf("read ComicInfo.xml: %v", err)
+	}
+	if !bytes.Contains(info, []byte("<Series>测试作品</Series>")) {
+		t.Fatalf("unexpected ComicInfo.xml: %s", info)
+	}
+
+	// A second check finds nothing missing.
+	repaired, err = engine.EnsureSeriesMetadata(ctx, subscription)
+	if err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if repaired {
+		t.Fatal("metadata was repaired twice")
+	}
+}
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

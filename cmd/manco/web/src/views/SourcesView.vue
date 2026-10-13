@@ -204,19 +204,19 @@ async function load() {
           password: account.password || '',
           cookie: '',
           homeUrl: account.homeUrl || '',
-          chapterConcurrency: Number(settings.chapterConcurrency || defaults.value.maxChapterConcurrency || 1),
-          pageConcurrency: Number(settings.pageConcurrency || defaults.value.maxPageConcurrency || 4),
-          batchSize: Number(settings.batchSize || 0),
-          batchIntervalMinutes: Number(settings.batchIntervalMinutes || 0),
+          chapterConcurrency: Number(settings.chapterConcurrency ?? 1),
+          pageConcurrency: Number(settings.pageConcurrency ?? 2),
+          batchSize: Number(settings.batchSize ?? 20),
+          batchIntervalMinutes: Number(settings.batchIntervalMinutes ?? 20),
         })
       } else {
         forms[item.id].username = account.username || ''
         if (account.password) forms[item.id].password = account.password
         forms[item.id].homeUrl = account.homeUrl || ''
-        forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency || defaults.value.maxChapterConcurrency || 1)
-        forms[item.id].pageConcurrency = Number(settings.pageConcurrency || defaults.value.maxPageConcurrency || 4)
-        forms[item.id].batchSize = Number(settings.batchSize || 0)
-        forms[item.id].batchIntervalMinutes = Number(settings.batchIntervalMinutes || 0)
+        forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency ?? 1)
+        forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
+        forms[item.id].batchSize = Number(settings.batchSize ?? 20)
+        forms[item.id].batchIntervalMinutes = Number(settings.batchIntervalMinutes ?? 20)
       }
     }
   } catch (err) {
@@ -252,16 +252,26 @@ function enterSourceSelection(item, index, event) {
   sourceAnchor.value = index
 }
 
-function toggleSourceSelection(item, index, event) {
-  if (item.builtin) {
-    openEditor(item)
-    return
-  }
-  if (!sourceSelection.value.size) {
+// 右键进入选择态后，左键单击卡片可以继续多选或取消选中（点击功能
+// 按钮时不参与选择，避免误触）。
+function handleSourceCardClick(item, index, event) {
+  if (!sourceSelection.value.size) return
+  if (event?.target?.closest?.('button')) return
+  if (item.builtin) return
+  event?.preventDefault?.()
+  if (event?.shiftKey && sourceAnchor.value >= 0) {
     enterSourceSelection(item, index, event)
     return
   }
-  enterSourceSelection(item, index, event?.shiftKey ? event : {})
+  const next = new Set(sourceSelection.value)
+  if (next.has(item.id)) next.delete(item.id)
+  else next.add(item.id)
+  if (!next.size) {
+    clearSourceSelection()
+    return
+  }
+  sourceSelection.value = next
+  sourceAnchor.value = index
 }
 
 function selectAllSources() {
@@ -388,6 +398,12 @@ async function saveCategories() {
 
 function isPluginSource(item) {
   return Boolean(item?.pluginSource)
+}
+
+// 需要登录的内置来源（哔咔、Z-Library 等）都显示账号密码输入框。
+function showsAccountLogin(item) {
+  if (!item || isPluginSource(item)) return false
+  return item.needsLogin || item.id === 'picacg' || item.id === 'zlibrary'
 }
 
 function parseBrowserCookies(raw) {
@@ -928,6 +944,7 @@ function onDragEnd() {
         :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id, 'source-card-selected': isSourceSelected(item) }"
         draggable="true"
         @dragstart="onDragStart(item, $event)"
+        @click="handleSourceCardClick(item, index, $event)"
         @contextmenu.prevent="enterSourceSelection(item, index, $event)"
         @dragover="onDragOver(item, $event)"
         @drop.prevent="onDrop"
@@ -1323,7 +1340,7 @@ function onDragEnd() {
                 placeholder="留空自动选择，优选可用地址"
               />
             </label>
-            <template v-if="editorSource.id === 'picacg'">
+            <template v-if="showsAccountLogin(editorSource)">
               <div class="settings-grid">
                 <label class="field">
                   <span>账号（邮箱或用户名）</span>
@@ -1358,7 +1375,7 @@ function onDragEnd() {
               <input v-model.number="forms[editorSource.id].pageConcurrency" class="input" type="number" min="1" max="16" />
             </label>
             <label class="field">
-              <span>每下载 N 话暂停</span>
+              <span>每下载 N 章暂停</span>
               <input v-model.number="forms[editorSource.id].batchSize" class="input" type="number" min="0" max="1000" />
             </label>
             <label class="field">
@@ -1393,7 +1410,7 @@ function onDragEnd() {
           保存设置
         </button>
         <button
-          v-if="editorSource.id === 'picacg'"
+          v-if="showsAccountLogin(editorSource)"
           class="btn"
           type="button"
           :disabled="busy === `source-${editorSource.id}`"
