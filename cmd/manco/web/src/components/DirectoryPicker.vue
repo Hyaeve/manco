@@ -8,6 +8,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   placeholder: { type: String, default: '留空使用默认目录' },
   suffix: { type: String, default: '' },
+  allowDefault: { type: Boolean, default: true },
 })
 
 const emit = defineEmits(['update:modelValue', 'change'])
@@ -26,7 +27,9 @@ const folderName = ref('')
 const showCreate = ref(false)
 const error = ref('')
 
-const previewBase = computed(() => current.value || draft.value.trim() || defaultDir.value || '默认下载目录')
+const previewBase = computed(() =>
+  current.value || draft.value.trim() || (props.allowDefault ? defaultDir.value : '') || '选择下载目录',
+)
 const previewSuffix = computed(() => String(props.suffix || '').replace(/^[/\\]+|[/\\]+$/g, ''))
 const previewPath = computed(() => (previewSuffix.value ? `${previewBase.value}/${previewSuffix.value}` : previewBase.value))
 
@@ -49,7 +52,7 @@ async function loadRoots() {
   error.value = ''
   try {
     const payload = await api.downloadDirectories()
-    roots.value = (payload.items || []).filter((item) => item.available || item.default)
+    roots.value = (payload.items || []).filter((item) => item.available)
     defaultDir.value = payload.default || ''
     current.value = ''
     parent.value = ''
@@ -243,7 +246,7 @@ function chooseCurrent() {
               </div>
             </template>
             <template v-else>
-              <button class="directory-entry" type="button" @click="selectDefault">
+              <button v-if="allowDefault" class="directory-entry" type="button" @click="selectDefault">
                 <HardDrive :size="18" />
                 <span class="directory-entry-name">使用默认下载目录</span>
                 <Check v-if="!modelValue" :size="16" />
@@ -269,7 +272,7 @@ function chooseCurrent() {
               <strong>{{ previewBase }}</strong><em>/{{ previewSuffix || '' }}</em>
             </div>
             <div class="inline">
-              <button class="btn secondary" type="button" @click="selectDefault">使用默认目录</button>
+              <button v-if="allowDefault" class="btn secondary" type="button" @click="selectDefault">使用默认目录</button>
               <button class="btn" type="button" :disabled="loading || !current" @click="chooseCurrent">
                 <Check :size="15" />
                 选择此目录

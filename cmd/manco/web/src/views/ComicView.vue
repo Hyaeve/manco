@@ -6,6 +6,7 @@ import {
   ClockArrowDown,
   ClockArrowUp,
   ArrowLeft,
+  CircleCheck,
   Download,
   Loader2,
   Rss,
@@ -19,6 +20,7 @@ import {
 import { api } from '../api'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { notify } from '../stores/notices'
+import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,14 +43,23 @@ let pageScroller = null
 let anchorIndex = -1
 
 const subscribeOpen = ref(false)
+const downloadOpen = ref(false)
 const subForm = ref({
   cronExpr: '',
-  downloadDir: '',
+  downloadDir: lastSubscriptionDownloadDir(),
   convertToSimplified: true,
   chapterMarker: false,
   coverBlur: false,
   allChapters: false,
 })
+const downloadForm = ref({
+  downloadDir: lastSubscriptionDownloadDir(),
+  convertToSimplified: true,
+  chapterMarker: false,
+})
+
+const existingSubscription = ref(null)
+const isSubscribed = computed(() => Boolean(existingSubscription.value))
 
 const comic = computed(() => detail.value?.comic || null)
 const chapters = computed(() => detail.value?.chapters || [])
@@ -97,9 +108,22 @@ onMounted(async () => {
     loading.value = false
   }
   try {
-    const payload = await api.sources()
-    const source = (payload.items || []).find((item) => item.id === sourceId)
+    const [sourcePayload, subscriptionPayload] = await Promise.all([
+      api.sources().catch(() => ({ items: [] })),
+      api.subscriptions().catch(() => ({ items: [] })),
+    ])
+    const source = (sourcePayload.items || []).find((item) => item.id === sourceId)
     isBook.value = source?.kind === 'book'
+    existingSubscription.value =
+      (subscriptionPayload.items || []).find((item) => {
+        if (String(item.sourceId) !== String(sourceId)) return false
+        return [comicId, comic.value?.id].some((id) => String(id) === String(item.comicId))
+      }) || null
+    if (!lastSubscriptionDownloadDir() && subscriptionPayload.items?.length) {
+      const latestDownloadDir = subscriptionPayload.items[0].downloadDir || ''
+      subForm.value.downloadDir = latestDownloadDir
+      rememberSubscriptionDownloadDir(latestDownloadDir)
+    }
   } catch {
     isBook.value = false
   }
@@ -203,10 +227,14 @@ function cover() {
 }
 
 function openSubscribe() {
+  if (isSubscribed.value) {
+    notify('该作品已在订阅清单中', 'info')
+    return
+  }
   error.value = ''
   subForm.value = {
     cronExpr: subForm.value.cronExpr || defaultCron(),
-    downloadDir: subForm.value.downloadDir,
+    downloadDir: subForm.value.downloadDir || lastSubscriptionDownloadDir(),
     convertToSimplified: true,
     chapterMarker: false,
     coverBlur: false,
@@ -217,8 +245,16 @@ function openSubscribe() {
 
 async function confirmSubscribe() {
   if (!comic.value) return
+  if (isSubscribed.value) {
+    notify('该作品已在订阅清单中', 'info')
+    return
+  }
   if (!subForm.value.cronExpr.trim()) {
     notify('Cron 表达式不能为空', 'warning')
+    return
+  }
+  if (!subForm.value.downloadDir.trim()) {
+    notify('请选择下载位置', 'warning')
     return
   }
   busy.value = true
@@ -243,6 +279,8 @@ async function confirmSubscribe() {
       coverBlur: Boolean(subForm.value.coverBlur),
     })
     subscribeOpen.value = false
+    rememberSubscriptionDownloadDir(subForm.value.downloadDir)
+    existingSubscription.value = result?.item || { sourceId, comicId: comic.value.id }
     const queued = Number(result?.queued || 0)
     notify(
       subForm.value.allChapters
@@ -258,9 +296,23 @@ async function confirmSubscribe() {
   }
 }
 
+function openDownloadModal() {
+  if (!selected.value.size) return
+  downloadForm.value = {
+    downloadDir: subForm.value.downloadDir || lastSubscriptionDownloadDir(),
+    convertToSimplified: true,
+    chapterMarker: false,
+  }
+  downloadOpen.value = true
+}
+
 async function downloadSelected() {
   const picked = chapters.value.filter((item) => selected.value.has(item.id))
   if (!picked.length || !comic.value) return
+  if (!downloadForm.value.downloadDir.trim()) {
+    notify('请选择下载位置', 'warning')
+    return
+  }
   busy.value = true
   error.value = ''
   try {
@@ -272,9 +324,12 @@ async function downloadSelected() {
       comicAuthor: comic.value.author,
       autoDownload: autoDownload.value,
       chapters: picked,
-      downloadDir: subForm.value.downloadDir.trim(),
-      convertToSimplified: Boolean(subForm.value.convertToSimplified),
+      downloadDir: downloadForm.value.downloadDir.trim(),
+      convertToSimplified: Boolean(downloadForm.value.convertToSimplified),
+      chapterMarker: Boolean(downloadForm.value.chapterMarker),
     })
+    downloadOpen.value = false
+    rememberSubscriptionDownloadDir(downloadForm.value.downloadDir)
     const queued = Number(result.queued || 0)
     const skipped = Number(result.skipped || 0)
     notify(
@@ -313,14 +368,22 @@ async function downloadSelected() {
         <div class="detail-info-head">
           <h2>{{ comic.title }}</h2>
           <div class="detail-actions">
-            <button class="btn download-btn" type="button" :disabled="busy || !selected.size" @click="downloadSelected">
+            <button class="btn download-btn" type="button" :disabled="busy || !selected.size" @click="openDownloadModal">
               <Loader2 v-if="busy" :size="16" class="spin" />
               <Download v-else :size="16" />
               下载 ({{ selected.size }})
             </button>
-            <button class="btn subscribe-btn" type="button" :disabled="busy" @click="openSubscribe">
-              <Rss :size="16" />
-              订阅
+            <button
+              class="btn subscribe-btn"
+              :class="{ 'is-subscribed': isSubscribed }"
+              type="button"
+              :disabled="busy"
+              :aria-label="isSubscribed ? '已订阅' : '订阅'"
+              @click="openSubscribe"
+            >
+              <CircleCheck v-if="isSubscribed" :size="16" />
+              <Rss v-else :size="16" />
+              {{ isSubscribed ? '已订阅' : '订阅' }}
             </button>
           </div>
         </div>
@@ -398,7 +461,13 @@ async function downloadSelected() {
         </label>
         <label class="field">
           <span>下载位置</span>
-          <DirectoryPicker v-model="subForm.downloadDir" :suffix="comic?.title" />
+          <DirectoryPicker
+            v-model="subForm.downloadDir"
+            :suffix="comic?.title"
+            :allow-default="false"
+            placeholder="选择下载位置"
+            @change="rememberSubscriptionDownloadDir"
+          />
         </label>
         <div class="subscription-toggle-grid">
           <label class="switch-row">
@@ -429,6 +498,50 @@ async function downloadSelected() {
           <Loader2 v-if="busy" :size="15" class="spin" />
           <Rss v-else :size="15" />
           创建订阅
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="downloadOpen" class="modal-backdrop" @click.self="downloadOpen = false">
+    <div class="modal modal-lg subscription-modal download-task-modal">
+      <div class="modal-head">
+        <div>
+          <h2>下载任务设置</h2>
+          <p class="muted small">{{ comic?.title }} · 已选 {{ selected.size }} 章</p>
+        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="downloadOpen = false">
+          <X :size="18" />
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span>下载位置</span>
+          <DirectoryPicker
+            v-model="downloadForm.downloadDir"
+            :suffix="comic?.title"
+            :allow-default="false"
+            placeholder="选择下载位置"
+            @change="rememberSubscriptionDownloadDir"
+          />
+        </label>
+        <div class="subscription-toggle-grid download-toggle-grid">
+          <label class="switch-row">
+            <input v-model="downloadForm.chapterMarker" type="checkbox" />
+            <span>章节标符</span>
+          </label>
+          <label class="switch-row">
+            <input v-model="downloadForm.convertToSimplified" type="checkbox" />
+            <span>繁转简</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn secondary" type="button" @click="downloadOpen = false">取消</button>
+        <button class="btn download-btn" type="button" :disabled="busy" @click="downloadSelected">
+          <Loader2 v-if="busy" :size="15" class="spin" />
+          <Download v-else :size="15" />
+          下载 ({{ selected.size }})
         </button>
       </div>
     </div>

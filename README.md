@@ -113,7 +113,7 @@ docker compose up -d
 | `/app/data` | `./data` | SQLite 数据库、会话、探索发现缓存、图标索引与加密密钥 |
 | `/app/config` | `./config` | 系统设置、来源与账号、拓展仓库、订阅等模块化 JSON 配置 |
 
-| 自定义下载目录 | 按需映射 | 在「系统设置 → 下载设置」为订阅选择/填写容器内路径，如 `/downloads/manco` |
+| 自定义下载目录 | 按需映射 | 在作品详情页的下载/订阅任务设置中选择实际挂载目录，如 `/家庭影音/Manga` |
 
 `/app/config` 按模块分别保存为 `settings.json`、`accounts.json`、`sources.json`、`repositories.json`、`subscriptions.json`。系统登录密码以 bcrypt 哈希保存，来源账号的密码、Token 与 Cookie 在写入前使用 `MANCO_SECRET` 派生密钥加密。
 
@@ -230,7 +230,7 @@ Kototoro Parsers 插件的使用方式：
 发新版本：
 
 ```bash
-git tag v0.1.14 && git push origin v0.1.14   # 构建并发布 :v0.1.14
+git tag v0.1.15 && git push origin v0.1.15   # 构建并发布 :v0.1.15
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

@@ -1944,6 +1944,9 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
+.download-toggle-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 
 .subscription-toggle-grid .switch-row {
   min-width: 0;
@@ -2569,20 +2572,25 @@
 
 /* 作品详情：下载/订阅按钮与章节工具条微调 */
 .download-btn {
-  background: color-mix(in srgb, var(--primary) 22%, var(--surface));
-  color: var(--text);
-  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
+  background: color-mix(in srgb, #b9e6b4 38%, var(--surface));
+  color: color-mix(in srgb, #315b36 82%, var(--text));
+  border: 1px solid color-mix(in srgb, #78b674 45%, var(--border));
 }
 .download-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 34%, var(--surface));
+  background: color-mix(in srgb, #9fd99b 48%, var(--surface));
 }
 .subscribe-btn {
-  background: color-mix(in srgb, var(--primary-soft) 82%, var(--surface));
-  color: var(--primary-strong);
-  border: 1px solid color-mix(in srgb, var(--primary) 38%, var(--border));
+  background: color-mix(in srgb, #f7e9ad 20%, var(--surface));
+  color: color-mix(in srgb, #756a2d 76%, var(--text-muted));
+  border: 1px solid color-mix(in srgb, #dfcf83 30%, var(--border));
 }
 .subscribe-btn:hover:not(:disabled) {
-  background: var(--primary-soft);
+  background: color-mix(in srgb, #f4e39a 30%, var(--surface));
+}
+.subscribe-btn.is-subscribed {
+  color: color-mix(in srgb, #68724a 72%, var(--text-muted));
+  background: color-mix(in srgb, #dce8bd 30%, var(--surface));
+  border-color: color-mix(in srgb, #aebd79 38%, var(--border));
 }
 .select-all-btn {
   display: inline-flex;
@@ -3066,18 +3074,20 @@
   left: 0;
   padding: 5px 7px;
   border-radius: 8px;
-  color: var(--text);
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--text));
 }
 .detail-cover-back:hover {
   background: rgba(255, 255, 255, 0.78);
-  color: var(--text);
+  color: color-mix(in srgb, var(--primary-strong) 72%, var(--text-muted));
 }
 [data-theme='dark'] .detail-cover-back:hover {
   background: rgba(255, 255, 255, 0.14);
 }
 .detail-cover-back svg {
-  width: 24px;
-  height: 24px;
+  width: 25px;
+  height: 25px;
+  transform: scaleX(1.08);
+  transform-origin: center;
   stroke-width: 1.7;
 }
 .completed-task-groups {

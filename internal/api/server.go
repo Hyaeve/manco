@@ -52,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.14"
+	appVersion    = "v0.1.15"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2319,7 +2319,6 @@ func (s *Server) handleDownloadDirectories(w http.ResponseWriter, r *http.Reques
 			"available": directoryExists(cleaned),
 		})
 	}
-	add(defaultDir, true)
 	if raw, err := os.ReadFile("/proc/self/mountinfo"); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			fields := strings.Fields(line)
@@ -2346,6 +2345,16 @@ func (s *Server) handleDownloadDirectories(w http.ResponseWriter, r *http.Reques
 	sort.Slice(items, func(i, j int) bool {
 		return items[i]["path"].(string) < items[j]["path"].(string)
 	})
+	defaultVisible := false
+	for _, item := range items {
+		if item["path"].(string) == defaultDir && item["available"].(bool) {
+			item["default"] = true
+			defaultVisible = true
+		}
+	}
+	if !defaultVisible {
+		defaultDir = ""
+	}
 	s.downloadDirectoryView(w, r, defaultDir, items)
 }
 
@@ -2529,16 +2538,20 @@ func (s *Server) handleCheckSubscription(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
 		return
 	}
-	if _, err := s.store.Subscription(r.Context(), id); err != nil {
+	if err := s.scheduler.CheckOne(r.Context(), id); err != nil {
+		writeError(w, http.StatusBadGateway, "检查更新失败："+err.Error())
+		return
+	}
+	updated, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	go func() {
-		if err := s.scheduler.CheckOne(context.Background(), id); err != nil {
-			s.logger.Printf("api: check subscription %d: %v", id, err)
-		}
-	}()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"item":      updated,
+		"completed": updated.CompletedAt != nil,
+	})
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
@@ -2670,8 +2683,10 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			SourceID:            payload.SourceID,
 			ComicID:             payload.ComicID,
 			Title:               title,
+			Author:              strings.TrimSpace(payload.ComicAuthor),
 			SeriesDir:           downloader.SeriesDirectoryName(title, convertToSimplified),
 			Cover:               payload.ComicCover,
+			DownloadDir:         downloadDir,
 			Enabled:             true,
 			AutoDownload:        true,
 			CronExpr:            cronutil.Default(time.Now()),

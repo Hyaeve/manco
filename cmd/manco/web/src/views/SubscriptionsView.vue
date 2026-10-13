@@ -22,6 +22,7 @@ import { api } from '../api'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
+import { rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 
 const items = ref([])
 const jobs = ref([])
@@ -105,6 +106,10 @@ async function saveEditor() {
     notify('Cron 表达式不能为空', 'warning')
     return
   }
+  if (!form.value.downloadDir.trim()) {
+    notify('请选择下载位置', 'warning')
+    return
+  }
   const enablingMarker = Boolean(form.value.chapterMarker) && !editing.value.chapterMarker
   let markerResult = null
   if (enablingMarker) {
@@ -126,6 +131,7 @@ async function saveEditor() {
     })
     if (enablingMarker) markerResult = await api.backfillChapterMarkers(editing.value.id)
     Object.assign(editing.value, updated)
+    rememberSubscriptionDownloadDir(updated.downloadDir)
     if (enablingMarker) {
       const renamed = Number(markerResult?.renamed || 0)
       const failed = Number(markerResult?.failed || 0)
@@ -214,8 +220,13 @@ function jobStats(item) {
 async function checkUpdate(item) {
   busy.value = item.id
   try {
-    await api.checkSubscription(item.id)
-    notify(`《${item.title}》已检查更新`, 'success')
+    const result = await api.checkSubscription(item.id)
+    if (result?.item) Object.assign(item, result.item)
+    if (result?.completed) {
+      notify(`《${item.title}》已检测为完结`, 'info')
+    } else {
+      notify(`《${item.title}》已检查更新`, 'success')
+    }
     await load(true)
   } catch (err) {
     notify(`检查更新失败：${err.message}`, 'error')
@@ -301,7 +312,7 @@ async function downloadAll(item) {
           </div>
           <div class="subscription-line">
             <FolderOpen :size="14" />
-            <span>{{ item.downloadDir || '默认下载目录' }}</span>
+            <span>{{ item.downloadDir || '未设置下载目录' }}</span>
           </div>
           <div class="subscription-job-stats">
             <span class="subscription-stat success">成功 {{ jobStats(item).success }}</span>
@@ -358,7 +369,12 @@ async function downloadAll(item) {
         </label>
         <label class="field">
           <span>下载位置</span>
-          <DirectoryPicker v-model="form.downloadDir" :suffix="editing?.title" />
+          <DirectoryPicker
+            v-model="form.downloadDir"
+            :suffix="editing?.title"
+            :allow-default="false"
+            placeholder="选择下载位置"
+          />
         </label>
         <div class="subscription-toggle-grid">
           <label class="switch-row">

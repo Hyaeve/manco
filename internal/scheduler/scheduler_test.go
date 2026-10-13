@@ -215,6 +215,18 @@ func TestCronDueUsesCreationAndLastCheckBase(t *testing.T) {
 	}
 }
 
+func TestCompletedStatusUsesComicStatusAndChapterTitle(t *testing.T) {
+	if !completedStatus(nil, "已完结") {
+		t.Fatal("source status 已完结 should mark the subscription completed")
+	}
+	if !completedStatus([]model.Chapter{{Title: "终章"}}, "连载中") {
+		t.Fatal("terminal chapter title should mark the subscription completed")
+	}
+	if completedStatus([]model.Chapter{{Title: "第12话"}}, "连载中") {
+		t.Fatal("ongoing comic should not be marked completed")
+	}
+}
+
 func TestDisabledSubscriptionIsSkipped(t *testing.T) {
 	subscriptions := &stubSubscriptions{items: []model.Subscription{{
 		ID: 1, SourceID: "stub", ComicID: "1", Title: "测试作品", Enabled: false,
