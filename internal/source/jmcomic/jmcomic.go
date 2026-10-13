@@ -20,7 +20,8 @@ import (
 )
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 var jmCategoryOptions = []model.FilterOption{
@@ -68,13 +69,14 @@ var defaultSites = []string{
 }
 
 var (
-	albumPattern     = regexp.MustCompile(`/album/(\d+)`)
-	photoPattern     = regexp.MustCompile(`/photo/(\d+)`)
-	pageArrayPattern = regexp.MustCompile(`var\s+page_arr\s*=\s*(\[[^\]]*\])`)
-	scramblePattern  = regexp.MustCompile(`var\s+scramble_id\s*=\s*(\d+)`)
-	albumIDPattern   = regexp.MustCompile(`var\s+(?:album_id|aid)\s*=\s*(\d+)`)
-	domainPattern    = regexp.MustCompile(`var\s+data_original_domain\s*=\s*["']([^"']+)["']`)
-	imageHostPattern = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*|jmapinodeudzn)\.(?:vip|org|cc|site|club|net))`)
+	albumPattern           = regexp.MustCompile(`/album/(\d+)`)
+	photoPattern           = regexp.MustCompile(`/photo/(\d+)`)
+	pageArrayPattern       = regexp.MustCompile(`var\s+page_arr\s*=\s*(\[[^\]]*\])`)
+	scramblePattern        = regexp.MustCompile(`var\s+scramble_id\s*=\s*(\d+)`)
+	albumIDPattern         = regexp.MustCompile(`var\s+(?:album_id|aid)\s*=\s*(\d+)`)
+	domainPattern          = regexp.MustCompile(`var\s+data_original_domain\s*=\s*["']([^"']+)["']`)
+	imageHostPattern       = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*|jmapinodeudzn)\.(?:vip|org|cc|site|club|net))`)
+	backgroundImagePattern = regexp.MustCompile(`url\([\'"]?([^\'")]+)[\'"]?\)`)
 )
 
 func (s *Source) Info() model.SourceInfo {
@@ -299,7 +301,7 @@ func (s *Source) bases(account source.Account) []string {
 }
 
 func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, string, error) {
-	return source.FetchTextFallback(ctx, s.client, s.bases(account), path, values, func(base string) map[string]string {
+	return source.FetchTextFallback(ctx, source.SourceClient(s.client, &s.directClient, account), s.bases(account), path, values, func(base string) map[string]string {
 		headers := map[string]string{
 			"Referer":                   base + "/",
 			"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
@@ -317,6 +319,7 @@ func (s *Source) get(ctx context.Context, account source.Account, path string, v
 // challenge pages that answer HTTP 200 with no album markup, so plain status
 // checks would silently return empty results from a dead mirror.
 func (s *Source) getMatching(ctx context.Context, account source.Account, paths []string, values url.Values, ok func(string) bool) (string, string, error) {
+	client := source.SourceClient(s.client, &s.directClient, account)
 	var lastErr error
 	for _, base := range s.bases(account) {
 		for _, path := range paths {
@@ -329,7 +332,7 @@ func (s *Source) getMatching(ctx context.Context, account source.Account, paths 
 			for key, value := range source.HeaderCookie(account.Cookie) {
 				headers[key] = value
 			}
-			html, err := source.FetchText(ctx, s.client, address, headers)
+			html, err := source.FetchText(ctx, client, address, headers)
 			if err != nil {
 				lastErr = err
 				continue
@@ -357,10 +360,32 @@ func parseSearch(html, base string, page int) (model.SearchResult, error) {
 	if err != nil {
 		return model.SearchResult{}, err
 	}
+	items := parseAlbumCards(document, base)
+	if len(items) == 0 {
+		items = parseSearchFallback(document, base)
+	}
+	hasMore := document.Find("a[rel='next'], .pagination .next, a[href*='page="+strconv.Itoa(page+1)+"']").Length() > 0
+	return model.SearchResult{Items: items, Page: page, Pages: 0, Total: len(items), HasMore: hasMore}, nil
+}
+
+// albumCardSelectors matches the containers 18comic uses for album tiles.
+// Multiple mirrors render slightly different markup, so several class names
+// are accepted. The anchor itself is the final fallback.
+var albumCardSelectors = []string{
+	".video-item", ".video-card", ".card", ".thumb", ".hentai-item",
+	".img_span", "li", "article", "div",
+}
+
+// parseAlbumCards walks every album anchor, promotes it to the enclosing
+// tile, and reads title and cover from that tile. Older parsing only inspected
+// the anchor itself, so lazy-loaded covers (data-original on a sibling image)
+// and titles living in the tile header were missed and the card degraded to
+// "禁漫 <id>" with no artwork.
+func parseAlbumCards(document *goquery.Document, base string) []model.Comic {
 	items := make([]model.Comic, 0, 30)
 	seen := map[string]bool{}
-	document.Find("a[href*='/album/']").Each(func(_ int, selection *goquery.Selection) {
-		href, ok := selection.Attr("href")
+	document.Find("a[href*='/album/'], a[href*='/albums/']").Each(func(_ int, anchor *goquery.Selection) {
+		href, ok := anchor.Attr("href")
 		if !ok {
 			return
 		}
@@ -369,25 +394,76 @@ func parseSearch(html, base string, page int) (model.SearchResult, error) {
 			return
 		}
 		seen[matches[1]] = true
-		item := model.Comic{
+		card := albumCard(anchor)
+		title := source.FirstNonEmpty(
+			strings.TrimSpace(anchor.AttrOr("title", "")),
+			cardTitle(card),
+			normalizeText(anchor.Text()),
+		)
+		cover := source.Absolutize(base, imageFrom(card))
+		if isPlaceholderTitle(title, matches[1]) {
+			title = "禁漫 " + matches[1]
+		}
+		items = append(items, model.Comic{
 			SourceID: sourceID,
 			ID:       matches[1],
-			Title:    strings.TrimSpace(selection.Find(".video-title, .title, h3, h2, p").First().Text()),
-			Cover:    source.Absolutize(base, imageFrom(selection)),
-		}
-		if item.Title == "" {
-			item.Title = strings.TrimSpace(selection.AttrOr("title", ""))
-		}
-		if item.Title == "" {
-			item.Title = "禁漫 " + matches[1]
-		}
-		items = append(items, item)
+			Title:    title,
+			Cover:    cover,
+		})
 	})
-	if len(items) == 0 {
-		items = parseSearchFallback(document, base)
+	return items
+}
+
+func isPlaceholderTitle(title, albumID string) bool {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" || trimmed == albumID {
+		return true
 	}
-	hasMore := document.Find("a[rel='next'], .pagination .next, a[href*='page="+strconv.Itoa(page+1)+"']").Length() > 0
-	return model.SearchResult{Items: items, Page: page, Pages: 0, Total: len(items), HasMore: hasMore}, nil
+	return strings.EqualFold(trimmed, "禁漫 "+albumID)
+}
+
+// albumCard returns the innermost tile-like ancestor of an album anchor.
+func albumCard(anchor *goquery.Selection) *goquery.Selection {
+	for _, selector := range albumCardSelectors {
+		if ancestor := anchor.Closest(selector); ancestor.Length() > 0 {
+			return ancestor
+		}
+	}
+	return anchor
+}
+
+// cardTitle extracts the first meaningful title string from an album tile.
+func cardTitle(card *goquery.Selection) string {
+	selectors := []string{
+		".video-title", ".title", ".name", ".card-title",
+		"[data-title]", ".comic-name", ".comix_title",
+		"h3", "h2", "h1", "p",
+	}
+	for _, selector := range selectors {
+		var found string
+		card.Find(selector).EachWithBreak(func(_ int, node *goquery.Selection) bool {
+			if value := strings.TrimSpace(node.AttrOr("content", "")); value != "" {
+				found = value
+				return false
+			}
+			if value := normalizeText(node.Text()); value != "" {
+				found = value
+				return false
+			}
+			return true
+		})
+		if found != "" {
+			return found
+		}
+	}
+	if value := strings.TrimSpace(card.AttrOr("data-title", "")); value != "" {
+		return value
+	}
+	return normalizeText(card.Text())
+}
+
+func normalizeText(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
 func parseSearchFallback(document *goquery.Document, base string) []model.Comic {
@@ -403,15 +479,20 @@ func parseSearchFallback(document *goquery.Document, base string) []model.Comic 
 			return
 		}
 		seen[matches[1]] = true
-		item := model.Comic{
+		title := source.FirstNonEmpty(strings.TrimSpace(selection.AttrOr("title", "")), normalizeText(selection.Text()))
+		cover := source.Absolutize(base, imageFrom(selection.Closest(".video-item, .video-card, .card, li, article, div").First()))
+		if cover == "" {
+			cover = source.Absolutize(base, imageFrom(selection))
+		}
+		if isPlaceholderTitle(title, matches[1]) {
+			title = "禁漫 " + matches[1]
+		}
+		items = append(items, model.Comic{
 			SourceID: sourceID,
 			ID:       matches[1],
-			Title:    strings.TrimSpace(selection.Text()),
-			Cover:    source.Absolutize(base, imageFrom(selection)),
-		}
-		if item.Title != "" || item.Cover != "" {
-			items = append(items, item)
-		}
+			Title:    title,
+			Cover:    cover,
+		})
 	})
 	return items
 }
@@ -539,14 +620,66 @@ func attr(document *goquery.Document, selector, name string) string {
 }
 
 func imageFrom(selection *goquery.Selection) string {
-	if image := selection.Find("img").First(); image.Length() > 0 {
-		return source.FirstNonEmpty(
-			strings.TrimSpace(image.AttrOr("data-original", "")),
-			strings.TrimSpace(image.AttrOr("data-src", "")),
-			strings.TrimSpace(image.AttrOr("src", "")),
-		)
+	if selection == nil || selection.Length() == 0 {
+		return ""
+	}
+	image := selection
+	if !selection.Is("img") && !selection.Is("amp-img") {
+		image = selection.Find("img, amp-img").First()
+	}
+	if image.Length() > 0 {
+		if value := imageAttrs(image); value != "" {
+			return value
+		}
+	}
+	if value := backgroundImageFrom(selection); value != "" {
+		return value
 	}
 	return ""
+}
+
+// backgroundImageFrom reads CSS background-image declarations. Some mirrors
+// no longer emit <img> for album tiles and instead style the tile directly.
+func backgroundImageFrom(selection *goquery.Selection) string {
+	candidates := selection
+	if styled := selection.Find("[style*='background-image']").First(); styled.Length() > 0 {
+		candidates = styled
+	}
+	if style := strings.TrimSpace(candidates.AttrOr("style", "")); style != "" {
+		if match := backgroundImagePattern.FindStringSubmatch(style); len(match) >= 2 {
+			return firstURL(match[1])
+		}
+	}
+	return ""
+}
+
+func imageAttrs(image *goquery.Selection) string {
+	for _, name := range []string{
+		"data-original", "data-src", "data-lazy-src", "data-echo", "data-url",
+		"data-srcset", "data-lazy", "src", "srcset",
+	} {
+		if value := firstURL(strings.TrimSpace(image.AttrOr(name, ""))); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// firstURL returns the first candidate from an attribute that may contain a
+// srcset list ("url 1x, url2 2x"). 18comic lazy-loads grid covers through
+// several of these attributes depending on the mirror.
+func firstURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if index := strings.Index(value, ","); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	if fields := strings.Fields(value); len(fields) > 0 {
+		value = fields[0]
+	}
+	return strings.TrimSpace(value)
 }
 
 func listFrom(document *goquery.Document, selector string) string {

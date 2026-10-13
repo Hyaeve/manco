@@ -69,7 +69,7 @@ func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 
 func (a *Adapter) Info() model.SourceInfo { return a.info }
 
-func (a *Adapter) Search(ctx context.Context, _ source.Account, query string, page int) (model.SearchResult, error) {
+func (a *Adapter) Search(ctx context.Context, account source.Account, query string, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -79,14 +79,14 @@ func (a *Adapter) Search(ctx context.Context, _ source.Account, query string, pa
 		"sourceName": a.config.SourceName,
 		"offset":     offset,
 		"filter":     filter,
-	})
+	}, source.AccountUsesProxy(account))
 	if err != nil {
 		return model.SearchResult{}, err
 	}
 	return a.searchResult(result, page)
 }
 
-func (a *Adapter) Browse(ctx context.Context, _ source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
+func (a *Adapter) Browse(ctx context.Context, account source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -129,14 +129,14 @@ func (a *Adapter) Browse(ctx context.Context, _ source.Account, options model.Br
 	if strings.TrimSpace(options.Sort) != "" {
 		fields["order"] = strings.ToUpper(strings.TrimSpace(options.Sort))
 	}
-	result, err := a.call(ctx, "list", fields)
+	result, err := a.call(ctx, "list", fields, source.AccountUsesProxy(account))
 	if err != nil {
 		return model.SearchResult{}, err
 	}
 	return a.searchResult(result, page)
 }
 
-func (a *Adapter) Detail(ctx context.Context, _ source.Account, comicID string) (model.Comic, error) {
+func (a *Adapter) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
 	content, err := decodeObject(comicID)
 	if err != nil {
 		return model.Comic{}, err
@@ -144,7 +144,7 @@ func (a *Adapter) Detail(ctx context.Context, _ source.Account, comicID string) 
 	result, err := a.call(ctx, "details", map[string]any{
 		"content":   content,
 		"fetchMode": "FORCE_REFRESH",
-	})
+	}, source.AccountUsesProxy(account))
 	if err != nil {
 		return model.Comic{}, err
 	}
@@ -156,7 +156,7 @@ func (a *Adapter) Detail(ctx context.Context, _ source.Account, comicID string) 
 }
 
 func (a *Adapter) Chapters(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
-	comic, chapters, err := a.detailAndChapters(ctx, comicID)
+	comic, chapters, err := a.detailAndChapters(ctx, account, comicID)
 	_ = comic
 	if err == nil {
 		return chapters, nil
@@ -169,12 +169,12 @@ func (a *Adapter) Chapters(ctx context.Context, account source.Account, comicID 
 	return nil, err
 }
 
-func (a *Adapter) Pages(ctx context.Context, _ source.Account, _ string, chapter model.Chapter) ([]model.Page, error) {
+func (a *Adapter) Pages(ctx context.Context, account source.Account, _ string, chapter model.Chapter) ([]model.Page, error) {
 	raw, err := decodeObject(chapter.ID)
 	if err != nil {
 		return nil, err
 	}
-	result, err := a.call(ctx, "pages", map[string]any{"chapter": raw})
+	result, err := a.call(ctx, "pages", map[string]any{"chapter": raw}, source.AccountUsesProxy(account))
 	if err != nil {
 		return nil, err
 	}
@@ -204,36 +204,36 @@ func (a *Adapter) Pages(ctx context.Context, _ source.Account, _ string, chapter
 // PageImage materializes a parser page through the sidecar. Parser plugins
 // often descramble or sign images, so bypassing the plugin HTTP stack would
 // produce corrupt files.
-func (a *Adapter) PageImage(ctx context.Context, _ source.Account, _ string, _ model.Chapter, page model.Page) ([]byte, string, error) {
+func (a *Adapter) PageImage(ctx context.Context, account source.Account, _ string, _ model.Chapter, page model.Page) ([]byte, string, error) {
 	raw, err := decodeObject(page.AssetID)
 	if err != nil {
 		return nil, "", err
 	}
-	result, err := a.call(ctx, "image", map[string]any{"page": raw})
+	result, err := a.call(ctx, "image", map[string]any{"page": raw}, source.AccountUsesProxy(account))
 	if err != nil {
 		return nil, "", err
 	}
 	return a.readArtifact(result)
 }
 
-func (a *Adapter) CoverImage(ctx context.Context, _ source.Account, comic model.Comic) ([]byte, string, error) {
+func (a *Adapter) CoverImage(ctx context.Context, account source.Account, comic model.Comic) ([]byte, string, error) {
 	raw, err := decodeObject(comic.ID)
 	if err != nil {
 		return nil, "", err
 	}
-	result, err := a.call(ctx, "cover", map[string]any{"content": raw, "large": true})
+	result, err := a.call(ctx, "cover", map[string]any{"content": raw, "large": true}, source.AccountUsesProxy(account))
 	if err != nil {
 		return nil, "", err
 	}
 	return a.readArtifact(result)
 }
 
-func (a *Adapter) ChapterContent(ctx context.Context, _ source.Account, _ string, chapter model.Chapter) (string, error) {
+func (a *Adapter) ChapterContent(ctx context.Context, account source.Account, _ string, chapter model.Chapter) (string, error) {
 	raw, err := decodeObject(chapter.ID)
 	if err != nil {
 		return "", err
 	}
-	result, err := a.call(ctx, "chapterContent", map[string]any{"chapter": raw})
+	result, err := a.call(ctx, "chapterContent", map[string]any{"chapter": raw}, source.AccountUsesProxy(account))
 	if err != nil {
 		return "", err
 	}
@@ -244,8 +244,11 @@ func (a *Adapter) ChapterContent(ctx context.Context, _ source.Account, _ string
 	return stringValue(content["html"]), nil
 }
 
-func (a *Adapter) call(ctx context.Context, operation string, fields map[string]any) (map[string]any, error) {
-	return a.manager.Call(ctx, operation, fields)
+func (a *Adapter) call(ctx context.Context, operation string, fields map[string]any, useProxy ...bool) (map[string]any, error) {
+	if len(useProxy) == 0 {
+		return a.manager.Call(ctx, operation, fields)
+	}
+	return a.manager.CallWithProxy(ctx, operation, fields, &useProxy[0])
 }
 
 // Filters returns the filter controls advertised by the Kototoro parser.
@@ -412,7 +415,7 @@ func enumLabel(value string) string {
 	return value
 }
 
-func (a *Adapter) detailAndChapters(ctx context.Context, comicID string) (model.Comic, []model.Chapter, error) {
+func (a *Adapter) detailAndChapters(ctx context.Context, account source.Account, comicID string) (model.Comic, []model.Chapter, error) {
 	content, err := decodeObject(comicID)
 	if err != nil {
 		return model.Comic{}, nil, err
@@ -420,7 +423,7 @@ func (a *Adapter) detailAndChapters(ctx context.Context, comicID string) (model.
 	result, err := a.call(ctx, "details", map[string]any{
 		"content":   content,
 		"fetchMode": "FORCE_REFRESH",
-	})
+	}, source.AccountUsesProxy(account))
 	if err != nil {
 		return model.Comic{}, nil, err
 	}

@@ -5,7 +5,7 @@ import {
   BookOpen,
   ClockArrowDown,
   ClockArrowUp,
-  ChevronLeft,
+  ArrowLeft,
   Download,
   Loader2,
   Rss,
@@ -269,6 +269,7 @@ async function downloadSelected() {
       comicId: comic.value.id,
       comicTitle: comic.value.title,
       comicCover: comic.value.cover,
+      comicAuthor: comic.value.author,
       autoDownload: autoDownload.value,
       chapters: picked,
       downloadDir: subForm.value.downloadDir.trim(),
@@ -300,7 +301,7 @@ async function downloadSelected() {
   <div v-else>
     <div class="detail-hero" :style="heroStyle">
       <button class="detail-cover-back" type="button" aria-label="返回" @click="goBack">
-        <ChevronLeft :size="22" :stroke-width="1.6" />
+        <ArrowLeft :size="24" :stroke-width="1.7" />
       </button>
       <div class="detail-cover-wrap">
         <div class="detail-cover">

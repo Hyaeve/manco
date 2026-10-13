@@ -38,6 +38,7 @@ const activeKind = ref('comic')
 const repositoryOpen = ref(false)
 const addSourceOpen = ref(false)
 const addRepositoryID = ref('')
+const addUseProxy = ref(true)
 const sourceSearch = ref('')
 const categoryOpen = ref(false)
 const categorySource = ref(null)
@@ -204,6 +205,7 @@ async function load() {
           password: account.password || '',
           cookie: '',
           homeUrl: account.homeUrl || '',
+          useProxy: account.useProxy !== false,
           chapterConcurrency: Number(settings.chapterConcurrency ?? 1),
           pageConcurrency: Number(settings.pageConcurrency ?? 2),
           batchSize: Number(settings.batchSize ?? 5),
@@ -213,6 +215,7 @@ async function load() {
         forms[item.id].username = account.username || ''
         if (account.password) forms[item.id].password = account.password
         forms[item.id].homeUrl = account.homeUrl || ''
+        forms[item.id].useProxy = account.useProxy !== false
         forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency ?? 1)
         forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
         forms[item.id].batchSize = Number(settings.batchSize ?? 5)
@@ -589,6 +592,7 @@ async function saveSource(item, login = false) {
 
     const payload = {
       homeUrl: form.homeUrl,
+      useProxy: form.useProxy !== false,
       login,
       settings: {
         chapterConcurrency: Number(form.chapterConcurrency) || 1,
@@ -831,6 +835,7 @@ async function addCandidate(candidate) {
       config: candidate.config || {},
       enabled: true,
     })
+    await api.saveAccount(saved.id, { useProxy: addUseProxy.value !== false }).catch(() => {})
     sources.value = [...sources.value, saved]
     extensionCandidates.value = extensionCandidates.value.filter((item) => item.id !== candidate.id)
     notify(`${saved.name} 已添加`, 'success')
@@ -1101,6 +1106,10 @@ function onDragEnd() {
           <label class="source-repository-search">
             <Search :size="15" />
             <input v-model="sourceSearch" placeholder="搜索内容源" />
+          </label>
+          <label class="source-proxy-toggle">
+            <input v-model="addUseProxy" type="checkbox" />
+            <span>应用代理</span>
           </label>
         </div>
         <div v-if="candidateLoading" class="empty compact">
@@ -1384,6 +1393,15 @@ function onDragEnd() {
             </label>
           </div>
           <p class="muted small">留空或填 0 表示不启用批量暂停。</p>
+        </section>
+
+        <section class="source-editor-section">
+          <h3>网络</h3>
+          <label class="switch-row">
+            <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
+            <span>应用代理</span>
+          </label>
+          <p class="muted small">关闭后该内容源将直连，不经过系统设置中的全局代理。</p>
         </section>
       </div>
       <div class="modal-foot source-editor-foot">

@@ -55,7 +55,8 @@ var (
 var errNoPages = errors.New("书籍源不支持图片下载")
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 func New(client *http.Client) *Source { return &Source{client: client} }
@@ -222,7 +223,7 @@ func (s *Source) bases(account source.Account) []string {
 }
 
 func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, string, error) {
-	return source.FetchTextFallback(ctx, s.client, s.bases(account), path, values, func(base string) map[string]string {
+	return source.FetchTextFallback(ctx, source.SourceClient(s.client, &s.directClient, account), s.bases(account), path, values, func(base string) map[string]string {
 		headers := map[string]string{
 			"Referer":         base + "/",
 			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",

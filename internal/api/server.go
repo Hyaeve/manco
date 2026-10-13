@@ -52,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.13"
+	appVersion    = "v0.1.14"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -305,6 +305,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
 	mux.HandleFunc("POST /api/local/merge", s.requireAuth(s.handleLocalMerge))
 	mux.HandleFunc("POST /api/local/simplify", s.requireAuth(s.handleLocalSimplify))
+	mux.HandleFunc("POST /api/local/delete", s.requireAuth(s.handleLocalDelete))
 	mux.HandleFunc("GET /api/settings", s.requireAuth(s.handleGetSettings))
 	mux.HandleFunc("GET /api/version", s.requireAuth(s.handleVersion))
 	mux.HandleFunc("GET /api/update-check", s.requireAuth(s.handleUpdateCheck))
@@ -428,6 +429,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		Username  string                       `json:"username,omitempty"`
 		Password  string                       `json:"password,omitempty"`
 		HomeURL   string                       `json:"homeUrl,omitempty"`
+		UseProxy  bool                         `json:"useProxy"`
 		HasToken  bool                         `json:"hasToken"`
 		HasCookie bool                         `json:"hasCookie"`
 		UpdatedAt time.Time                    `json:"updatedAt"`
@@ -437,12 +439,14 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		for _, account := range stored {
 			plainPassword, _ := s.box.Decrypt(account.SecretCipher)
+			plain, _ := source.AccountFromModel(s.box, account)
 			accounts[account.SourceID] = accountView{
 				Settings:  s.sourceDownloadSettings(account.Extra),
 				SourceID:  account.SourceID,
 				Username:  account.Username,
 				Password:  plainPassword,
 				HomeURL:   account.HomeURL,
+				UseProxy:  source.AccountUsesProxy(plain),
 				HasToken:  account.TokenCipher != "",
 				HasCookie: account.CookieCipher != "",
 				UpdatedAt: account.UpdatedAt,
@@ -1517,6 +1521,7 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		Token    string                        `json:"token"`
 		Cookie   string                        `json:"cookie"`
 		HomeURL  *string                       `json:"homeUrl"`
+		UseProxy *bool                         `json:"useProxy"`
 		Login    bool                          `json:"login"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
@@ -1543,6 +1548,9 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.HomeURL != nil {
 		account.HomeURL = strings.TrimRight(strings.TrimSpace(*payload.HomeURL), "/")
+	}
+	if payload.UseProxy != nil {
+		source.SetAccountUseProxy(&account, *payload.UseProxy)
 	}
 	if payload.Login {
 		loginSource, ok := item.(source.LoginSource)
@@ -2590,6 +2598,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		ComicID             string          `json:"comicId"`
 		ComicTitle          string          `json:"comicTitle"`
 		ComicCover          string          `json:"comicCover"`
+		ComicAuthor         string          `json:"comicAuthor"`
 		DownloadDir         string          `json:"downloadDir"`
 		ConvertToSimplified *bool           `json:"convertToSimplified"`
 		ChapterMarker       *bool           `json:"chapterMarker"`
@@ -2637,6 +2646,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			ComicID:             payload.ComicID,
 			ComicTitle:          downloader.SeriesDirectoryName(title, convertToSimplified),
 			ComicCover:          payload.ComicCover,
+			ComicAuthor:         strings.TrimSpace(payload.ComicAuthor),
 			ChapterID:           chapter.ID,
 			ChapterTitle:        source.FirstNonEmpty(chapter.Title, chapter.ID),
 			ChapterOrder:        chapter.Order,
@@ -3205,6 +3215,75 @@ func (s *Server) handleLocalSimplify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleLocalDelete(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Paths []string `json:"paths"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	targets, err := s.resolveLocalDirectories(r.Context(), payload.Paths)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.validateLocalDeleteTargets(r.Context(), targets); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	result, err := localops.Delete(targets)
+	if err != nil {
+		s.logger.Printf("local: delete: %v", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.logger.Printf("local: deleted %d item(s), %d file(s)", result.DeletedItems, result.DeletedFiles)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"deletedItems": result.DeletedItems,
+		"deletedFiles": result.DeletedFiles,
+	})
+}
+
+func (s *Server) validateLocalDeleteTargets(ctx context.Context, targets []string) error {
+	roots := s.localRoots(ctx)
+	for _, target := range targets {
+		info, err := os.Lstat(target)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("本地作品目录无效: %s", filepath.Base(target))
+		}
+		targetAbs, err := filepath.Abs(target)
+		if err != nil {
+			return err
+		}
+		matched := false
+		for _, root := range roots {
+			rootAbs, err := filepath.Abs(root)
+			if err != nil || sameCleanPath(rootAbs, targetAbs) {
+				continue
+			}
+			rel, err := filepath.Rel(rootAbs, targetAbs)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				continue
+			}
+			// The local library only exposes direct children of a download root.
+			if !strings.Contains(rel, string(os.PathSeparator)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("只能删除下载目录中的作品目录: %s", filepath.Base(target))
+		}
+	}
+	return nil
+}
+
+func sameCleanPath(left, right string) bool {
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+}
+
 func (s *Server) resolveLocalDirectories(ctx context.Context, paths []string) ([]string, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("请选择本地作品")
@@ -3633,12 +3712,16 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 		request.Header.Set("Referer", referer)
 	}
 	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	imageAccount := source.Account{}
 	if sourceID != "" {
-		if account, err := s.registry.Account(r.Context(), sourceID); err == nil && account.Cookie != "" {
-			request.Header.Set("Cookie", account.Cookie)
+		if account, err := s.registry.Account(r.Context(), sourceID); err == nil {
+			imageAccount = account
+			if account.Cookie != "" {
+				request.Header.Set("Cookie", account.Cookie)
+			}
 		}
 	}
-	response, err := s.registry.Client().Do(request)
+	response, err := s.registry.ClientForAccount(imageAccount).Do(request)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return

@@ -488,7 +488,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 	defer os.RemoveAll(tempDir)
 
-	client := e.registry.Client()
+	client := e.registry.ClientForAccount(account)
 	if client == nil {
 		client = source.NewHTTPClient()
 	}
@@ -745,7 +745,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		return err
 	}
 	e.metaMu.Lock()
-	metaErr := writeBookMetadata(ctx, e.registry.Client(), account, item, metadata, comicDir)
+	metaErr := writeBookMetadata(ctx, e.registry.ClientForAccount(account), account, item, metadata, comicDir)
 	e.metaMu.Unlock()
 	if metaErr != nil {
 		e.logger.Printf("downloader: book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
@@ -900,7 +900,7 @@ func (e *Engine) EnsureSeriesMetadata(ctx context.Context, subscription model.Su
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
-	client := e.registry.Client()
+	client := e.registry.ClientForAccount(account)
 	if client == nil {
 		client = source.NewHTTPClient()
 	}

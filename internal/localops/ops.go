@@ -22,6 +22,44 @@ type SimplifyResult struct {
 	Renamed       int
 }
 
+type DeleteResult struct {
+	DeletedItems int
+	DeletedFiles int
+}
+
+// Delete removes whole local item directories. Callers must resolve and
+// validate every path against the configured download roots before calling.
+// RemoveAll unlinks symlinks instead of traversing their targets, so a link
+// inside a selected item cannot escape the download root.
+func Delete(paths []string) (DeleteResult, error) {
+	result := DeleteResult{}
+	seen := map[string]bool{}
+	for _, value := range paths {
+		value = filepath.Clean(strings.TrimSpace(value))
+		if value == "" || value == "." || seen[value] {
+			continue
+		}
+		seen[value] = true
+		info, err := os.Lstat(value)
+		if err != nil {
+			return result, fmt.Errorf("读取本地作品失败: %w", err)
+		}
+		if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			return result, errors.New("本地作品路径不是目录")
+		}
+		files, err := countFiles(value)
+		if err != nil {
+			return result, err
+		}
+		if err := os.RemoveAll(value); err != nil {
+			return result, fmt.Errorf("删除本地作品失败: %w", err)
+		}
+		result.DeletedItems++
+		result.DeletedFiles += files
+	}
+	return result, nil
+}
+
 // Merge moves every entry from the copy directories into the first selected
 // parent directory. Existing names are never overwritten; a numeric suffix is
 // used when a destination name already exists.

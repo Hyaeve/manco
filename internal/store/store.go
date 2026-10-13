@@ -94,6 +94,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			comic_id TEXT NOT NULL,
 			comic_title TEXT NOT NULL,
 			comic_cover TEXT NOT NULL DEFAULT '',
+			comic_author TEXT NOT NULL DEFAULT '',
 			chapter_id TEXT NOT NULL,
 			chapter_title TEXT NOT NULL,
 			chapter_order REAL NOT NULL DEFAULT 0,
@@ -184,6 +185,25 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "download_jobs", "retry_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "download_jobs", "comic_author", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE download_jobs
+		SET comic_author = COALESCE((
+			SELECT subscriptions.author
+			FROM subscriptions
+			WHERE subscriptions.source_id = download_jobs.source_id
+				AND subscriptions.comic_id = download_jobs.comic_id
+		), comic_author)
+		WHERE comic_author = ''
+			AND EXISTS (
+				SELECT 1 FROM subscriptions
+				WHERE subscriptions.source_id = download_jobs.source_id
+					AND subscriptions.comic_id = download_jobs.comic_id
+			)`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "download_jobs", "next_retry_at", `DATETIME`); err != nil {
@@ -775,11 +795,12 @@ func (s *Store) DeleteSubscription(ctx context.Context, id int64) error {
 
 func (s *Store) CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error) {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, chapter_id, chapter_title, chapter_order, download_dir, convert_to_simplified, chapter_marker, status)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
+INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, download_dir, convert_to_simplified, chapter_marker, status)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 		ON CONFLICT(source_id, comic_id, chapter_id) DO UPDATE SET
 			comic_title = excluded.comic_title,
 			comic_cover = excluded.comic_cover,
+			comic_author = excluded.comic_author,
 			chapter_title = excluded.chapter_title,
 			chapter_order = excluded.chapter_order,
 			download_dir = excluded.download_dir,
@@ -789,7 +810,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 			retry_count = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.retry_count ELSE 0 END,
 			next_retry_at = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.next_retry_at ELSE NULL END,
 			updated_at = CURRENT_TIMESTAMP`,
-		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ChapterID, job.ChapterTitle, job.ChapterOrder, job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker)
+		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ChapterID, job.ChapterTitle, job.ChapterOrder, job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker)
 	if err != nil {
 		return model.DownloadJob{}, err
 	}
@@ -849,11 +870,11 @@ func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
 	return jobs, rows.Err()
 }
 
-const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at FROM download_jobs`
+const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at FROM download_jobs`
 
 func scanJob(row rowScanner) (model.DownloadJob, error) {
 	var job model.DownloadJob
-	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.DownloadDir, &job.ConvertToSimplified, &job.ChapterMarker, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
+	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ComicAuthor, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.DownloadDir, &job.ConvertToSimplified, &job.ChapterMarker, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.DownloadJob{}, ErrNotFound
 	}

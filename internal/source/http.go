@@ -42,6 +42,19 @@ func (c *ProxyController) Set(raw string) error {
 
 // SetCredentials updates the proxy resolver, optionally adding HTTP basic
 // credentials. Supplying an empty URL restores the environment proxy.
+var directProxyFunc = proxyFunc(func(*http.Request) (*url.URL, error) { return nil, nil })
+
+// SetBypass makes the controller ignore every proxy, including the
+// environment proxy. It is used by per-source requests that opt out of the
+// configured proxy.
+func (c *ProxyController) SetBypass(bypass bool) {
+	if bypass {
+		c.current.Store(directProxyFunc)
+		return
+	}
+	c.current.Store(proxyFunc(http.ProxyFromEnvironment))
+}
+
 func (c *ProxyController) SetCredentials(raw, username, password string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -68,6 +81,26 @@ func (c *ProxyController) SetCredentials(raw, username, password string) error {
 type proxyTransport struct {
 	*http.Transport
 	proxy *ProxyController
+}
+
+// NewHTTPClientDirect returns a client whose transport never uses a proxy.
+func NewHTTPClientDirect() *http.Client {
+	controller := NewProxyController()
+	controller.SetBypass(true)
+	transport := &http.Transport{
+		Proxy:                 controller.Proxy,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{
+		Transport: &proxyTransport{Transport: transport, proxy: controller},
+		Timeout:   60 * time.Second,
+	}
 }
 
 func NewHTTPClient() *http.Client {

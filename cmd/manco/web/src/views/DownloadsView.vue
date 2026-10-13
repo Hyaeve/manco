@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import {
   BookOpen,
+  ChevronDown,
+  ChevronRight,
   CircleCheck,
   Compass,
   FileArchive,
@@ -23,6 +25,7 @@ const filter = ref('all')
 const busy = ref(0)
 const selected = ref(new Set())
 const selecting = ref(false)
+const expandedGroups = ref(new Set())
 let lastIndex = -1
 let timer = 0
 
@@ -54,6 +57,46 @@ const visible = computed(() => {
 })
 
 const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting', 'running', 'paused'].includes(item.status)))
+
+const completedGroups = computed(() => {
+  const groups = new Map()
+  for (const item of visible.value) {
+    const key = `${item.sourceId || ''}:${item.comicId || item.comicTitle || item.id}`
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key,
+        sourceId: item.sourceId,
+        comicId: item.comicId,
+        title: item.comicTitle || '未命名作品',
+        cover: item.comicCover,
+        author: item.comicAuthor || '未知作者',
+        items: [],
+      }
+      groups.set(key, group)
+    }
+    group.items.push(item)
+  }
+  return [...groups.values()].map((group) => {
+    group.items.sort((left, right) => {
+      const leftTime = new Date(left.finishedAt || left.updatedAt || 0).getTime()
+      const rightTime = new Date(right.finishedAt || right.updatedAt || 0).getTime()
+      return rightTime - leftTime
+    })
+    return group
+  })
+})
+
+function isGroupExpanded(key) {
+  return expandedGroups.value.has(key)
+}
+
+function toggleGroup(key) {
+  const next = new Set(expandedGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedGroups.value = next
+}
 
 function retryable(status) {
   return ['failed', 'canceled', 'paused'].includes(status)
@@ -187,18 +230,6 @@ function cover(item) {
   return api.imageUrl(item.comicCover, item.sourceId)
 }
 
-function formatSize(bytes) {
-  if (!bytes || bytes <= 0) return '—'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let value = bytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return String(value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)) + ' ' + units[unit]
-}
-
 function formatTime(item) {
   const raw = item.finishedAt || item.updatedAt
   if (!raw) return '—'
@@ -304,7 +335,7 @@ async function remove(item, removeFile) {
 
   <div v-if="loading && !items.length" class="empty">
     <Loader2 :size="22" class="spin" />
-    <span>加载下载任务</span>
+    <span>加载任务列表</span>
   </div>
   <div v-else-if="!items.length" class="card empty">
     <FileArchive :size="26" />
@@ -318,11 +349,43 @@ async function remove(item, removeFile) {
     <CircleCheck :size="26" />
     <p>当前筛选条件下没有任务。</p>
   </div>
+  <div v-else-if="filter === 'completed'" class="completed-task-groups">
+    <article v-for="group in completedGroups" :key="group.key" class="completed-task-group">
+      <button
+        class="completed-task-head"
+        type="button"
+        :aria-expanded="isGroupExpanded(group.key)"
+        @click="toggleGroup(group.key)"
+      >
+        <span class="completed-task-cover">
+          <img v-if="group.cover" :src="api.imageUrl(group.cover, group.sourceId)" alt="" loading="lazy" />
+          <BookOpen v-else :size="20" />
+        </span>
+        <span class="completed-task-title">
+          <strong>{{ group.title }}</strong>
+          <small>{{ group.author }}</small>
+        </span>
+        <span class="completed-task-summary">
+          <span class="badge success">已完成 {{ group.items.length }} 章</span>
+        </span>
+        <ChevronDown v-if="isGroupExpanded(group.key)" :size="18" />
+        <ChevronRight v-else :size="18" />
+      </button>
+      <div v-if="isGroupExpanded(group.key)" class="completed-task-chapters">
+        <div v-for="item in group.items" :key="item.id" class="completed-task-chapter">
+          <span class="completed-chapter-title" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
+          <span class="completed-chapter-time">{{ formatTime(item) }}</span>
+          <button class="icon-btn danger" type="button" :disabled="busy === item.id" aria-label="删除任务记录" @click="remove(item, false)">
+            <Trash2 :size="15" />
+          </button>
+        </div>
+      </div>
+    </article>
+  </div>
   <div v-else class="download-table">
     <div class="download-head">
       <span>作品章节</span>
       <span>状态</span>
-      <span>文件大小</span>
       <span>时间</span>
       <span>操作</span>
     </div>
@@ -347,7 +410,7 @@ async function remove(item, removeFile) {
           >
             {{ item.comicTitle }}
           </RouterLink>
-          <span class="download-chapter">{{ item.chapterTitle }}</span>
+          <span class="download-author" :title="item.chapterTitle">{{ item.comicAuthor || '未知作者' }}</span>
         </div>
       </div>
       <div class="download-status">
@@ -360,7 +423,6 @@ async function remove(item, removeFile) {
         </div>
         <span v-if="item.error" class="download-error">{{ item.error }}</span>
       </div>
-      <div class="download-size">{{ formatSize(item.size) }}</div>
       <div class="download-time">{{ formatTime(item) }}</div>
       <div class="download-actions">
         <button

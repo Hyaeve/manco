@@ -7,6 +7,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -158,6 +159,7 @@ private fun serve(args: Array<String>) {
                 val line = reader.readLine() ?: break
                 if (line.isBlank()) continue
                 val operation = operationOf(line)
+                platform.useProxy = useProxyOf(line) ?: true
                 val response = if (operation == "metadata") {
                     metadataResponse(line, registry)
                 } else {
@@ -210,6 +212,23 @@ private fun prepareJvmJar(source: Path): Path {
 private fun operationOf(line: String): String? = try {
     val envelope = hostJson.parseToJsonElement(line).jsonObject
     (envelope["call"] as? JsonObject)?.get("operation")?.jsonPrimitive?.content
+} catch (_: Exception) {
+    null
+}
+
+/**
+ * Reads the per-call proxy preference the Manco backend attaches to every
+ * content-source operation. Returns null when absent so the host keeps using
+ * the proxy (the historical default).
+ */
+private fun useProxyOf(line: String): Boolean? = try {
+    val envelope = hostJson.parseToJsonElement(line).jsonObject
+    val call = envelope["call"] as? JsonObject
+    val value = call?.get("useProxy")?.jsonPrimitive
+    when {
+        value == null || value.isString -> null
+        else -> value.booleanOrNull
+    }
 } catch (_: Exception) {
     null
 }
@@ -341,7 +360,20 @@ private class MancoParserPlatform(
         }
         .build()
 
-    override val httpClient: OkHttpClient get() = client
+    // Some sources need to bypass the system proxy (for example a site that is
+    // only reachable from the local network). The backend sends a per-call
+    // flag; the host is single-threaded over stdin so a volatile switch is
+    // enough to route that exchange and its images through the direct client.
+    private val directClient: OkHttpClient = OkHttpClient.Builder()
+        .cookieJar(memoryCookieJar)
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
+    @Volatile
+    var useProxy: Boolean = true
+
+    override val httpClient: OkHttpClient get() = if (useProxy) client else directClient
     override val cookieJar: CookieJar get() = client.cookieJar
     override val preferredLocales: List<Locale> get() = listOf(Locale.SIMPLIFIED_CHINESE, Locale.US)
 

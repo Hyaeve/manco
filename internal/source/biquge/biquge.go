@@ -52,7 +52,8 @@ var (
 var errNoPages = errors.New("书籍源不支持图片下载")
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 func New(client *http.Client) *Source { return &Source{client: client} }
@@ -86,7 +87,7 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 	}
 	var lastErr error
 	for _, base := range s.bases(account) {
-		html, err := s.postForm(ctx, base+"/s.php", values, base)
+		html, err := s.postForm(ctx, account, base+"/s.php", values, base)
 		if err != nil {
 			lastErr = err
 			continue
@@ -108,7 +109,7 @@ func (s *Source) Browse(ctx context.Context, account source.Account, options mod
 		category = "1"
 	}
 	path := fmt.Sprintf("/sort/%s_%d/", category, page)
-	html, base, err := source.FetchTextFallback(ctx, s.client, s.bases(account), path, nil, func(base string) map[string]string {
+	html, base, err := source.FetchTextFallback(ctx, source.SourceClient(s.client, &s.directClient, account), s.bases(account), path, nil, func(base string) map[string]string {
 		return map[string]string{"Referer": base + "/"}
 	})
 	if err != nil {
@@ -264,7 +265,7 @@ func (s *Source) bases(account source.Account) []string {
 }
 
 func (s *Source) get(ctx context.Context, account source.Account, path string) (string, string, error) {
-	return source.FetchTextFallback(ctx, s.client, s.bases(account), path, nil, func(base string) map[string]string {
+	return source.FetchTextFallback(ctx, source.SourceClient(s.client, &s.directClient, account), s.bases(account), path, nil, func(base string) map[string]string {
 		headers := map[string]string{"Referer": base + "/"}
 		for key, value := range source.HeaderCookie(account.Cookie) {
 			headers[key] = value
@@ -273,7 +274,7 @@ func (s *Source) get(ctx context.Context, account source.Account, path string) (
 	})
 }
 
-func (s *Source) postForm(ctx context.Context, address string, values url.Values, referer string) (string, error) {
+func (s *Source) postForm(ctx context.Context, account source.Account, address string, values url.Values, referer string) (string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, strings.NewReader(values.Encode()))
 	if err != nil {
 		return "", err
@@ -283,7 +284,11 @@ func (s *Source) postForm(ctx context.Context, address string, values url.Values
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Referer", strings.TrimRight(referer, "/")+"/")
-	response, err := s.client.Do(request)
+	client := source.SourceClient(s.client, &s.directClient, account)
+	if client == nil {
+		client = s.client
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}

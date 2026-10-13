@@ -43,7 +43,8 @@ var sortOptions = []model.FilterOption{
 var errNoPages = errors.New("书籍源不支持图片下载")
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 func New(client *http.Client) *Source { return &Source{client: client} }
@@ -97,7 +98,7 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 		"search": {query},
 		"page":   {strconv.Itoa(page)},
 	}
-	return s.fetchListing(ctx, values, page)
+	return s.fetchListing(ctx, account, values, page)
 }
 
 func (s *Source) Browse(ctx context.Context, account source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
@@ -111,12 +112,12 @@ func (s *Source) Browse(ctx context.Context, account source.Account, options mod
 	if sort := strings.TrimSpace(options.Sort); sort != "" {
 		values.Set("sort", sort)
 	}
-	return s.fetchListing(ctx, values, page)
+	return s.fetchListing(ctx, account, values, page)
 }
 
-func (s *Source) fetchListing(ctx context.Context, values url.Values, page int) (model.SearchResult, error) {
+func (s *Source) fetchListing(ctx context.Context, account source.Account, values url.Values, page int) (model.SearchResult, error) {
 	address := catalogueURL + "?" + values.Encode()
-	raw, err := source.FetchText(ctx, s.client, address, map[string]string{"Accept": "application/json"})
+	raw, err := source.FetchText(ctx, source.SourceClient(s.client, &s.directClient, account), address, map[string]string{"Accept": "application/json"})
 	if err != nil {
 		return model.SearchResult{}, err
 	}
@@ -137,7 +138,7 @@ func (s *Source) fetchListing(ctx context.Context, values url.Values, page int) 
 }
 
 func (s *Source) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
-	entry, err := s.book(ctx, comicID)
+	entry, err := s.book(ctx, account, comicID)
 	if err != nil {
 		return model.Comic{}, err
 	}
@@ -147,7 +148,7 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 // Chapters exposes the whole book as a single downloadable chapter, matching
 // the "one file per chapter" convention used across Manco.
 func (s *Source) Chapters(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
-	entry, err := s.book(ctx, comicID)
+	entry, err := s.book(ctx, account, comicID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +166,7 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 }
 
 func (s *Source) ChapterContent(ctx context.Context, account source.Account, bookID string, chapter model.Chapter) (string, error) {
-	entry, err := s.book(ctx, bookID)
+	entry, err := s.book(ctx, account, bookID)
 	if err != nil {
 		return "", err
 	}
@@ -173,15 +174,15 @@ func (s *Source) ChapterContent(ctx context.Context, account source.Account, boo
 	if address == "" {
 		return "", fmt.Errorf("《%s》没有可下载的纯文本格式", entry.Title)
 	}
-	return source.FetchText(ctx, s.client, address, nil)
+	return source.FetchText(ctx, source.SourceClient(s.client, &s.directClient, account), address, nil)
 }
 
-func (s *Source) book(ctx context.Context, comicID string) (book, error) {
+func (s *Source) book(ctx context.Context, account source.Account, comicID string) (book, error) {
 	id := strings.TrimSpace(comicID)
 	if id == "" {
 		return book{}, fmt.Errorf("无效的 Gutenberg 书籍 ID")
 	}
-	raw, err := source.FetchText(ctx, s.client, catalogueURL+"/"+url.PathEscape(id), map[string]string{"Accept": "application/json"})
+	raw, err := source.FetchText(ctx, source.SourceClient(s.client, &s.directClient, account), catalogueURL+"/"+url.PathEscape(id), map[string]string{"Accept": "application/json"})
 	if err != nil {
 		return book{}, err
 	}

@@ -18,7 +18,8 @@ import (
 )
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 func New(client *http.Client) *Source { return &Source{client: client} }
@@ -302,7 +303,7 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 		}
 	}
 	if len(chapters) == 0 {
-		if viaAPI, err := s.chaptersFromApp(ctx, slug); err == nil && len(viaAPI) > 0 {
+		if viaAPI, err := s.chaptersFromApp(ctx, account, slug); err == nil && len(viaAPI) > 0 {
 			return viaAPI, nil
 		}
 	}
@@ -562,9 +563,9 @@ func chapterPathValue(value string) string {
 
 // chaptersFromApp uses the baozimh app chapter API, which the web comic page
 // relies on for its client-rendered chapter list.
-func (s *Source) chaptersFromApp(ctx context.Context, comicID string) ([]model.Chapter, error) {
+func (s *Source) chaptersFromApp(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
 	address := "https://appcn.baozimh.com/baozimhapp/comic/chapter/" + comicID
-	raw, err := source.FetchText(ctx, s.client, address, map[string]string{
+	raw, err := source.FetchText(ctx, source.SourceClient(s.client, &s.directClient, account), address, map[string]string{
 		"Referer":         "https://www.baozimh.com/",
 		"Accept":          "application/json, text/plain, */*",
 		"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
@@ -743,7 +744,7 @@ func (s *Source) get(ctx context.Context, account source.Account, path string, v
 // fetch issues a GET request against each base in order, adding the mirror
 // referer and the stored cookies.
 func (s *Source) fetch(ctx context.Context, account source.Account, bases []string, path string, values url.Values) (string, string, error) {
-	return source.FetchTextFallback(ctx, s.client, bases, path, values, func(base string) map[string]string {
+	return source.FetchTextFallback(ctx, source.SourceClient(s.client, &s.directClient, account), bases, path, values, func(base string) map[string]string {
 		headers := map[string]string{
 			"Referer":         base + "/",
 			"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",

@@ -28,7 +28,8 @@ const (
 )
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 var picaCategories = []string{
@@ -251,7 +252,11 @@ func (s *Source) request(ctx context.Context, account source.Account, method, pa
 	request.Header.Set("signature", signature)
 	request.Header.Set("authorization", account.Token)
 	request.Header.Set("image-quality", "original")
-	response, err := s.client.Do(request)
+	client := source.SourceClient(s.client, &s.directClient, account)
+	if client == nil {
+		client = s.client
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}

@@ -36,6 +36,29 @@ func createJob(t *testing.T, repository *Store, chapterID string) model.Download
 	return job
 }
 
+func TestDownloadJobPersistsComicAuthor(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	job, err := repository.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:     "picacg",
+		ComicID:      "comic-1",
+		ComicTitle:   "作品",
+		ComicAuthor:  "作者",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第 1 话",
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	stored, err := repository.DownloadJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("reload job: %v", err)
+	}
+	if stored.ComicAuthor != "作者" {
+		t.Fatalf("ComicAuthor = %q, want 作者", stored.ComicAuthor)
+	}
+}
+
 func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

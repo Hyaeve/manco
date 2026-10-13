@@ -86,3 +86,31 @@ func TestConvertToSimplifiedRenamesDirectoryAndFiles(t *testing.T) {
 		t.Fatalf("simplified paths missing: %v", err)
 	}
 }
+
+func TestDeleteRemovesWholeItemAndCountsFiles(t *testing.T) {
+	root := t.TempDir()
+	item := filepath.Join(root, "作品")
+	if err := os.MkdirAll(filepath.Join(item, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(item, "001.cbz"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(item, "nested", "002.cbz"), []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Delete([]string{item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeletedItems != 1 || result.DeletedFiles != 2 {
+		t.Fatalf("result = %+v, want one item and two files", result)
+	}
+	if _, err := os.Stat(item); !os.IsNotExist(err) {
+		t.Fatalf("item still exists: %v", err)
+	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		t.Fatalf("download root should remain: info=%v err=%v", info, err)
+	}
+}

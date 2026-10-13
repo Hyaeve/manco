@@ -2,23 +2,20 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
-  Check,
   BookOpen,
+  Check,
   ChevronLeft,
   ChevronRight,
   Download,
-  FileText,
-  ClockArrowDown,
-  ClockArrowUp,
   FolderOpen,
   Languages,
   ListChecks,
   Loader2,
   Merge,
-  RefreshCw,
   Search,
-  SortAsc,
+  Trash2,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -43,10 +40,7 @@ const chapterSortMode = ref('title')
 const chapterSortDesc = ref(false)
 const rootOrder = ref([])
 const activeRoot = ref('')
-const sortOpen = ref(false)
-const sortBelow = ref(true)
 const heroTint = ref('')
-let sortWrapRef = null
 
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
@@ -214,10 +208,6 @@ function clearSelection() {
 
 function handleKeydown(event) {
   if (event.key !== 'Escape') return
-  if (sortOpen.value) {
-    sortOpen.value = false
-    return
-  }
   if (selectionMode.value) clearSelection()
 }
 
@@ -257,6 +247,28 @@ async function mergeSelection() {
     await load()
   } catch (err) {
     notify(`合并失败：${err.message}`, true)
+  } finally {
+    batchWorking.value = false
+  }
+}
+
+async function deleteSelection() {
+  if (!selectedCount.value || batchWorking.value) return
+  const confirmed = await askConfirm({
+    title: '删除本地作品',
+    message: `将删除所选 ${selectedCount.value} 部作品及其目录中的全部文件，删除后无法恢复。是否继续？`,
+    confirmText: '确认删除',
+    danger: true,
+  })
+  if (!confirmed) return
+  batchWorking.value = true
+  try {
+    const payload = await api.localDelete(selectedPaths.value)
+    notify(`已删除 ${payload.deletedItems || 0} 部作品，共 ${payload.deletedFiles || 0} 个文件`)
+    clearSelection()
+    await load()
+  } catch (err) {
+    notify(`删除失败：${err.message}`, true)
   } finally {
     batchWorking.value = false
   }
@@ -310,22 +322,12 @@ function extractTint(url) {
   }
 }
 
-function toggleSortMenu(event) {
-  const target = event?.currentTarget
-  if (target) {
-    const rect = target.getBoundingClientRect()
-    sortBelow.value = window.innerHeight - rect.bottom > 220
-  }
-  sortOpen.value = !sortOpen.value
+function toggleChapterSortMode() {
+  chapterSortMode.value = chapterSortMode.value === 'time' ? 'title' : 'time'
 }
 
-function setSortMode(mode) {
-  chapterSortMode.value = mode
-}
-
-function setSortDirection(desc) {
-  chapterSortDesc.value = desc
-  sortOpen.value = false
+function toggleChapterSortDirection() {
+  chapterSortDesc.value = !chapterSortDesc.value
 }
 
 async function openDetail(item) {
@@ -408,7 +410,7 @@ function downloadReaderFile() {
   <div v-if="active" class="local-detail-view" :style="heroStyle">
     <div class="detail-hero local-detail-hero">
       <button class="detail-cover-back" type="button" aria-label="返回本地库" @click="closeDetail">
-        <ChevronLeft :size="22" />
+        <ArrowLeft :size="24" :stroke-width="1.7" />
       </button>
       <div class="detail-cover-wrap">
         <div class="detail-cover">
@@ -441,23 +443,14 @@ function downloadReaderFile() {
             <X :size="14" />
           </button>
         </form>
-        <div class="chapter-sort-wrap">
-          <button class="btn ghost small" type="button" @click="toggleSortMenu">
-            <SortAsc :size="16" />
+        <div class="chapter-sort-wrap" aria-label="章节排序">
+          <button class="btn ghost small" type="button" @click="toggleChapterSortMode">
             {{ chapterSortMode === 'time' ? '添加时间' : '标题' }}
-            <component :is="chapterSortDesc ? ArrowDown : ArrowUp" :size="14" />
           </button>
-          <div v-if="sortOpen" class="chapter-sort-menu" :class="sortBelow ? 'below' : 'above'">
-            <div class="chapter-sort-group">
-              <span class="chapter-sort-label">排序方式</span>
-              <button type="button" :class="{ active: chapterSortMode === 'title' }" @click="setSortMode('title')">标题</button>
-              <button type="button" :class="{ active: chapterSortMode === 'time' }" @click="setSortMode('time')">添加时间</button>
-            </div>
-            <div class="chapter-sort-group">
-              <button type="button" @click="setSortDirection(false)"><ArrowUp :size="14" />升序</button>
-              <button type="button" @click="setSortDirection(true)"><ArrowDown :size="14" />降序</button>
-            </div>
-          </div>
+          <button class="btn ghost small" type="button" @click="toggleChapterSortDirection">
+            <component :is="chapterSortDesc ? ArrowDown : ArrowUp" :size="14" />
+            {{ chapterSortDesc ? '降序' : '升序' }}
+          </button>
         </div>
       </div>
 
@@ -544,8 +537,11 @@ function downloadReaderFile() {
           <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
         </span>
         <span class="local-library-body">
-          <strong>{{ item.title }}</strong>
-          <span>{{ item.author || '未知作者' }}</span>
+          <strong class="local-library-title">{{ item.title }}</strong>
+          <span class="local-library-meta">
+            <span>{{ item.author || '未知作者' }}</span>
+            <span>{{ item.files?.length || item.totalFiles || 0 }}章</span>
+          </span>
         </span>
       </button>
     </div>
@@ -560,6 +556,10 @@ function downloadReaderFile() {
       <button class="btn small" type="button" :disabled="batchWorking || selectedCount < 2" @click="mergeSelection">
         <Merge :size="15" />
         合并
+      </button>
+      <button class="btn danger small" type="button" :disabled="batchWorking || !selectedCount" @click="deleteSelection">
+        <Trash2 :size="15" />
+        删除
       </button>
     </div>
   </div>

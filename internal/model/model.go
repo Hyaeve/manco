@@ -63,6 +63,7 @@ type DownloadJob struct {
 	ComicID             string     `json:"comicId"`
 	ComicTitle          string     `json:"comicTitle"`
 	ComicCover          string     `json:"comicCover"`
+	ComicAuthor         string     `json:"comicAuthor,omitempty"`
 	ChapterID           string     `json:"chapterId"`
 	ChapterTitle        string     `json:"chapterTitle"`
 	ChapterOrder        float64    `json:"chapterOrder"`

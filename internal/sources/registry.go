@@ -68,10 +68,6 @@ func (r *Registry) List() []model.SourceInfo {
 		info := item.Info()
 		info.Builtin = r.builtins[info.ID]
 		info.Editable = r.custom[info.ID]
-		switch info.ID {
-		case "baozimh", "jmcomic", "picacg":
-			info.PluginSource = true
-		}
 		if r.pluginSources[info.ID] {
 			info.PluginSource = true
 		}
@@ -194,6 +190,16 @@ func (r *Registry) RemoveAccount(ctx context.Context, id string) error {
 }
 
 func (r *Registry) Client() *http.Client { return r.client }
+
+// ClientForAccount returns the HTTP client a source account should use. When
+// the account opts out of the configured proxy the request bypasses both the
+// runtime proxy and the environment proxy.
+func (r *Registry) ClientForAccount(account source.Account) *http.Client {
+	if r == nil {
+		return nil
+	}
+	return source.SourceClient(r.client, nil, account)
+}
 
 // AllowedImageHost reports whether an image host belongs to one of the
 // configured comic sources. The image proxy only forwards requests to these

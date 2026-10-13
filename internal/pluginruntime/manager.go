@@ -274,6 +274,14 @@ func (m *Manager) Install(ctx context.Context, id, downloadURL string) ([]Source
 }
 
 func (m *Manager) Call(ctx context.Context, operation string, fields map[string]any) (map[string]any, error) {
+	return m.CallWithProxy(ctx, operation, fields, nil)
+}
+
+// CallWithProxy issues one sidecar operation and tells the host whether the
+// parser may use the configured proxy for this call. Each content source keeps
+// its own preference, so a per-call flag is required instead of a process-wide
+// switch. A nil useProxy leaves the host default (proxy enabled).
+func (m *Manager) CallWithProxy(ctx context.Context, operation string, fields map[string]any, useProxy *bool) (map[string]any, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -300,6 +308,9 @@ func (m *Manager) Call(ctx context.Context, operation string, fields map[string]
 	call := map[string]any{"operation": operation}
 	for key, value := range fields {
 		call[key] = value
+	}
+	if useProxy != nil {
+		call["useProxy"] = *useProxy
 	}
 	return process.request(ctx, call)
 }

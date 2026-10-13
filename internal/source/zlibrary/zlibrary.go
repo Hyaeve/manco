@@ -58,7 +58,8 @@ var sortOptions = []model.FilterOption{
 }
 
 type Source struct {
-	client *http.Client
+	client       *http.Client
+	directClient *http.Client
 }
 
 type session struct {
@@ -348,7 +349,7 @@ func (s *Source) request(ctx context.Context, account source.Account, base, meth
 	if cookie := cookieHeader(account); cookie != "" {
 		request.Header.Set("Cookie", cookie)
 	}
-	client := s.client
+	client := source.SourceClient(s.client, &s.directClient, account)
 	if client == nil {
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
@@ -385,7 +386,7 @@ func (s *Source) downloadBytes(ctx context.Context, account source.Account, base
 	if cookie := cookieHeader(account); cookie != "" {
 		request.Header.Set("Cookie", cookie)
 	}
-	client := s.client
+	client := source.SourceClient(s.client, &s.directClient, account)
 	if client == nil {
 		client = &http.Client{Timeout: 120 * time.Second}
 	}

@@ -1,7 +1,10 @@
 package jmcomic
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/PuerkitoBio/goquery"
 
 	"github.com/hyaeve/manco/internal/source"
 )
@@ -49,6 +52,62 @@ func TestImageDomains(t *testing.T) {
 	domains := imageDomains(html)
 	if len(domains) == 0 || domains[0] != "https://cdn-msp.18comic.vip" {
 		t.Fatalf("unexpected domains: %#v", domains)
+	}
+}
+
+func TestParseSearchReadsVideoCardAndLazyCover(t *testing.T) {
+	html := `<div class="video-item">
+  <a href="https://18comic.vip/album/123456/" class="img_span">
+    <img class="lazy" data-original="//cdn-msp.18comic.vip/media/albums/123456.jpg" src="data:image/gif;base64,R0lGOD">
+  </a>
+  <div class="video-title">星海镖师</div>
+</div>`
+	result, err := parseSearch(html, "https://18comic.vip", 1)
+	if err != nil {
+		t.Fatalf("parseSearch: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("want 1 item, got %#v", result.Items)
+	}
+	item := result.Items[0]
+	if item.ID != "123456" || item.Title != "星海镖师" {
+		t.Fatalf("unexpected item: %#v", item)
+	}
+	if item.Cover != "https://cdn-msp.18comic.vip/media/albums/123456.jpg" {
+		t.Fatalf("unexpected cover: %q", item.Cover)
+	}
+}
+
+func TestParseSearchReadsSrcsetCover(t *testing.T) {
+	html := `<div class="thumb">
+  <a href="/album/654321"><img srcset="//cdn-msp2.jmapinodeudzn.net/media/albums/654321.jpg 1x, //cdn-msp2.jmapinodeudzn.net/media/albums/654321@2x.jpg 2x"></a>
+  <div class="title">示例漫画</div>
+</div>`
+	result, err := parseSearch(html, "https://18comic.vip", 1)
+	if err != nil {
+		t.Fatalf("parseSearch: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("want 1 item, got %#v", result.Items)
+	}
+	item := result.Items[0]
+	if item.Title != "示例漫画" {
+		t.Fatalf("unexpected title: %q", item.Title)
+	}
+	if item.Cover != "https://cdn-msp2.jmapinodeudzn.net/media/albums/654321.jpg" {
+		t.Fatalf("unexpected cover: %q", item.Cover)
+	}
+}
+
+func TestImageFromStyleBackground(t *testing.T) {
+	html := `<div class="card"><div style="background-image:url('//cdn-msp.18comic.vip/media/albums/9.jpg')"></div></div>`
+	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("goquery: %v", err)
+	}
+	cover := imageFrom(document.Find(".card"))
+	if cover != "//cdn-msp.18comic.vip/media/albums/9.jpg" {
+		t.Fatalf("unexpected background cover: %q", cover)
 	}
 }
 
