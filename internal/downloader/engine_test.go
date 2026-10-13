@@ -353,6 +353,31 @@ func TestSeriesDirectoryNameIsStableForSimplifiedTitles(t *testing.T) {
 	}
 }
 
+func TestBatchPauseIsPerSourceAndReportedByCooldown(t *testing.T) {
+	engine := NewEngine(nil, &memoryJobs{}, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+	engine.SetSourceSettings(map[string]model.SourceDownloadSettings{
+		"baozimh": {BatchSize: 2, BatchIntervalMinutes: 20},
+		"picacg":  {BatchSize: 5, BatchIntervalMinutes: 20},
+	})
+
+	engine.markBatchComplete("baozimh")
+	if engine.inCooldown("baozimh") {
+		t.Fatalf("baozimh should not be paused before reaching batch size")
+	}
+
+	engine.markBatchComplete("baozimh")
+	cooldowns := engine.SourceCooldowns()
+	if until, ok := cooldowns["baozimh"]; !ok || !until.After(time.Now()) {
+		t.Fatalf("baozimh should be paused after reaching batch size: %v", cooldowns)
+	}
+	if !engine.inCooldown("baozimh") {
+		t.Fatalf("baozimh should report in cooldown")
+	}
+	if engine.inCooldown("picacg") {
+		t.Fatalf("picacg must not inherit baozimh cooldown")
+	}
+}
+
 // TestEnsureSeriesMetadataRepairsMissingFiles verifies that a subscription
 // check re-creates a missing series cover and ComicInfo.xml while leaving an
 // intact series alone.

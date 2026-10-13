@@ -206,8 +206,8 @@ async function load() {
           homeUrl: account.homeUrl || '',
           chapterConcurrency: Number(settings.chapterConcurrency ?? 1),
           pageConcurrency: Number(settings.pageConcurrency ?? 2),
-          batchSize: Number(settings.batchSize ?? 20),
-          batchIntervalMinutes: Number(settings.batchIntervalMinutes ?? 20),
+          batchSize: Number(settings.batchSize ?? 5),
+          batchIntervalMinutes: Number(settings.batchIntervalMinutes ?? 5),
         })
       } else {
         forms[item.id].username = account.username || ''
@@ -215,8 +215,8 @@ async function load() {
         forms[item.id].homeUrl = account.homeUrl || ''
         forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency ?? 1)
         forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
-        forms[item.id].batchSize = Number(settings.batchSize ?? 20)
-        forms[item.id].batchIntervalMinutes = Number(settings.batchIntervalMinutes ?? 20)
+        forms[item.id].batchSize = Number(settings.batchSize ?? 5)
+        forms[item.id].batchIntervalMinutes = Number(settings.batchIntervalMinutes ?? 5)
       }
     }
   } catch (err) {

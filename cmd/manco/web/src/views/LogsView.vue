@@ -28,7 +28,6 @@ const modules = [
 
 const entries = ref([])
 const loading = ref(false)
-const autoRefresh = ref(true)
 const mode = ref(window.localStorage.getItem(LOG_MODE_KEY) === 'structured' ? 'structured' : 'raw')
 const level = ref('all')
 const module = ref('all')
@@ -68,13 +67,9 @@ function resetTimer() {
     clearInterval(timer)
     timer = null
   }
-  if (autoRefresh.value) timer = setInterval(load, 5000)
+  // 运行日志默认且始终自动刷新，不再提供关闭开关。
+  timer = setInterval(load, 5000)
 }
-
-watch(autoRefresh, () => {
-  resetTimer()
-  if (autoRefresh.value) load()
-})
 
 watch(mode, (value) => window.localStorage.setItem(LOG_MODE_KEY, value))
 
@@ -103,18 +98,14 @@ onUnmounted(() => {
       </div>
       <RoundedSelect v-model="module" label="日志模块" :options="modules" />
       <RoundedSelect v-model="level" label="日志级别" :options="levels" />
-      <label class="search-field log-search">
-        <Search :size="16" />
-        <input v-model="query" aria-label="搜索日志" placeholder="搜索日志..." />
-      </label>
-      <label class="inline small auto-refresh">
-        <input v-model="autoRefresh" type="checkbox" />
-        <span>自动刷新</span>
-      </label>
       <button class="btn secondary small" type="button" :disabled="loading" @click="load">
         <RefreshCw :size="14" :class="{ spin: loading }" />
         刷新
       </button>
+      <label class="search-field log-search">
+        <Search :size="16" />
+        <input v-model="query" aria-label="搜索日志" placeholder="搜索日志..." />
+      </label>
     </div>
 
     <div class="log-list-shell">

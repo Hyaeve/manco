@@ -38,7 +38,7 @@ const counts = computed(() => {
   const result = { all: items.value.length, active: 0, queued: 0, completed: 0, failed: 0 }
   for (const item of items.value) {
     if (item.status === 'running') result.active += 1
-    if (item.status === 'queued' || item.status === 'paused') result.queued += 1
+    if (['queued', 'waiting', 'paused'].includes(item.status)) result.queued += 1
     if (item.status === 'completed') result.completed += 1
     if (item.status === 'failed' || item.status === 'canceled') result.failed += 1
   }
@@ -48,12 +48,12 @@ const counts = computed(() => {
 const visible = computed(() => {
   if (filter.value === 'all') return items.value
   if (filter.value === 'active') return items.value.filter((item) => item.status === 'running')
-  if (filter.value === 'queued') return items.value.filter((item) => ['queued', 'paused'].includes(item.status))
+  if (filter.value === 'queued') return items.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
   if (filter.value === 'completed') return items.value.filter((item) => item.status === 'completed')
   return items.value.filter((item) => ['failed', 'canceled'].includes(item.status))
 })
 
-const hasActive = computed(() => items.value.some((item) => ['queued', 'running', 'paused'].includes(item.status)))
+const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting', 'running', 'paused'].includes(item.status)))
 
 function retryable(status) {
   return ['failed', 'canceled', 'paused'].includes(status)
@@ -164,6 +164,7 @@ function statusLabel(status) {
   return (
     {
       queued: '排队中',
+      waiting: '等待中',
       running: '下载中',
       completed: '已完成',
       failed: '失败',
@@ -177,6 +178,7 @@ function statusClass(status) {
   if (status === 'completed') return 'success'
   if (status === 'running') return 'primary'
   if (status === 'failed') return 'danger'
+  if (status === 'waiting') return 'warning'
   if (status === 'canceled' || status === 'paused') return 'warning'
   return ''
 }
@@ -201,6 +203,23 @@ function formatTime(item) {
   const raw = item.finishedAt || item.updatedAt
   if (!raw) return '—'
   return new Date(raw).toLocaleString()
+}
+
+// 下载进度：完成态固定满格，进行中按已下载页数实时计算。
+function progressPercent(item) {
+  if (item.status === 'completed') return 100
+  const total = Number(item.totalPages || 0)
+  const completed = Number(item.completedPages || 0)
+  if (total <= 0) return item.status === 'running' ? 6 : 0
+  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)))
+}
+
+function progressText(item) {
+  if (item.status === 'completed') return '100%'
+  const total = Number(item.totalPages || 0)
+  const completed = Number(item.completedPages || 0)
+  if (total <= 0) return item.status === 'running' ? '准备中' : '—'
+  return `${completed}/${total}`
 }
 
 async function retry(item) {
@@ -332,7 +351,13 @@ async function remove(item, removeFile) {
         </div>
       </div>
       <div class="download-status">
-        <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
+        <div class="download-status-head">
+          <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
+          <span class="download-progress-text">{{ progressText(item) }}</span>
+        </div>
+        <div class="download-progress" :class="`is-${item.status}`" role="progressbar" :aria-valuenow="progressPercent(item)" aria-valuemin="0" aria-valuemax="100">
+          <span class="download-progress-fill" :style="{ width: `${progressPercent(item)}%` }" />
+        </div>
         <span v-if="item.error" class="download-error">{{ item.error }}</span>
       </div>
       <div class="download-size">{{ formatSize(item.size) }}</div>

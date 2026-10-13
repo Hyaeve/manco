@@ -2371,7 +2371,7 @@
 .download-progress {
   display: flex;
   min-width: 0;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
 }
 
@@ -2391,7 +2391,6 @@
   }
 
   .download-file,
-  .download-progress,
   .download-time {
     display: none;
   }
@@ -2664,6 +2663,134 @@
 [data-theme='dark'] .sidebar {
   background: #20261a;
   border-right-color: #303824;
+}
+
+/* v0.1.13：下载列表进度条与状态列对齐 */
+.download-head,
+.download-row {
+  grid-template-columns: minmax(280px, 2.4fr) 190px 110px 170px 132px;
+}
+.download-status {
+  align-self: center;
+}
+.download-status-head {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.download-progress-text {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.download-progress {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+.download-progress-fill {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.35s ease;
+}
+.download-progress.is-running .download-progress-fill,
+.download-progress.is-queued .download-progress-fill,
+.download-progress.is-paused .download-progress-fill {
+  background: var(--primary);
+}
+.download-progress.is-waiting .download-progress-fill {
+  background: #7c9fc4;
+}
+.badge.waiting {
+  border-color: color-mix(in srgb, #7c9fc4 45%, transparent);
+  background: color-mix(in srgb, #7c9fc4 16%, var(--surface));
+  color: #4f6f92;
+}
+[data-theme='dark'] .badge.waiting {
+  border-color: color-mix(in srgb, #7c9fc4 52%, transparent);
+  background: color-mix(in srgb, #7c9fc4 22%, var(--surface));
+  color: #a9c6e6;
+}
+.download-progress.is-completed .download-progress-fill {
+  background: #3fae62;
+}
+.download-progress.is-failed .download-progress-fill,
+.download-progress.is-canceled .download-progress-fill {
+  background: var(--danger);
+}
+[data-theme='dark'] .download-progress {
+  background: color-mix(in srgb, var(--text-muted) 32%, transparent);
+}
+
+/* v0.1.13：运行日志占满内容区，工具栏搜索栏靠右上 */
+.content-scroll.logs-page {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.content-scroll.logs-page .page-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  padding-bottom: 10px;
+}
+.logs-page .log-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+.logs-page .log-toolbar {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+.logs-page .log-search {
+  flex: 0 0 clamp(220px, 24vw, 320px);
+  width: clamp(220px, 24vw, 320px);
+  min-width: 0;
+  margin-left: auto;
+}
+.logs-page .log-list-shell {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+  flex-direction: column;
+}
+.logs-page .log-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+.logs-page .log-foot {
+  flex: 0 0 auto;
+  padding: 6px 4px 0;
+}
+@media (max-width: 760px) {
+  .logs-page .log-toolbar {
+    flex-wrap: wrap;
+  }
+  .logs-page .log-search {
+    flex: 1 1 100%;
+    width: 100%;
+    margin-left: 0;
+  }
+}
+@media (max-width: 1100px) {
+  .download-head,
+  .download-row {
+    grid-template-columns: minmax(220px, 2.4fr) 160px 96px 140px 112px;
+  }
 }
 
 /* 资源仓库：内容源选中态、底部胶囊、插件鉴权表单 */

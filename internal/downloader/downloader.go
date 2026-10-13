@@ -356,6 +356,27 @@ func (e *Engine) inCooldown(sourceID string) bool {
 	return batchSize > 0 && time.Now().Before(e.sourceCooldownUntil[sourceID])
 }
 
+// SourceCooldowns returns the per-source batch pause deadlines. The download
+// list uses it to mark queued chapters as waiting while their source is paused.
+func (e *Engine) SourceCooldowns() map[string]time.Time {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := time.Now()
+	result := make(map[string]time.Time, len(e.sourceCooldownUntil))
+	for sourceID, until := range e.sourceCooldownUntil {
+		if until.After(now) {
+			result[sourceID] = until
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 // markBatchComplete pauses the engine after the configured number of jobs.
 func (e *Engine) markBatchComplete(sourceID string) {
 	e.mu.Lock()

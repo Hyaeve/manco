@@ -808,7 +808,7 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, jobSelect+` ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'paused' THEN 2 WHEN 'failed' THEN 3 ELSE 4 END, id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, jobSelect+` ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 WHEN 'failed' THEN 4 ELSE 5 END, id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -916,7 +916,7 @@ func (s *Store) DeleteDownloadJob(ctx context.Context, id int64) error {
 func (s *Store) Stats(ctx context.Context) (model.Stats, error) {
 	var stats model.Stats
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions`).Scan(&stats.Subscriptions)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued','running','paused')`).Scan(&stats.ActiveJobs)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued','running','waiting','paused')`).Scan(&stats.ActiveJobs)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.CompletedJobs)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.LibraryItems)
 	return stats, nil

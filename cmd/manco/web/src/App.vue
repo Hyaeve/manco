@@ -305,7 +305,7 @@ function activityIcon(level) {
           </div>
         </div>
       </header>
-      <main class="content-scroll">
+      <main class="content-scroll" :class="{ 'logs-page': route.name === 'logs' }">
         <div class="page-content">
           <RouterView />
         </div>

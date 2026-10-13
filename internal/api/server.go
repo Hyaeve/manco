@@ -52,7 +52,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.12"
+	appVersion    = "v0.1.13"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -618,8 +618,8 @@ func (s *Server) sourceDownloadSettings(raw json.RawMessage) model.SourceDownloa
 	settings := model.SourceDownloadSettings{
 		ChapterConcurrency:   1,
 		PageConcurrency:      2,
-		BatchSize:            20,
-		BatchIntervalMinutes: 20,
+		BatchSize:            5,
+		BatchIntervalMinutes: 5,
 	}
 	extra := map[string]any{}
 	if len(raw) > 0 && json.Unmarshal(raw, &extra) == nil {
@@ -640,7 +640,7 @@ func (s *Server) sourceDownloadSettings(raw json.RawMessage) model.SourceDownloa
 func (s *Server) allSourceDownloadSettings(ctx context.Context) map[string]model.SourceDownloadSettings {
 	result := map[string]model.SourceDownloadSettings{}
 	// 每个已注册内容源都先落一份默认下载策略（章 1 线程 / 图 2 线程 /
-	// 每 20 章暂停 20 分钟），这样尚未保存过账号的来源也能拿到一致默认值。
+	// 每 5 章暂停 5 分钟），这样尚未保存过账号的来源也能拿到一致默认值。
 	for _, info := range s.registry.List() {
 		result[info.ID] = s.sourceDownloadSettings(nil)
 	}
@@ -2542,7 +2542,15 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []model.DownloadJob{}
 	}
+	// 批量暂停是按内容源全局生效的：冷却期间该来源下所有排队的章节
+	// 都标记为 waiting，前端展示为“等待中”。
+	cooldowns := s.engine.SourceCooldowns()
 	for index := range items {
+		if items[index].Status == "queued" {
+			if until, ok := cooldowns[items[index].SourceID]; ok && until.After(time.Now()) {
+				items[index].Status = "waiting"
+			}
+		}
 		if strings.TrimSpace(items[index].FilePath) == "" {
 			continue
 		}
