@@ -246,6 +246,18 @@ function jobStats(item) {
   }
 }
 
+function downloadTaskLink(item, filter) {
+  return {
+    name: 'downloads',
+    query: {
+      filter,
+      sourceId: item.sourceId,
+      comicId: item.comicId,
+      title: item.title,
+    },
+  }
+}
+
 async function checkUpdate(item) {
   busy.value = item.id
   try {
@@ -392,8 +404,12 @@ async function downloadAll(item) {
             <span>{{ item.downloadDir || '未设置下载目录' }}</span>
           </div>
           <div class="subscription-job-stats">
-            <span class="subscription-stat success">成功 {{ jobStats(item).success }}</span>
-            <span class="subscription-stat failed">失败 {{ jobStats(item).failed }}</span>
+            <RouterLink class="subscription-stat success" :to="downloadTaskLink(item, 'completed')">
+              成功 {{ jobStats(item).success }}
+            </RouterLink>
+            <RouterLink class="subscription-stat failed" :to="downloadTaskLink(item, 'failed')">
+              失败 {{ jobStats(item).failed }}
+            </RouterLink>
           </div>
         </div>
       </div>

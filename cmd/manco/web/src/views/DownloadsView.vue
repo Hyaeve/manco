@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
   ChevronDown,
@@ -21,11 +21,12 @@ import { askConfirm } from '../stores/confirm'
 const items = ref([])
 const loading = ref(true)
 const error = ref('')
-const filter = ref('all')
 const busy = ref(0)
 const selected = ref(new Set())
 const selecting = ref(false)
 const expandedGroups = ref(new Set())
+const route = useRoute()
+const router = useRouter()
 let lastIndex = -1
 let timer = 0
 
@@ -37,9 +38,35 @@ const filters = [
   { value: 'failed', label: '失败' },
 ]
 
+const filterValues = new Set(filters.map((item) => item.value))
+const initialFilter = typeof route.query.filter === 'string' && filterValues.has(route.query.filter) ? route.query.filter : 'all'
+const filter = ref(initialFilter)
+
+function queryText(value) {
+  return typeof value === 'string' ? value : ''
+}
+
+const workFilter = computed(() => {
+  const sourceId = queryText(route.query.sourceId)
+  const comicId = queryText(route.query.comicId)
+  if (!sourceId || !comicId) return null
+  return {
+    sourceId,
+    comicId,
+    title: queryText(route.query.title) || '当前作品',
+  }
+})
+
+const scopedItems = computed(() => {
+  if (!workFilter.value) return items.value
+  return items.value.filter(
+    (item) => item.sourceId === workFilter.value.sourceId && item.comicId === workFilter.value.comicId,
+  )
+})
+
 const counts = computed(() => {
-  const result = { all: items.value.length, active: 0, queued: 0, completed: 0, failed: 0 }
-  for (const item of items.value) {
+  const result = { all: scopedItems.value.length, active: 0, queued: 0, completed: 0, failed: 0 }
+  for (const item of scopedItems.value) {
     if (item.status === 'running') result.active += 1
     if (['queued', 'waiting', 'paused'].includes(item.status)) result.queued += 1
     if (item.status === 'completed') result.completed += 1
@@ -49,14 +76,22 @@ const counts = computed(() => {
 })
 
 const visible = computed(() => {
-  if (filter.value === 'all') return items.value
-  if (filter.value === 'active') return items.value.filter((item) => item.status === 'running')
-  if (filter.value === 'queued') return items.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
-  if (filter.value === 'completed') return items.value.filter((item) => item.status === 'completed')
-  return items.value.filter((item) => ['failed', 'canceled'].includes(item.status))
+  if (filter.value === 'all') return scopedItems.value
+  if (filter.value === 'active') return scopedItems.value.filter((item) => item.status === 'running')
+  if (filter.value === 'queued') return scopedItems.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
+  if (filter.value === 'completed') return scopedItems.value.filter((item) => item.status === 'completed')
+  return scopedItems.value.filter((item) => ['failed', 'canceled'].includes(item.status))
 })
 
 const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting', 'running', 'paused'].includes(item.status)))
+
+watch(
+  () => route.query.filter,
+  (value) => {
+    const next = typeof value === 'string' && filterValues.has(value) ? value : 'all'
+    if (filter.value !== next) filter.value = next
+  },
+)
 
 const completedGroups = computed(() => {
   const groups = new Map()
@@ -203,6 +238,20 @@ async function load(silent = false) {
   }
 }
 
+function setFilter(value) {
+  filter.value = value
+  const query = { ...route.query, filter: value }
+  router.replace({ name: 'downloads', query })
+}
+
+function clearWorkFilter() {
+  const query = { ...route.query }
+  delete query.sourceId
+  delete query.comicId
+  delete query.title
+  router.replace({ name: 'downloads', query })
+}
+
 // 任务列表状态只保留成功/失败/等待/下载中四类，详细错误请查看运行日志。
 function statusLabel(status) {
   return (
@@ -234,19 +283,6 @@ function formatTime(item) {
   const raw = item.finishedAt || item.updatedAt
   if (!raw) return '—'
   return new Date(raw).toLocaleString()
-}
-
-function formatSize(size) {
-  const bytes = Number(size || 0)
-  if (!bytes) return '—'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let value = bytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${unit === 0 ? value : value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
 }
 
 // 下载进度：完成态固定满格，进行中按已下载页数实时计算。
@@ -333,10 +369,16 @@ async function remove(item, removeFile) {
         :key="item.value"
         type="button"
         :class="{ active: filter === item.value }"
-        @click="filter = item.value"
+        @click="setFilter(item.value)"
       >
         {{ item.label }}
         <span class="segmented-count">{{ counts[item.value] }}</span>
+      </button>
+    </div>
+    <div v-if="workFilter" class="task-work-filter">
+      <span>仅查看《{{ workFilter.title }}》</span>
+      <button class="icon-btn" type="button" aria-label="清除作品筛选" @click="clearWorkFilter">
+        <X :size="13" />
       </button>
     </div>
     <span class="spacer" />
@@ -360,7 +402,7 @@ async function remove(item, removeFile) {
   </div>
   <div v-else-if="!visible.length" class="card empty">
     <CircleCheck :size="26" />
-    <p>当前筛选条件下没有任务。</p>
+    <p>{{ workFilter ? '这部作品在当前筛选条件下没有任务。' : '当前筛选条件下没有任务。' }}</p>
   </div>
   <div v-else-if="filter === 'completed'" class="completed-task-groups">
     <article v-for="group in completedGroups" :key="group.key" class="completed-task-group">
@@ -395,7 +437,6 @@ async function remove(item, removeFile) {
     <div class="download-head">
       <span>作品章节</span>
       <span>状态</span>
-      <span>文件大小</span>
       <span>时间</span>
       <span>操作</span>
     </div>
@@ -426,7 +467,6 @@ async function remove(item, removeFile) {
           <span class="download-progress-fill" :style="{ width: `${progressPercent(item)}%` }" />
         </div>
       </div>
-      <div class="download-size">{{ formatSize(item.size) }}</div>
       <div class="download-time">{{ formatTime(item) }}</div>
       <div class="download-actions">
         <button

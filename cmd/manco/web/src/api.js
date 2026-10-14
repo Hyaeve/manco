@@ -1,9 +1,12 @@
 const jsonHeaders = { 'Content-Type': 'application/json' }
+const anonymousPaths = new Set(['/api/auth/login', '/api/auth/setup', '/api/auth/register'])
 
 async function request(path, options = {}) {
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
+  const headers = { ...(options.body && !isFormData ? jsonHeaders : {}), ...(options.headers || {}) }
   const response = await fetch(path, {
     credentials: 'same-origin',
-    headers: { ...(options.body ? jsonHeaders : {}), ...(options.headers || {}) },
+    headers,
     ...options,
   })
   const text = await response.text()
@@ -18,6 +21,9 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const error = new Error(payload?.error || `请求失败（${response.status}）`)
     error.status = response.status
+    if (response.status === 401 && !anonymousPaths.has(path)) {
+      window.dispatchEvent(new CustomEvent('manco:unauthorized', { detail: { path } }))
+    }
     throw error
   }
   return payload
@@ -54,6 +60,11 @@ export const api = {
   updateSource: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   sourceIcons: () => request('/api/icons'),
+  uploadIcon: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('/api/icons', { method: 'POST', body: form })
+  },
   updateSourceIcon: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/icon`, { method: 'POST', body: JSON.stringify(payload) }),
   saveAccount: (id, payload) =>

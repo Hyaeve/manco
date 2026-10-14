@@ -28,8 +28,12 @@ export const useAuthStore = defineStore('auth', {
       try {
         await api.logout()
       } finally {
-        this.user = null
+        this.invalidate()
       }
+    },
+    invalidate() {
+      this.user = null
+      this.ready = true
     },
   },
 })

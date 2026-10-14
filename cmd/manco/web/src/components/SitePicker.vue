@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
-import { Check, ChevronDown } from 'lucide-vue-next'
+import { Check, ChevronDown, ExternalLink } from 'lucide-vue-next'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -24,6 +24,14 @@ function sync(value) {
 function choose(value) {
   sync(value)
   opened.value = false
+}
+
+// 在浏览器中新开当前选中的站点地址，缺少协议时按 https 补全。
+function openSite() {
+  const value = (draft.value || props.modelValue || '').trim()
+  if (!value) return
+  const target = /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`
+  window.open(target, '_blank', 'noopener,noreferrer')
 }
 
 async function show() {
@@ -59,6 +67,9 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
         @keyup.enter="sync(draft.trim()); opened = false"
         @blur="sync(draft.trim())"
       />
+      <button class="site-picker-open" type="button" aria-label="在浏览器中打开当前站点" @mousedown.prevent="openSite">
+        <ExternalLink :size="15" />
+      </button>
       <button class="site-picker-toggle" type="button" aria-label="选择内置站点" :aria-expanded="opened" @click="opened ? (opened = false) : show()">
         <ChevronDown :size="16" :class="{ expanded: opened }" />
       </button>
@@ -91,13 +102,13 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
 }
 
 .site-picker-control .input {
-  padding-right: 38px;
+  padding-right: 70px;
 }
 
+.site-picker-open,
 .site-picker-toggle {
   position: absolute;
   top: 50%;
-  right: 5px;
   display: grid;
   place-items: center;
   width: 30px;
@@ -110,6 +121,15 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
   transform: translateY(-50%);
 }
 
+.site-picker-toggle {
+  right: 5px;
+}
+
+.site-picker-open {
+  right: 37px;
+}
+
+.site-picker-open:hover,
 .site-picker-toggle:hover {
   color: var(--primary);
   background: var(--primary-soft);

@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  Upload,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -64,6 +65,8 @@ const candidateFilter = ref('all')
 const iconLibraryOpen = ref(false)
 const iconLibrary = ref([])
 const iconBusy = ref('')
+const iconUploading = ref(false)
+const iconUploadInput = ref(null)
 const candidateLoading = ref(false)
 const candidateLoadedRepos = ref(new Set())
 const pluginAuth = ref(null)
@@ -501,6 +504,29 @@ async function loadIconLibrary() {
 function openIconLibrary() {
   iconLibraryOpen.value = true
   loadIconLibrary()
+}
+
+// 上传本地图片到 /data/icon，并直接应用为当前内容源图标。
+async function uploadIconFile(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  const item = editorSource.value
+  if (!item) return
+  iconUploading.value = true
+  try {
+    const uploaded = await api.uploadIcon(file)
+    await loadIconLibrary()
+    if (uploaded?.item?.id) {
+      const result = await api.updateSourceIcon(item.id, { action: 'select', iconId: uploaded.item.id })
+      item.icon = `${result?.icon || ''}?t=${Date.now()}`
+    }
+    notify('图标已上传并应用到该内容源', 'success')
+  } catch (err) {
+    notify(`上传图标失败：${err.message}`, 'error')
+  } finally {
+    iconUploading.value = false
+  }
 }
 
 async function chooseSourceIcon(icon) {
@@ -1301,7 +1327,7 @@ function onDragEnd() {
   </div>
 
 
-  <div v-if="browserOpen && browserSource" class="modal-backdrop" @click.self="browserOpen = false">
+  <div v-if="browserOpen && browserSource" class="modal-backdrop browser-verify-backdrop" @click.self="browserOpen = false">
     <section class="modal browser-verify-modal">
       <header class="modal-head">
         <h2>浏览器验证 · {{ browserSource.name }}</h2>
@@ -1588,20 +1614,34 @@ function onDragEnd() {
   </div>
 
   <div v-if="iconLibraryOpen" class="modal-backdrop" @click.self="iconLibraryOpen = false">
-    <div class="modal">
+    <div class="modal icon-library-modal">
       <div class="modal-head">
         <div>
           <h2>本地图标库</h2>
           <p class="muted small">图标保存在容器 /data/icon 目录</p>
         </div>
-        <button class="btn ghost icon" type="button" aria-label="关闭" @click="iconLibraryOpen = false">
-          <X :size="18" />
-        </button>
+        <div class="inline">
+          <button class="btn secondary small" type="button" :disabled="iconUploading" @click="iconUploadInput?.click()">
+            <Loader2 v-if="iconUploading" :size="14" class="spin" />
+            <Upload v-else :size="14" />
+            上传图标
+          </button>
+          <button class="btn ghost icon" type="button" aria-label="关闭" @click="iconLibraryOpen = false">
+            <X :size="18" />
+          </button>
+        </div>
       </div>
+      <input
+        ref="iconUploadInput"
+        class="hidden-file-input"
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft.icon,.png,.jpg,.jpeg,.webp,.ico"
+        @change="uploadIconFile"
+      />
       <div class="modal-body">
         <div v-if="!iconLibrary.length" class="empty">
           <Images :size="24" />
-          <p>图标库为空。可先对内容源执行“重新获取”生成图标。</p>
+          <p>图标库为空。可先对内容源执行“重新获取”生成图标，或直接上传本地图片。</p>
         </div>
         <div v-else class="icon-library-grid">
           <button

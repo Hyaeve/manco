@@ -1,10 +1,8 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
-  ClockArrowDown,
-  ClockArrowUp,
   ArrowLeft,
   CircleCheck,
   Download,
@@ -38,6 +36,43 @@ const sortDesc = ref(false)
 const queryInput = ref('')
 const appliedQuery = ref('')
 const heroTint = ref('')
+
+// 简洁线条的章节时间排序图标：三条由长到短的横线 + 方向箭头。
+const TimeSortIcon = defineComponent({
+  props: { desc: { type: Boolean, default: false } },
+  setup(props) {
+    return () =>
+      h(
+        'svg',
+        {
+          xmlns: 'http://www.w3.org/2000/svg',
+          width: 17,
+          height: 17,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          'stroke-width': 1.6,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        },
+        props.desc
+          ? [
+              h('path', { d: 'M4 6h13' }),
+              h('path', { d: 'M4 11h9' }),
+              h('path', { d: 'M4 16h5' }),
+              h('path', { d: 'M18 8v9' }),
+              h('path', { d: 'm14.5 13.5 3.5 3.5 3.5-3.5' }),
+            ]
+          : [
+              h('path', { d: 'M4 6h5' }),
+              h('path', { d: 'M4 11h9' }),
+              h('path', { d: 'M4 16h13' }),
+              h('path', { d: 'M18 16V7' }),
+              h('path', { d: 'm14.5 10.5 3.5-3.5 3.5 3.5' }),
+            ],
+      )
+  },
+})
 const chapterRenderLimit = ref(80)
 let pageScroller = null
 let anchorIndex = -1
@@ -411,7 +446,7 @@ async function downloadSelected() {
           <span>全选</span>
         </button>
         <button class="btn ghost small sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
-          <component :is="sortDesc ? ClockArrowDown : ClockArrowUp" :size="17" :stroke-width="1.7" />
+          <TimeSortIcon :desc="sortDesc" />
         </button>
         <span class="muted small">共 {{ chapters.length }} 章</span>
         <span class="spacer" />

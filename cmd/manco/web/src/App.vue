@@ -71,6 +71,7 @@ const activityLoading = ref(false)
 const searchQuery = ref('')
 const searchInput = ref(null)
 const SEARCH_HISTORY_KEY = 'manco.search.history.v1'
+let sessionCheckTimer = 0
 
 const theme = ref(localStorage.getItem('manco-theme') || 'system')
 const themeOptions = [
@@ -121,12 +122,20 @@ onMounted(() => {
   if (!auth.ready) auth.load()
   window.addEventListener('click', closeMenus)
   window.addEventListener('keydown', handleGlobalKeys)
+  window.addEventListener('focus', checkSession)
+  window.addEventListener('manco:unauthorized', handleUnauthorized)
+  document.addEventListener('visibilitychange', checkSessionOnVisible)
+  sessionCheckTimer = window.setInterval(checkSession, 30000)
 })
 
 onUnmounted(() => {
   media.removeEventListener('change', applyTheme)
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', handleGlobalKeys)
+  window.removeEventListener('focus', checkSession)
+  window.removeEventListener('manco:unauthorized', handleUnauthorized)
+  document.removeEventListener('visibilitychange', checkSessionOnVisible)
+  if (sessionCheckTimer) window.clearInterval(sessionCheckTimer)
 })
 
 function closeMenus(event) {
@@ -192,7 +201,27 @@ function toggleMenu(name, event) {
 
 async function signOut() {
   await auth.logout()
-  router.push({ name: 'login' })
+  router.replace({ name: 'login' })
+}
+
+function handleUnauthorized() {
+  auth.invalidate()
+  if (route.name === 'login') return
+  const redirect = route.fullPath && route.fullPath !== '/' ? route.fullPath : undefined
+  router.replace({ name: 'login', query: redirect ? { redirect } : {} })
+}
+
+async function checkSession() {
+  if (route.name === 'login') return
+  try {
+    await api.me()
+  } catch (err) {
+    if (err.status === 401) handleUnauthorized()
+  }
+}
+
+function checkSessionOnVisible() {
+  if (document.visibilityState === 'visible') checkSession()
 }
 
 function cycleTheme() {

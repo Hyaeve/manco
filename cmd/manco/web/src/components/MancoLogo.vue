@@ -16,25 +16,34 @@ defineProps({
     xmlns="http://www.w3.org/2000/svg"
   >
     <path
-      d="M32 18c-6-4.4-12.2-5.4-20-4.2v32c7.8-1.2 14-.2 20 4.2 6-4.4 12.2-5.4 20-4.2v-32C44.2 12.6 38 13.6 32 18Z"
-      stroke="#C9982A"
-      stroke-width="3"
-      stroke-linejoin="round"
-    />
-    <path d="M32 18v32" stroke="#C9982A" stroke-width="3" stroke-linecap="round" />
-    <path
-      d="M31.8 27.6v11.2m-5.4-5.4 5.4 5.4 5.4-5.4M26.4 43.8h11"
-      stroke="#6F7F4A"
-      stroke-width="2.7"
-      stroke-linecap="round"
-      stroke-linejoin="round"
+      class="logo-page"
+      d="M13.5 17.2c6.2-2.1 12.4-2.1 18.5 0v32.5c-6.1-2.1-12.3-2.1-18.5 0z"
     />
     <path
-      d="M20 20.6c3.4-.1 6.6.5 9.4 1.8M20 26.4c3.4-.1 6.6.5 9.4 1.8M44 20.6c-3.4-.1-6.6.5-9.4 1.8M44 26.4c-3.4-.1-6.6.5-9.4 1.8"
-      stroke="#C9982A"
-      stroke-width="2.2"
-      stroke-linecap="round"
-      opacity="0.55"
+      class="logo-page"
+      d="M50.5 17.2c-6.2-2.1-12.4-2.1-18.5 0v32.5c6.1-2.1 12.3-2.1 18.5 0z"
+    />
+    <path
+      class="logo-arrow"
+      d="M32 25.5v12.6m-5.2-5.2 5.2 5.2 5.2-5.2"
     />
   </svg>
 </template>
+
+<style scoped>
+.logo-page,
+.logo-arrow {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.logo-page {
+  stroke: currentColor;
+  stroke-width: 3;
+}
+
+.logo-arrow {
+  stroke: var(--logo-accent, #75864a);
+  stroke-width: 2.8;
+}
+</style>

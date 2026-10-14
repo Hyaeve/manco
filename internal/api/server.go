@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.25"
+	appVersion    = "v0.1.26"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -256,6 +256,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
 	mux.HandleFunc("GET /api/icons", s.requireAuth(s.handleListIcons))
+	mux.HandleFunc("POST /api/icons", s.requireAuth(s.handleUploadIcon))
 	mux.HandleFunc("GET /api/icons/{id}", s.requireAuth(s.handleSourceIcon))
 	mux.HandleFunc("POST /api/sources/{id}/icon", s.requireAuth(s.handleUpdateSourceIcon))
 	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
@@ -532,6 +533,69 @@ func (s *Server) handleListIcons(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleUploadIcon 接收用户上传的图标图片并保存到本地图标库。
+func (s *Server) handleUploadIcon(w http.ResponseWriter, r *http.Request) {
+	if s.icons == nil {
+		writeError(w, http.StatusServiceUnavailable, "图标库不可用")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	if err := r.ParseMultipartForm(6 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "无效的上传请求")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "请选择要上传的图片")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (5<<20)+1))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "读取上传图片失败")
+		return
+	}
+	if len(data) == 0 || len(data) > 5<<20 {
+		writeError(w, http.StatusBadRequest, "图片为空或超过 5MB")
+		return
+	}
+	id := sanitizeIconID(strings.TrimSuffix(filepath.Base(header.Filename), filepath.Ext(header.Filename)))
+	if id == "" {
+		id = fmt.Sprintf("upload-%d", time.Now().Unix())
+	}
+	base := id
+	for attempt := 1; ; attempt++ {
+		if _, _, openErr := s.icons.Open(id); openErr != nil {
+			break
+		}
+		id = fmt.Sprintf("%s-%d", base, attempt)
+	}
+	entry, err := s.icons.Save(id, data, "")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"item": map[string]any{
+			"id":   entry.ID,
+			"name": entry.ID,
+			"url":  s.icons.URL(entry.ID),
+		},
+	})
+}
+
+// sanitizeIconID 只保留可安全用于文件名与索引的字符。
+func sanitizeIconID(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 // handleUpdateSourceIcon fetches, selects or resets the icon of one source.

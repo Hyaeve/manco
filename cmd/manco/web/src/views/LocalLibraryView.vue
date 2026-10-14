@@ -6,8 +6,6 @@ import {
   ArrowUp,
   BookOpen,
   Check,
-  ChevronLeft,
-  ChevronRight,
   Download,
   Film,
   FolderOpen,
@@ -33,7 +31,6 @@ const kind = ref('all')
 const active = ref(null)
 const reader = ref(null)
 const readerLoading = ref(false)
-const pageIndex = ref(0)
 const selectionMode = ref(false)
 const selectedPaths = ref([])
 const selectionAnchor = ref(-1)
@@ -122,7 +119,6 @@ const heroStyle = computed(() => ({
 const readerTitle = computed(() => reader.value?.file?.name || '')
 const readerImages = computed(() => reader.value?.images || [])
 const readerText = computed(() => reader.value?.text || '')
-const readerPage = computed(() => readerImages.value[pageIndex.value] || null)
 const selectedItems = computed(() => items.value.filter((item) => selectedPaths.value.includes(keyOf(item))))
 const selectedCount = computed(() => selectedItems.value.length)
 const selectedFileCount = computed(() =>
@@ -404,7 +400,6 @@ function clearChapterSearch() {
 
 async function openReader(file) {
   readerLoading.value = true
-  pageIndex.value = 0
   try {
     if (file.ext === 'cbz' || file.ext === 'zip') {
       const payload = await api.localCBZ(file.path)
@@ -425,15 +420,6 @@ async function openReader(file) {
 
 function closeReader() {
   reader.value = null
-  pageIndex.value = 0
-}
-
-function nextPage() {
-  if (pageIndex.value < readerImages.value.length - 1) pageIndex.value += 1
-}
-
-function prevPage() {
-  if (pageIndex.value > 0) pageIndex.value -= 1
 }
 
 function readerImageUrl(entry) {
@@ -675,7 +661,7 @@ function downloadReaderFile() {
         <div>
           <h2>{{ readerTitle }}</h2>
           <p v-if="readerImages.length" class="muted small">
-            第 {{ pageIndex + 1 }} / {{ readerImages.length }} 页
+            共 {{ readerImages.length }} 张 · 条漫模式
           </p>
         </div>
         <div class="inline">
@@ -695,20 +681,15 @@ function downloadReaderFile() {
       </div>
       <template v-else-if="reader">
         <div v-if="readerImages.length" class="reader-view">
-          <img v-if="readerPage" :src="readerImageUrl(readerPage)" :alt="`第 ${pageIndex + 1} 页`" />
+          <img
+            v-for="(entry, index) in readerImages"
+            :key="entry.name"
+            :src="readerImageUrl(entry)"
+            :alt="`第 ${index + 1} 张`"
+            loading="lazy"
+          />
         </div>
         <pre v-else class="reader-text">{{ readerText || '（空文件）' }}</pre>
-        <div v-if="readerImages.length" class="reader-nav">
-          <button class="btn secondary small" type="button" :disabled="pageIndex <= 0" @click="prevPage">
-            <ChevronLeft :size="15" />
-            上一页
-          </button>
-          <span class="muted small">{{ pageIndex + 1 }} / {{ readerImages.length }}</span>
-          <button class="btn secondary small" type="button" :disabled="pageIndex >= readerImages.length - 1" @click="nextPage">
-            下一页
-            <ChevronRight :size="15" />
-          </button>
-        </div>
       </template>
     </div>
   </div>
