@@ -331,3 +331,31 @@ func TestListDownloadJobsKeepsCompletedWhenManyActive(t *testing.T) {
 		t.Fatalf("succeeded = %d, want 1", got)
 	}
 }
+
+func TestListDownloadJobsKeepsFailedWhenManyQueued(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	failed := createJob(t, repository, "failed-1")
+	if err := repository.FailDownloadJob(ctx, failed.ID, 0, 0, "download failed", 2, nil); err != nil {
+		t.Fatalf("mark failed job: %v", err)
+	}
+	for index := 0; index < 40; index++ {
+		createJob(t, repository, "queued-"+strconv.Itoa(index))
+	}
+
+	jobs, err := repository.ListDownloadJobs(ctx, 5)
+	if err != nil {
+		t.Fatalf("list downloads: %v", err)
+	}
+	found := false
+	for _, job := range jobs {
+		if job.ID == failed.ID && job.Status == "failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("failed job %d missing from %d results", failed.ID, len(jobs))
+	}
+}

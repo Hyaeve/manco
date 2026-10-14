@@ -256,7 +256,9 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 
 	store := &memoryJobs{}
 	downloadDir := t.TempDir()
+	cacheDir := t.TempDir()
 	engine := NewEngine(registry, store, downloadDir, 2, 2, log.New(io.Discard, "", 0))
+	engine.SetCacheDir(cacheDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -305,8 +307,11 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 		t.Fatal("chapter 2 first page mismatch")
 	}
 
-	if _, err := os.Stat(filepath.Join(downloadDir, ".tmp", "job-1")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(downloadDir, ".tmp")); !os.IsNotExist(err) {
 		t.Fatalf("temporary directory was not cleaned up: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "job-1")); !os.IsNotExist(err) {
+		t.Fatalf("download cache directory was not cleaned up: %v", err)
 	}
 
 	job, _ := store.find(1)
@@ -375,6 +380,18 @@ func TestBatchPauseIsPerSourceAndReportedByCooldown(t *testing.T) {
 	}
 	if engine.inCooldown("picacg") {
 		t.Fatalf("picacg must not inherit baozimh cooldown")
+	}
+}
+
+func TestStagingDirUsesConfiguredDataCache(t *testing.T) {
+	engine := NewEngine(nil, &memoryJobs{}, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+	cacheDir := t.TempDir()
+	engine.SetCacheDir(cacheDir)
+
+	got := engine.stagingDir(model.DownloadJob{ID: 42})
+	want := filepath.Join(cacheDir, "job-42")
+	if got != want {
+		t.Fatalf("stagingDir = %q, want %q", got, want)
 	}
 }
 

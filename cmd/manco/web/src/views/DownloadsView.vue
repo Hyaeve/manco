@@ -193,7 +193,7 @@ onUnmounted(() => {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const payload = await api.downloads(300)
+    const payload = await api.downloads(600)
     items.value = payload.items || []
     if (silent) error.value = ''
   } catch (err) {

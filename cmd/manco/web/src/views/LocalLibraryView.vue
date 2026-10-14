@@ -17,7 +17,9 @@ import {
   Loader2,
   Merge,
   Search,
+  Tag,
   Trash2,
+  UserRound,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -40,6 +42,9 @@ const chapterQuery = ref('')
 const chapterApplied = ref('')
 const chapterSortMode = ref('title')
 const chapterSortDesc = ref(false)
+const chapterSortOpen = ref(false)
+const chapterSortUpward = ref(false)
+const chapterSortRoot = ref(null)
 const rootOrder = ref([])
 const activeRoot = ref('')
 const heroTint = ref('')
@@ -129,10 +134,12 @@ const selectedFileCount = computed(() =>
 onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('pointerdown', closeChapterSortOnOutside)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('pointerdown', closeChapterSortOnOutside)
 })
 
 async function load() {
@@ -210,6 +217,10 @@ function clearSelection() {
 
 function handleKeydown(event) {
   if (event.key !== 'Escape') return
+  if (chapterSortOpen.value) {
+    chapterSortOpen.value = false
+    return
+  }
   if (selectionMode.value) clearSelection()
 }
 
@@ -324,12 +335,36 @@ function extractTint(url) {
   }
 }
 
-function toggleChapterSortMode() {
-  chapterSortMode.value = chapterSortMode.value === 'time' ? 'title' : 'time'
+const chapterSortLabel = computed(() => (chapterSortMode.value === 'time' ? '添加时间' : '标题'))
+
+function toggleChapterSortMenu() {
+  if (chapterSortOpen.value) {
+    chapterSortOpen.value = false
+    return
+  }
+  const trigger = chapterSortRoot.value?.getBoundingClientRect()
+  const estimatedMenuHeight = 150
+  chapterSortUpward.value = Boolean(
+    trigger &&
+      trigger.bottom + estimatedMenuHeight > window.innerHeight &&
+      trigger.top > estimatedMenuHeight,
+  )
+  chapterSortOpen.value = true
 }
 
-function toggleChapterSortDirection() {
-  chapterSortDesc.value = !chapterSortDesc.value
+function closeChapterSortOnOutside(event) {
+  if (!chapterSortOpen.value || chapterSortRoot.value?.contains(event.target)) return
+  chapterSortOpen.value = false
+}
+
+function chooseChapterSortMode(mode) {
+  chapterSortMode.value = mode
+  chapterSortOpen.value = false
+}
+
+function chooseChapterSortDirection(descending) {
+  chapterSortDesc.value = descending
+  chapterSortOpen.value = false
 }
 
 async function openDetail(item) {
@@ -338,7 +373,9 @@ async function openDetail(item) {
   if (item.cover) extractTint(coverUrl(item))
   chapterQuery.value = ''
   chapterApplied.value = ''
+  chapterSortMode.value = 'title'
   chapterSortDesc.value = false
+  chapterSortOpen.value = false
   for (const file of item.files || []) {
     if ((file.ext !== 'cbz' && file.ext !== 'zip') || file.thumbnail) continue
     try {
@@ -352,6 +389,7 @@ async function openDetail(item) {
 }
 
 function closeDetail() {
+  chapterSortOpen.value = false
   active.value = null
 }
 
@@ -428,7 +466,16 @@ function downloadReaderFile() {
           <span class="badge" :class="active.kind === 'book' ? 'primary' : ''">
             {{ active.kind === 'book' ? '书籍' : '漫画' }}
           </span>
-          <span>{{ active.author || '未知作者' }}</span>
+          <span v-if="active.author" class="author-pill">
+            <UserRound :size="14" />
+            {{ active.author }}
+          </span>
+          <span v-else>未知作者</span>
+        </div>
+        <div v-if="active.tags?.length" class="tag-list">
+          <span v-for="tag in active.tags" :key="tag" class="badge tag-pill">
+            <Tag :size="12" />{{ tag }}
+          </span>
         </div>
         <p class="description">{{ active.description || '暂无简介' }}</p>
       </div>
@@ -445,14 +492,67 @@ function downloadReaderFile() {
             <X :size="14" />
           </button>
         </form>
-        <div class="chapter-sort-wrap" aria-label="章节排序">
-          <button class="btn ghost small" type="button" @click="toggleChapterSortMode">
-            {{ chapterSortMode === 'time' ? '添加时间' : '标题' }}
+        <div ref="chapterSortRoot" class="chapter-sort-wrap" aria-label="章节排序">
+          <button
+            class="chapter-sort-trigger"
+            type="button"
+            aria-haspopup="menu"
+            :aria-expanded="chapterSortOpen"
+            @click="toggleChapterSortMenu"
+          >
+            <span>{{ chapterSortLabel }}</span>
+            <component :is="chapterSortDesc ? ArrowDown : ArrowUp" :size="14" :stroke-width="1.6" />
           </button>
-          <button class="btn ghost small" type="button" @click="toggleChapterSortDirection">
-            <component :is="chapterSortDesc ? ArrowDown : ArrowUp" :size="14" />
-            {{ chapterSortDesc ? '降序' : '升序' }}
-          </button>
+          <Transition name="select-popup">
+            <div v-if="chapterSortOpen" class="chapter-sort-menu" :class="chapterSortUpward ? 'above' : 'below'" role="menu">
+              <div class="chapter-sort-group">
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  :aria-checked="chapterSortMode === 'title'"
+                  :class="{ active: chapterSortMode === 'title' }"
+                  @click="chooseChapterSortMode('title')"
+                >
+                  <span>标题</span>
+                  <Check v-if="chapterSortMode === 'title'" class="chapter-sort-check" :size="15" />
+                </button>
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  :aria-checked="chapterSortMode === 'time'"
+                  :class="{ active: chapterSortMode === 'time' }"
+                  @click="chooseChapterSortMode('time')"
+                >
+                  <span>添加时间</span>
+                  <Check v-if="chapterSortMode === 'time'" class="chapter-sort-check" :size="15" />
+                </button>
+              </div>
+              <div class="chapter-sort-group">
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  :aria-checked="!chapterSortDesc"
+                  :class="{ active: !chapterSortDesc }"
+                  @click="chooseChapterSortDirection(false)"
+                >
+                  <ArrowUp :size="15" :stroke-width="1.6" />
+                  <span>升序</span>
+                  <Check v-if="!chapterSortDesc" class="chapter-sort-check" :size="15" />
+                </button>
+                <button
+                  type="button"
+                  role="menuitemradio"
+                  :aria-checked="chapterSortDesc"
+                  :class="{ active: chapterSortDesc }"
+                  @click="chooseChapterSortDirection(true)"
+                >
+                  <ArrowDown :size="15" :stroke-width="1.6" />
+                  <span>降序</span>
+                  <Check v-if="chapterSortDesc" class="chapter-sort-check" :size="15" />
+                </button>
+              </div>
+            </div>
+          </Transition>
         </div>
       </div>
 

@@ -856,17 +856,26 @@ func (s *Store) DownloadJob(ctx context.Context, id int64) (model.DownloadJob, e
 }
 
 func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.DownloadJob, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 200
+	if limit <= 0 {
+		limit = 600
 	}
-	// 进行中/失败任务和已完成记录分开查询，再用 UNION ALL 合并，避免大量
-	// 活跃任务把已经持久化的完成记录挤出结果集（旧实现统一 LIMIT 会造成这个
-	// 问题，任务列表因此看不到已完成章节）。
+	if limit > 600 {
+		limit = 600
+	}
+	// 进行中、失败和已完成记录分开查询，再合并结果。失败记录不能被大量
+	// 排队任务挤出结果集，因此三类记录各自使用独立的 LIMIT。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM (
 			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
-			FROM download_jobs WHERE status <> 'completed'
-			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 WHEN 'failed' THEN 4 ELSE 5 END, id DESC
+			FROM download_jobs WHERE status NOT IN ('completed', 'failed', 'canceled')
+			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id DESC
+			LIMIT ?
+		)
+		UNION ALL
+		SELECT * FROM (
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			FROM download_jobs WHERE status IN ('failed', 'canceled')
+			ORDER BY id DESC
 			LIMIT ?
 		)
 		UNION ALL
@@ -875,7 +884,7 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 			FROM download_jobs WHERE status = 'completed'
 			ORDER BY COALESCE(finished_at, updated_at, created_at) DESC, id DESC
 			LIMIT ?
-		)`, limit, limit)
+		)`, limit, limit, limit)
 	if err != nil {
 		return nil, err
 	}

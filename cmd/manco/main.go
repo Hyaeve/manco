@@ -124,6 +124,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	}
 	registry := sources.NewRegistry(client, box, repository, pluginManager)
 	engine := downloader.NewEngine(registry, repository, cfg.DownloadDir, cfg.MaxChapterConcurrency, cfg.MaxPageConcurrency, logger)
+	engine.SetCacheDir(filepath.Join(cfg.DataDir, "download-cache"))
 	scanner := scheduler.New(registry, repository, downloadQueue{store: repository, engine: engine}, cfg.ScanInterval, logger)
 
 	assets, err := fs.Sub(embedded, "web/dist")

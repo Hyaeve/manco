@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.24"
+	appVersion    = "v0.1.25"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2841,7 +2841,7 @@ func (s *Server) requeueMissingFiles(ctx context.Context, subscription model.Sub
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 200))
+	items, err := s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 600))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3026,7 +3026,7 @@ func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
-	jobs, err := s.store.ListDownloadJobs(r.Context(), 500)
+	jobs, err := s.store.ListDownloadJobs(r.Context(), 600)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3093,6 +3093,7 @@ type localItemEntry struct {
 	ComicID     string           `json:"comicId,omitempty"`
 	Author      string           `json:"author,omitempty"`
 	Description string           `json:"description,omitempty"`
+	Tags        []string         `json:"tags,omitempty"`
 	Cover       string           `json:"cover,omitempty"`
 	Files       []localFileEntry `json:"files"`
 	TotalFiles  int              `json:"totalFiles"`
@@ -3117,7 +3118,7 @@ func (s *Server) localRoots(ctx context.Context) []string {
 			add(item.DownloadDir)
 		}
 	}
-	if jobs, err := s.store.ListDownloadJobs(ctx, 500); err == nil {
+	if jobs, err := s.store.ListDownloadJobs(ctx, 600); err == nil {
 		for _, job := range jobs {
 			if job.DownloadDir != "" {
 				add(job.DownloadDir)
@@ -3242,11 +3243,12 @@ func applyBookMeta(path string, item *localItemEntry) {
 		return
 	}
 	var payload struct {
-		SourceID    string `json:"source"`
-		ID          string `json:"id"`
-		Title       string `json:"title"`
-		Author      string `json:"author"`
-		Description string `json:"description"`
+		SourceID    string   `json:"source"`
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Author      string   `json:"author"`
+		Description string   `json:"description"`
+		Tags        []string `json:"tags"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return
@@ -3258,6 +3260,7 @@ func applyBookMeta(path string, item *localItemEntry) {
 	item.ComicID = payload.ID
 	item.Author = payload.Author
 	item.Description = payload.Description
+	item.Tags = normalizeMetadataTags(payload.Tags)
 }
 
 func applyComicMeta(path string, item *localItemEntry) {
@@ -3274,6 +3277,9 @@ func applyComicMeta(path string, item *localItemEntry) {
 	}
 	item.Author = info.Writer
 	item.Description = info.Summary
+	item.Tags = normalizeMetadataTags(strings.FieldsFunc(info.Genre, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；'
+	}))
 	for _, part := range strings.Fields(info.Notes) {
 		if value, ok := strings.CutPrefix(part, "source="); ok {
 			item.SourceID = value
@@ -3282,6 +3288,20 @@ func applyComicMeta(path string, item *localItemEntry) {
 			item.ComicID = value
 		}
 	}
+}
+
+func normalizeMetadataTags(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 func (s *Server) resolveLocalTarget(ctx context.Context, value string) (string, error) {

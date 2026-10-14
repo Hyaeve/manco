@@ -41,6 +41,7 @@ type Engine struct {
 	registry              *sources.Registry
 	store                 Jobs
 	downloadDir           string
+	cacheDir              string
 	maxChapterConcurrency int
 	maxPageConcurrency    int
 	logger                *log.Logger
@@ -173,10 +174,14 @@ func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxCh
 	if logger == nil {
 		logger = log.Default()
 	}
+	if strings.TrimSpace(downloadDir) == "" {
+		downloadDir = "downloads"
+	}
 	return &Engine{
 		registry:              registry,
 		store:                 store,
 		downloadDir:           downloadDir,
+		cacheDir:              filepath.Join(os.TempDir(), "manco-download-cache"),
 		maxChapterConcurrency: maxChapterConcurrency,
 		maxPageConcurrency:    maxPageConcurrency,
 		sourceConcurrency: map[string]int{
@@ -194,6 +199,29 @@ func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxCh
 		activeBySource:        map[string]int{},
 		kick:                  make(chan struct{}, 1),
 	}
+}
+
+// SetCacheDir points the per-chapter staging directory at a persistent volume
+// (normally <data>/download-cache) instead of the download destination, so the
+// library tree never contains a .tmp working directory.
+func (e *Engine) SetCacheDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return
+	}
+	e.mu.Lock()
+	e.cacheDir = dir
+	e.mu.Unlock()
+}
+
+func (e *Engine) stagingDir(job model.DownloadJob) string {
+	e.mu.Lock()
+	cacheDir := e.cacheDir
+	e.mu.Unlock()
+	if strings.TrimSpace(cacheDir) == "" {
+		cacheDir = filepath.Join(os.TempDir(), "manco-download-cache")
+	}
+	return filepath.Join(cacheDir, fmt.Sprintf("job-%d", job.ID))
 }
 
 func (e *Engine) Start(ctx context.Context) {
@@ -479,7 +507,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if err != nil {
 		return err
 	}
-	tempDir := filepath.Join(downloadRoot, ".tmp", fmt.Sprintf("job-%d", job.ID))
+	tempDir := e.stagingDir(job)
 	if err := os.RemoveAll(tempDir); err != nil {
 		return err
 	}
