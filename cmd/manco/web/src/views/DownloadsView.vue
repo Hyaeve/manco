@@ -203,16 +203,17 @@ async function load(silent = false) {
   }
 }
 
+// 任务列表状态只保留成功/失败/等待/下载中四类，详细错误请查看运行日志。
 function statusLabel(status) {
   return (
     {
-      queued: '排队中',
-      waiting: '等待中',
+      queued: '等待',
+      waiting: '等待',
+      paused: '等待',
       running: '下载中',
-      completed: '已完成',
+      completed: '成功',
       failed: '失败',
-      canceled: '已取消',
-      paused: '已暂停',
+      canceled: '失败',
     }[status] || status
   )
 }
@@ -220,9 +221,8 @@ function statusLabel(status) {
 function statusClass(status) {
   if (status === 'completed') return 'success'
   if (status === 'running') return 'primary'
-  if (status === 'failed') return 'danger'
-  if (status === 'waiting') return 'warning'
-  if (status === 'canceled' || status === 'paused') return 'warning'
+  if (status === 'failed' || status === 'canceled') return 'danger'
+  if (status === 'waiting' || status === 'queued' || status === 'paused') return 'warning'
   return ''
 }
 
@@ -425,7 +425,6 @@ async function remove(item, removeFile) {
         <div class="download-progress" :class="`is-${item.status}`" role="progressbar" :aria-valuenow="progressPercent(item)" aria-valuemin="0" aria-valuemax="100">
           <span class="download-progress-fill" :style="{ width: `${progressPercent(item)}%` }" />
         </div>
-        <span v-if="item.error" class="download-error">{{ item.error }}</span>
       </div>
       <div class="download-size">{{ formatSize(item.size) }}</div>
       <div class="download-time">{{ formatTime(item) }}</div>

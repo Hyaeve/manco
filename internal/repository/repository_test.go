@@ -39,22 +39,36 @@ func TestLegacyKototoroIndexResolvesAPKFolder(t *testing.T) {
 	}
 }
 
-func TestMihonPluginStaysInventoryOnly(t *testing.T) {
-	base, err := url.Parse("https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb")
+func TestMihonAPKExtensionIsInstallable(t *testing.T) {
+	base, err := url.Parse("https://raw.githubusercontent.com/LittleSurvival/copymanga-copy20/repo/index.min.json")
 	if err != nil {
 		t.Fatalf("parse base url: %v", err)
 	}
 	object := map[string]any{
-		"name": "Mihon Extension",
-		"pkg":  "eu.kanade.tachiyomi.extension.example",
-		"apk":  "example.apk",
+		"name": "Tachiyomi: CopyManga",
+		"pkg":  "eu.kanade.tachiyomi.extension.zh.copymanga",
+		"apk":  "tachiyomi-zh.copymanga-v1.4.85.apk",
 	}
-	item := extensionFromMap(object, base, "mihon", 0)
-	if item.Installable {
-		t.Fatalf("Mihon plugin must stay inventory-only until its own runtime is integrated")
+	item := extensionFromMap(object, base, "json", 0)
+	if !item.Installable {
+		t.Fatalf("Mihon APK extension must be installable through the embedded runtime")
 	}
-	if item.PluginType == "jar" {
-		t.Fatalf("Mihon APK must not be classified as a Kototoro JAR")
+	if item.PluginType != "mihon" {
+		t.Fatalf("plugin type = %q, want mihon", item.PluginType)
+	}
+	if item.Runtime != "plugin" {
+		t.Fatalf("runtime = %q, want plugin", item.Runtime)
+	}
+}
+
+func TestMihonArrayRepositoryNameFromFirstExtension(t *testing.T) {
+	raw := []byte(`[{"name":"Tachiyomi: CopyManga","pkg":"eu.kanade.tachiyomi.extension.zh.copymanga","apk":"tachiyomi-zh.copymanga-v1.4.85.apk"}]`)
+	var payload any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got := repositoryNameFromPayload(payload); got != "CopyManga" {
+		t.Fatalf("repository name = %q, want CopyManga", got)
 	}
 }
 

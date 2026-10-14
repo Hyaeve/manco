@@ -9,10 +9,10 @@ import {
   FolderOpen,
   Layers,
   Layers3,
+  ListChecks,
   Loader2,
   MoreVertical,
   Pencil,
-  Power,
   RefreshCcw,
   RefreshCw,
   Rss,
@@ -250,14 +250,34 @@ async function checkUpdate(item) {
   try {
     const result = await api.checkSubscription(item.id)
     if (result?.item) Object.assign(item, result.item)
-    if (result?.completed) {
-      notify(`《${item.title}》已检测为完结`, 'info')
-    } else {
-      notify(`《${item.title}》已检查更新`, 'success')
-    }
+    const retried = Number(result?.retried || 0)
+    const parts = ['已检查更新']
+    if (retried > 0) parts.push(`重试 ${retried} 个失败章节`)
+    if (result?.completed) parts.push('作品已完结')
+    notify(`《${item.title}》${parts.join('，')}`, result?.completed ? 'info' : 'success')
     await load(true)
   } catch (err) {
     notify(`检查更新失败：${err.message}`, 'error')
+  } finally {
+    busy.value = 0
+  }
+}
+
+// 补全：把内容源章节与已完成下载比对，只把缺失的章节加入队列。
+async function fillMissing(item) {
+  openMenu.value = 0
+  busy.value = item.id
+  try {
+    const result = await api.fillSubscription(item.id)
+    const missing = Number(result?.missing ?? result?.queued ?? 0)
+    if (missing <= 0) {
+      notify(`《${item.title}》已经完整`, 'success')
+    } else {
+      notify(`《${item.title}》缺 ${missing} 章，已加入下载队列`, 'warning')
+    }
+    await load(true)
+  } catch (err) {
+    notify(`补全失败：${err.message}`, 'error')
   } finally {
     busy.value = 0
   }
@@ -332,9 +352,17 @@ async function downloadAll(item) {
       class="subscription-card"
       :class="{ disabled: !item.enabled, 'menu-open': openMenu === item.id }"
     >
-      <span v-if="sourceIcon(item)" class="subscription-source" :title="item.sourceId">
+      <button
+        v-if="sourceIcon(item)"
+        class="subscription-source"
+        :class="{ 'is-off': !item.enabled }"
+        type="button"
+        :disabled="busy === item.id"
+        :aria-label="item.enabled ? `禁用《${item.title}》` : `启用《${item.title}》`"
+        @click.stop="toggleEnabled(item)"
+      >
         <img :src="sourceIcon(item)" :alt="item.sourceId" loading="lazy" />
-      </span>
+      </button>
       <div class="subscription-main">
         <RouterLink
           class="subscription-cover"
@@ -370,7 +398,7 @@ async function downloadAll(item) {
         </div>
       </div>
       <div class="subscription-tools">
-        <button class="btn ghost icon" type="button" aria-label="检查更新" title="检查更新" @click="checkUpdate(item)">
+        <button class="btn ghost icon" type="button" aria-label="检查更新" @click="checkUpdate(item)">
           <Loader2 v-if="busy === item.id" :size="18" class="spin" />
           <RefreshCcw v-else :size="18" />
         </button>
@@ -385,8 +413,8 @@ async function downloadAll(item) {
             <button class="dropdown-item" type="button" @click="downloadAll(item)">
               <Layers :size="15" /> 全量
             </button>
-            <button class="dropdown-item" type="button" @click="toggleEnabled(item)">
-              <Power :size="15" /> {{ item.enabled ? '禁用' : '启用' }}
+            <button class="dropdown-item" type="button" @click="fillMissing(item)">
+              <ListChecks :size="15" /> 补全
             </button>
             <button class="dropdown-item" type="button" @click="archive(item)">
               <Archive :size="15" /> 归档

@@ -1070,4 +1070,24 @@ func (s *Store) CompletedDownloadJobsByComic(ctx context.Context, sourceID, comi
 	return jobs, rows.Err()
 }
 
+// FailedDownloadJobsByComic returns every failed or canceled chapter for a work
+// so the subscription checker can retry them without touching finished files.
+func (s *Store) FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
+	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status IN ('failed', 'canceled') ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []model.DownloadJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
 // RequeueRunningJobs resets jobs that were interrupted by a restart back to

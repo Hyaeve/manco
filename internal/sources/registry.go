@@ -21,6 +21,13 @@ import (
 	"github.com/hyaeve/manco/internal/store"
 )
 
+// isPluginRuntime reports whether a persisted source config points at one of
+// the JVM runtimes hosted by the embedded sidecar.
+func isPluginRuntime(value string) bool {
+	value = strings.TrimSpace(value)
+	return value == pluginruntime.RuntimeKototoro || value == pluginruntime.RuntimeMihon
+}
+
 type Registry struct {
 	client        *http.Client
 	box           *secret.Box
@@ -127,7 +134,7 @@ func (r *Registry) ReloadCustomSources(ctx context.Context) error {
 		var adapter source.Source
 		var err error
 		var config pluginruntime.Config
-		if json.Unmarshal(item.Config, &config) == nil && config.Runtime == pluginruntime.RuntimeKototoro {
+		if json.Unmarshal(item.Config, &config) == nil && isPluginRuntime(config.Runtime) {
 			adapter, err = pluginruntime.NewAdapter(r.runtime, item)
 			if err == nil {
 				r.pluginSources[id] = true
@@ -148,14 +155,15 @@ func (r *Registry) IsBuiltin(id string) bool {
 	return r.builtins[strings.ToLower(strings.TrimSpace(id))]
 }
 
-// Runtime exposes the Kototoro JVM sidecar manager. It is nil when the
-// current build has no plugin runtime, and callers must handle that.
+// Runtime exposes the JVM sidecar manager. It is nil when the current build
+// has no plugin runtime, and callers must handle that.
 func (r *Registry) Runtime() *pluginruntime.Manager {
 	if r == nil {
 		return nil
 	}
 	return r.runtime
 }
+
 func (r *Registry) Get(id string) (source.Source, error) {
 	item, ok := r.byID[id]
 	if !ok {

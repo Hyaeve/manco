@@ -673,16 +673,26 @@ function openRepositoryEdit(item) {
 }
 
 async function createRepository() {
-  if (!repositoryForm.name.trim() || !repositoryForm.url.trim()) {
-    notify('仓库名称和地址不能为空', 'warning')
+  if (!repositoryForm.url.trim()) {
+    notify('仓库地址不能为空', 'warning')
     return
   }
   busy.value = 'repository-create'
   try {
     const payload = {
-      name: repositoryForm.name.trim(),
       url: repositoryForm.url.trim(),
       kind: repositoryForm.kind,
+    }
+    const trimmedName = repositoryForm.name.trim()
+    if (trimmedName) payload.name = trimmedName
+    const inferredName = () => {
+      try {
+        const path = new URL(payload.url).pathname.replace(/\/+$/, '')
+        const last = decodeURIComponent(path.split('/').filter(Boolean).pop() || '')
+        return last.replace(/\.(min\.)?(json|pb)$/i, '') || '拓展仓库'
+      } catch {
+        return '拓展仓库'
+      }
     }
     let saved
     if (editingRepositoryId.value) {
@@ -690,11 +700,11 @@ async function createRepository() {
       saved = updated && updated.id ? updated : { ...payload, id: editingRepositoryId.value }
       const index = repositories.value.findIndex((row) => row.id === editingRepositoryId.value)
       if (index >= 0) repositories.value[index] = saved
-      notify(`${saved.name || payload.name} 已更新`, 'success')
+      notify(`${saved.name || payload.name || inferredName()} 已更新`, 'success')
     } else {
       saved = await api.createRepository(payload)
       repositories.value = [...repositories.value.filter((item) => item.id !== saved.id), saved]
-      notify(`${saved.name} 已添加，正在同步来源清单`, 'success')
+      notify(`${saved.name || inferredName()} 已添加，正在同步来源清单`, 'success')
     }
     repositoryOpen.value = false
     addRepositoryID.value = saved.id
@@ -750,8 +760,15 @@ function isKototoroPlugin(repository, extension) {
   return extension?.runtime === 'plugin' && (extension?.pluginType === 'jar' || jarLike)
 }
 
+function isMihonFamilyPlugin(repository, extension) {
+  const pluginType = String(extension?.pluginType || repository?.kind || '').toLowerCase()
+  if (['mihon', 'aniyomi', 'tsundoku', 'kanade'].includes(pluginType)) return true
+  const installUrl = String(extension?.installUrl || '').split('?')[0].toLowerCase()
+  return installUrl.endsWith('.apk')
+}
+
 function canInstallExtension(repository, extension) {
-  return Boolean(extension?.installable || isKototoroPlugin(repository, extension))
+  return Boolean(extension?.installable || isKototoroPlugin(repository, extension) || isMihonFamilyPlugin(repository, extension))
 }
 
 function openAddSource() {
@@ -806,7 +823,7 @@ async function loadRepositoryCandidates(repository) {
 
 async function loadExtensionCandidates(repository, extension) {
   if (!canInstallExtension(repository, extension)) {
-    notify('该来源是 Android/JVM 插件，当前仅登记清单，不能直接执行', 'warning')
+    notify('该来源是插件，但当前运行时无法执行它', 'warning')
     return
   }
   busy.value = `extension-${extension.id}`
@@ -1463,7 +1480,7 @@ function onDragEnd() {
       <div class="modal-head">
         <div>
           <h2>{{ editingRepositoryId ? '编辑拓展仓库' : '添加拓展仓库' }}</h2>
-          <p class="muted small">{{ editingRepositoryId ? '修改仓库名称、地址或类型，保存后会重新同步来源。' : '添加兼容 Kototoro、Mihon、JAR 等格式的仓库清单地址。' }}</p>
+          <p class="muted small">{{ editingRepositoryId ? '修改仓库名称、地址或类型，保存后会重新同步来源。' : '添加兼容 Kototoro、Mihon、JAR 等格式的仓库清单地址，仓库名称留空时自动使用清单名称。' }}</p>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭" @click="repositoryOpen = false">
           <X :size="18" />
@@ -1471,8 +1488,8 @@ function onDragEnd() {
       </div>
       <div class="modal-body">
         <label class="field">
-          <span>仓库名称</span>
-          <input v-model="repositoryForm.name" class="input" placeholder="Kototoro Parsers" />
+          <span>仓库名称（留空自动获取）</span>
+          <input v-model="repositoryForm.name" class="input" placeholder="留空由仓库清单自动命名" />
         </label>
         <label class="field">
           <span>仓库地址</span>

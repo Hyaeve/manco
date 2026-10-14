@@ -33,6 +33,53 @@ type client interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
+// Metadata describes the repository document itself. Name is the name
+// published by index.pb/index.min.json and is preferred over a user-entered
+// label. The extension list is returned with the same sync so the caller can
+// persist both atomically.
+type Metadata struct {
+	Name       string
+	Extensions []model.RepositoryExtension
+}
+
+// SyncWithMetadata keeps the old Sync API while exposing the repository name.
+func SyncWithMetadata(ctx context.Context, httpClient client, repo model.ExtensionRepository) (Metadata, error) {
+	address := strings.TrimSpace(repo.URL)
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return Metadata{}, fmt.Errorf("仓库地址无效")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return Metadata{}, fmt.Errorf("仓库只支持 http 或 https 地址")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return Metadata{}, err
+	}
+	request.Header.Set("Accept", "application/json, application/octet-stream, text/plain")
+	request.Header.Set("User-Agent", source.DefaultUserAgent)
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return Metadata{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return Metadata{}, fmt.Errorf("仓库返回 HTTP %d", response.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 12<<20))
+	if err != nil {
+		return Metadata{}, err
+	}
+	name, items, err := decodeRepositoryPayloadWithMetadata(raw, parsed, repo.Kind)
+	if err != nil {
+		return Metadata{}, err
+	}
+	if len(items) == 0 {
+		return Metadata{}, fmt.Errorf("仓库中没有可识别的扩展或配置源")
+	}
+	return Metadata{Name: strings.TrimSpace(name), Extensions: items}, nil
+}
+
 func NormalizeKind(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if supportedKinds[value] {
@@ -82,6 +129,47 @@ func Sync(ctx context.Context, httpClient client, repo model.ExtensionRepository
 		return nil, fmt.Errorf("仓库中没有可识别的扩展或配置源")
 	}
 	return items, nil
+}
+
+func repositoryNameFromPayload(payload any) string {
+	switch value := payload.(type) {
+	case []any:
+		// Mihon/Aniyomi index.min.json has no repository-level name. Use the first
+		// published extension name, which is how Tachiyomi labels such repos.
+		for _, entry := range value {
+			if name := repositoryNameFromPayload(entry); name != "" {
+				return name
+			}
+		}
+		return ""
+	case map[string]any:
+		return repositoryNameFromObject(value)
+	default:
+		return ""
+	}
+}
+
+func repositoryNameFromObject(object map[string]any) string {
+	if name := firstString(object, "repositoryName", "repoName", "title", "label", "name"); name != "" {
+		return cleanRepositoryName(name)
+	}
+	for _, key := range []string{"repository", "repo", "meta", "metadata", "data"} {
+		if name := repositoryNameFromPayload(object[key]); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func cleanRepositoryName(value string) string {
+	value = strings.TrimSpace(value)
+	lower := strings.ToLower(value)
+	for _, prefix := range []string{"tachiyomi:", "mihon:", "aniyomi:", "tsundoku:", "kototoro:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(value[len(prefix):])
+		}
+	}
+	return value
 }
 
 func parsePayload(payload any, base *url.URL, repoKind string) []model.RepositoryExtension {
@@ -202,11 +290,23 @@ func extensionFromMap(object map[string]any, base *url.URL, repoKind string, ind
 	if strings.HasSuffix(strings.ToLower(strings.Split(installURL, "?")[0]), ".jar") {
 		pluginType = "jar"
 	}
-	if runtime == "plugin" && pluginType == "jar" && installURL != "" && isKototoroParser(packageName, name, base) {
-		// Kototoro Parsers publishes a DEX-only JAR that the embedded JVM sidecar
-		// converts and loads. Other plugin ecosystems remain inventory-only.
-		installable = true
+	if runtime == "plugin" && installURL != "" {
+		switch {
+		case pluginType == "jar" && isKototoroParser(packageName, name, base):
+			// Kototoro Parsers publishes a DEX-only JAR that the embedded JVM
+			// sidecar converts and loads.
+			installable = true
+		case isMihonFamilyPlugin(pluginType, installURL):
+			// Mihon/Aniyomi/Tsundoku publish APK extensions. The same JVM
+			// sidecar converts the DEX payload and loads them with the
+			// desktop-compatibility runtime.
+			if pluginType == "json" || pluginType == "kanade" {
+				pluginType = "mihon"
+			}
+			installable = true
+		}
 	}
+
 	idSource := firstNonEmpty(packageName, name) + "|" + firstNonEmpty(version, strconv.Itoa(index))
 	return model.RepositoryExtension{
 		ID:          stableID(idSource),
@@ -459,4 +559,12 @@ func Slug(value string) string {
 		value = value[:56]
 	}
 	return value
+}
+func isMihonFamilyPlugin(pluginType, installURL string) bool {
+	switch strings.ToLower(strings.TrimSpace(pluginType)) {
+	case "mihon", "aniyomi", "tsundoku", "kanade":
+		return true
+	}
+	lower := strings.ToLower(strings.Split(strings.TrimSpace(installURL), "?")[0])
+	return strings.HasSuffix(lower, ".apk")
 }

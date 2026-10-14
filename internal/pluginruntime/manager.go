@@ -29,6 +29,7 @@ import (
 )
 
 const (
+	RuntimeMihon    = "mihon"
 	RuntimeKototoro = "kototoro-parser"
 	ProtocolVersion = 1
 )
@@ -50,6 +51,7 @@ type pluginRecord struct {
 	ID      string `json:"id"`
 	Path    string `json:"path"`
 	Version string `json:"version,omitempty"`
+	Type    string `json:"type,omitempty"`
 }
 
 type hostConfig struct {
@@ -191,6 +193,14 @@ func (m *Manager) ConfigureProxy(proxyURL, username, password string) error {
 // the sources exposed by that plugin. The existing plugin is restored if the
 // new sidecar process cannot load it.
 func (m *Manager) Install(ctx context.Context, id, downloadURL string) ([]Source, error) {
+	return m.InstallWithRuntime(ctx, id, downloadURL, RuntimeKototoro)
+}
+
+// InstallWithRuntime downloads one extension and tells the JVM sidecar which
+// runtime should load it. Kototoro parser JARs and Mihon-family APKs share the
+// same JSONL protocol but need different conversion and registry paths.
+func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runtimeType string) ([]Source, error) {
+	runtimeType = normalizeRuntime(runtimeType)
 	id = strings.TrimSpace(id)
 	if !pluginIDPattern.MatchString(id) {
 		return nil, fmt.Errorf("插件 ID 无效: %q", id)
@@ -208,7 +218,11 @@ func (m *Manager) Install(ctx context.Context, id, downloadURL string) ([]Source
 	if err := os.MkdirAll(filepath.Join(m.configDir, "plugins"), 0o755); err != nil {
 		return nil, err
 	}
-	target := filepath.Join(m.configDir, "plugins", safeFileName(id)+".jar")
+	extension := ".jar"
+	if runtimeType == RuntimeMihon {
+		extension = ".apk"
+	}
+	target := filepath.Join(m.configDir, "plugins", safeFileName(id)+extension)
 	temporary := target + ".part"
 	if err := m.download(ctx, downloadURL, temporary); err != nil {
 		return nil, err
@@ -227,7 +241,11 @@ func (m *Manager) Install(ctx context.Context, id, downloadURL string) ([]Source
 	}
 
 	previousPlugins := append([]pluginRecord(nil), m.plugins...)
-	record := pluginRecord{ID: id, Path: filepath.ToSlash(filepath.Join("plugins", filepath.Base(target)))}
+	record := pluginRecord{
+		ID:   id,
+		Path: filepath.ToSlash(filepath.Join("plugins", filepath.Base(target))),
+		Type: runtimeType,
+	}
 	replaced := false
 	for index := range m.plugins {
 		if m.plugins[index].ID == id {
@@ -519,6 +537,7 @@ func (m *Manager) loadConfig() error {
 	}
 	for _, item := range config.Plugins {
 		if pluginIDPattern.MatchString(item.ID) && strings.TrimSpace(item.Path) != "" {
+			item.Type = normalizeRuntime(item.Type)
 			m.plugins = append(m.plugins, item)
 		}
 	}
@@ -575,6 +594,13 @@ func (m *Manager) download(ctx context.Context, address, target string) error {
 	defer output.Close()
 	_, err = io.Copy(output, io.LimitReader(response.Body, 128<<20))
 	return err
+}
+
+func normalizeRuntime(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), RuntimeMihon) {
+		return RuntimeMihon
+	}
+	return RuntimeKototoro
 }
 
 func safeFileName(value string) string {

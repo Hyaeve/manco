@@ -3291,3 +3291,159 @@
   .download-row { grid-template-columns: minmax(0, 1fr); }
   .download-size { display: none; }
 }
+
+/* v0.1.18：订阅卡片一行三张；来源图标可点击启停；右下按钮与封面底对齐。 */
+.subscription-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.subscription-card {
+  min-height: 0;
+  overflow: visible;
+}
+.subscription-card .subscription-main {
+  grid-template-columns: 122px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 16px 16px;
+}
+.subscription-card .subscription-cover {
+  width: 122px;
+  flex-basis: 122px;
+  border-radius: 12px;
+}
+.subscription-card .subscription-cover img {
+  object-fit: cover;
+}
+.subscription-card .subscription-meta {
+  padding-bottom: 56px;
+}
+.subscription-card .subscription-source {
+  top: 16px;
+  right: 16px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+  border-radius: 10px;
+  transition: opacity 140ms ease;
+}
+.subscription-card .subscription-source img {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  object-fit: contain;
+}
+.subscription-card .subscription-source.is-off {
+  opacity: 0.35;
+}
+/* 封面宽 122px，aspect-ratio 2/3 → 高 183px，故顶部偏移 16px。 */
+.subscription-tools {
+  right: 16px;
+  top: calc(16px + 183px);
+  bottom: auto;
+  transform: translateY(-100%);
+}
+@media (max-width: 1500px) {
+  .subscription-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .subscription-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* v0.1.18：任务列表行更紧凑，不再在行内显示错误日志。 */
+.download-row {
+  padding: 8px 14px;
+}
+.download-head {
+  padding: 8px 14px;
+}
+.download-status {
+  gap: 4px;
+}
+.download-main {
+  gap: 2px;
+}
+
+/* v0.1.18：运行日志按级别着色：错误红、警告橙、信息蓝、调试灰。 */
+.logs-page .log-raw {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.logs-page .log-raw-line {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 3px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.logs-page .log-raw-marker {
+  display: inline-flex;
+  justify-content: center;
+  padding: 1px 0;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.logs-page .log-raw-marker.is-error,
+.logs-page .log-level.error {
+  color: #fff;
+  background: #d64545;
+}
+.logs-page .log-raw-marker.is-warning,
+.logs-page .log-level.warning {
+  color: #7a4b00;
+  background: #ffd88a;
+}
+.logs-page .log-raw-marker.is-info,
+.logs-page .log-level.info {
+  color: #fff;
+  background: #3d7fd0;
+}
+.logs-page .log-raw-marker.is-debug,
+.logs-page .log-level.debug {
+  color: #444;
+  background: #d8d8d8;
+}
+.logs-page .log-raw-line.is-error .log-raw-text {
+  color: #c03434;
+}
+.logs-page .log-raw-line.is-warning .log-raw-text {
+  color: #a8730a;
+}
+.logs-page .log-raw-line.is-info .log-raw-text {
+  color: var(--text);
+}
+.logs-page .log-raw-line.is-debug .log-raw-text {
+  color: var(--text-muted);
+}
+[data-theme='dark'] .logs-page .log-level.info {
+  background: #2f6fbd;
+}
+[data-theme='dark'] .logs-page .log-raw-line.is-error .log-raw-text {
+  color: #ff8a8a;
+}
+[data-theme='dark'] .logs-page .log-raw-line.is-warning .log-raw-text {
+  color: #ffcf6b;
+}
+.logs-page .log-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  padding: 1px 8px;
+  border-radius: 5px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+[data-theme='dark'] .logs-page .log-raw-marker.is-debug,
+[data-theme='dark'] .logs-page .log-level.debug {
+  color: #ddd;
+  background: #4a4a4a;
+}

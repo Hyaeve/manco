@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Github,
+  Languages,
   Loader2,
   Network,
   RefreshCw,
@@ -33,6 +34,7 @@ const form = reactive({
   proxyUsername: '',
   proxyPassword: '',
   staleDays: 30,
+  convertToSimplified: false,
 })
 
 onMounted(async () => {
@@ -65,6 +67,7 @@ async function load() {
     form.proxyUsername = payload.proxyUsername || ''
     form.proxyPassword = payload.proxyPassword || ''
     form.staleDays = Number(payload.staleDays?.['*'] ?? 30)
+    form.convertToSimplified = Boolean(payload.convertToSimplified)
     currentVersion.value = versionPayload.version || ''
   } catch (err) {
     notify(`设置加载失败：${err.message}`, 'error')
@@ -114,6 +117,18 @@ async function saveProxy() {
       proxyPassword: form.proxyPassword,
     })
     notify('代理设置已保存', 'success')
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    saving.value = ''
+  }
+}
+
+async function saveConvertToSimplified() {
+  saving.value = 'convert'
+  try {
+    await api.saveSettings({ convertToSimplified: form.convertToSimplified })
+    notify(form.convertToSimplified ? '全局繁转简已开启' : '全局繁转简已关闭', 'success')
   } catch (err) {
     notify(err.message, 'error')
   } finally {
@@ -255,6 +270,23 @@ async function checkUpdate() {
           <span>天未更新后关闭订阅</span>
         </div>
         <p class="muted small">留空或填 0 表示不启用，修改后自动保存。</p>
+      </section>
+
+      <section id="settings-convert" class="card card-pad settings-compact-card">
+        <div class="settings-card-title">
+          <div class="inline">
+            <Languages :size="17" />
+            <h2>繁转简</h2>
+          </div>
+          <Loader2 v-if="saving === 'convert'" :size="16" class="spin muted" />
+        </div>
+        <p class="muted small settings-card-help">
+          开启后探索发现、搜索结果和作品详情中的名称、作者、简介与标签统一显示为简体中文，原始数据与本地缓存不会被改写。
+        </p>
+        <label class="switch-row">
+          <input v-model="form.convertToSimplified" type="checkbox" @change="saveConvertToSimplified" />
+          <span>全局繁转简</span>
+        </label>
       </section>
 
       <section id="settings-about" class="card card-pad settings-compact-card">

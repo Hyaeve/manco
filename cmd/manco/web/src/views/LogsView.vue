@@ -45,10 +45,11 @@ const filtered = computed(() => {
   return rows
 })
 
-const rawText = computed(() => {
-  const rows = filtered.value.map((entry) => entry.raw || `${entry.time || '--'} ${entry.message}`)
-  return rows.length ? rows.join('\n') : '暂无匹配日志。'
-})
+
+const levelLabels = { error: '错误', warning: '警告', info: '信息', debug: '调试' }
+function levelLabel(level) {
+  return levelLabels[level] || '信息'
+}
 
 async function load() {
   loading.value = true
@@ -114,13 +115,24 @@ onUnmounted(() => {
           <Loader2 :size="22" class="spin" />
           <span>加载日志</span>
         </div>
-        <pre v-else-if="mode === 'raw'" class="log-view">{{ rawText }}</pre>
+        <div v-else-if="mode === 'raw'" class="log-view log-raw">
+          <div v-if="!filtered.length" class="empty">暂无匹配日志。</div>
+          <div
+            v-for="(entry, index) in filtered"
+            :key="`raw-${entry.time}-${index}`"
+            class="log-raw-line"
+            :class="`is-${entry.level}`"
+          >
+            <span class="log-raw-marker" :class="`is-${entry.level}`">{{ levelLabel(entry.level) }}</span>
+            <span class="log-raw-text">{{ entry.raw || `${entry.time || '--'} ${entry.message}` }}</span>
+          </div>
+        </div>
         <div v-else class="log-list">
           <div v-if="!filtered.length" class="empty">暂无匹配日志。</div>
           <article v-for="(entry, index) in filtered" :key="`${entry.time}-${index}`" class="log-entry">
             <time class="log-time">{{ entry.time || '--' }}</time>
             <span class="log-module">{{ entry.module || 'system' }}</span>
-            <span class="log-level" :class="entry.level">{{ entry.level }}</span>
+            <span class="log-level" :class="entry.level">{{ levelLabel(entry.level) }}</span>
             <span class="log-message">{{ entry.message }}</span>
           </article>
         </div>

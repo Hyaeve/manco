@@ -96,6 +96,7 @@ export const api = {
   checkSubscription: (id) => request(`/api/subscriptions/${id}/check`, { method: 'POST' }),
   downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
   downloadAllSubscription: (id) => request(`/api/subscriptions/${id}/download-all`, { method: 'POST' }),
+  fillSubscription: (id) => request(`/api/subscriptions/${id}/fill`, { method: 'POST' }),
   archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
   backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),
 

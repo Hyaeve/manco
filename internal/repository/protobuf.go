@@ -18,34 +18,39 @@ var gzipMagic = []byte{0x1f, 0x8b}
 // Kototoro, Mihon and legacy extension indexes: plain JSON, JSON arrays and
 // gzip-compressed protobuf (index.pb).
 func decodeRepositoryPayload(raw []byte, base *url.URL, repoKind string) ([]model.RepositoryExtension, error) {
+	_, items, err := decodeRepositoryPayloadWithMetadata(raw, base, repoKind)
+	return items, err
+}
+
+func decodeRepositoryPayloadWithMetadata(raw []byte, base *url.URL, repoKind string) (string, []model.RepositoryExtension, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("仓库清单为空")
+		return "", nil, fmt.Errorf("仓库清单为空")
 	}
 	if bytes.HasPrefix(raw, gzipMagic) {
 		reader, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
-			return nil, fmt.Errorf("无法解压仓库清单：%w", err)
+			return "", nil, fmt.Errorf("无法解压仓库清单：%w", err)
 		}
 		defer reader.Close()
 		decoded, err := gzipReadAll(reader)
 		if err != nil {
-			return nil, fmt.Errorf("无法读取解压后的仓库清单：%w", err)
+			return "", nil, fmt.Errorf("无法读取解压后的仓库清单：%w", err)
 		}
 		raw = decoded
 	}
 	if len(raw) > 0 && (raw[0] == '{' || raw[0] == '[') {
 		var payload any
 		if err := json.Unmarshal(raw, &payload); err != nil {
-			return nil, fmt.Errorf("仓库清单不是可识别的 JSON：%w", err)
+			return "", nil, fmt.Errorf("仓库清单不是可识别的 JSON：%w", err)
 		}
-		return compact(parsePayload(payload, base, NormalizeKind(repoKind))), nil
+		return repositoryNameFromPayload(payload), compact(parsePayload(payload, base, NormalizeKind(repoKind))), nil
 	}
-	items, err := decodeProtobufIndex(raw, base, NormalizeKind(repoKind))
+	name, items, err := decodeProtobufIndexWithMetadata(raw, base, NormalizeKind(repoKind))
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return compact(items), nil
+	return name, compact(items), nil
 }
 
 func gzipReadAll(reader *gzip.Reader) ([]byte, error) {
@@ -57,22 +62,31 @@ func gzipReadAll(reader *gzip.Reader) ([]byte, error) {
 // decodeProtobufIndex implements the shared Mihon/Kototoro index.proto
 // contract without pulling an Android/JVM runtime into the server.
 func decodeProtobufIndex(raw []byte, base *url.URL, pluginType string) ([]model.RepositoryExtension, error) {
+	_, items, err := decodeProtobufIndexWithMetadata(raw, base, pluginType)
+	return items, err
+}
+
+func decodeProtobufIndexWithMetadata(raw []byte, base *url.URL, pluginType string) (string, []model.RepositoryExtension, error) {
 	rootFields, err := parseProtoFields(raw)
 	if err != nil {
-		return nil, fmt.Errorf("仓库清单不是可识别的 protobuf：%w", err)
+		return "", nil, fmt.Errorf("仓库清单不是可识别的 protobuf：%w", err)
 	}
+	name := ""
 	var listFields []protoField
 	for _, field := range rootFields {
 		if field.number == 101 && field.wire == 2 {
 			listFields, err = parseProtoFields(field.bytes)
 			if err != nil {
-				return nil, fmt.Errorf("无法解析扩展列表：%w", err)
+				return "", nil, fmt.Errorf("无法解析扩展列表：%w", err)
 			}
 			break
 		}
+		if field.number == 1 && field.wire == 2 && name == "" {
+			name = strings.TrimSpace(string(field.bytes))
+		}
 	}
 	if len(listFields) == 0 {
-		return nil, fmt.Errorf("仓库清单中没有扩展列表")
+		return "", nil, fmt.Errorf("仓库清单中没有扩展列表")
 	}
 	items := make([]model.RepositoryExtension, 0, len(listFields))
 	for _, field := range listFields {
@@ -86,9 +100,9 @@ func decodeProtobufIndex(raw []byte, base *url.URL, pluginType string) ([]model.
 		items = append(items, extension)
 	}
 	if len(items) == 0 {
-		return nil, fmt.Errorf("仓库清单中没有可识别的扩展")
+		return "", nil, fmt.Errorf("仓库清单中没有可识别的扩展")
 	}
-	return items, nil
+	return cleanRepositoryName(name), items, nil
 }
 
 func parseProtoExtension(raw []byte, base *url.URL, pluginType string) (model.RepositoryExtension, error) {
@@ -146,6 +160,9 @@ func parseProtoExtension(raw []byte, base *url.URL, pluginType string) (model.Re
 	item.Kind = classifySource(item)
 	item.ID = stableID(item.PackageName + "|" + item.Version)
 	item.Runtime = "plugin"
+	if item.PluginType == "mihon" || item.PluginType == "aniyomi" || item.PluginType == "tsundoku" {
+		item.Installable = item.InstallURL != ""
+	}
 	item.Raw = marshalRaw(map[string]any{
 		"name":        item.Name,
 		"packageName": item.PackageName,

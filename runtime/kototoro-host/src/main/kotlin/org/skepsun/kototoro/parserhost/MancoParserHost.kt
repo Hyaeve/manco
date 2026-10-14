@@ -63,6 +63,8 @@ private data class HostPlugin(
     val id: String,
     val path: String,
     val version: String = "",
+    // "kototoro-parser" (default) or "mihon" for Tachiyomi-family APKs.
+    val type: String = "",
 )
 
 private val hostJson = Json { ignoreUnknownKeys = true }
@@ -140,6 +142,13 @@ private fun serve(args: Array<String>) {
         try {
             for (plugin in config.plugins) {
                 val raw = resolve(base, plugin.path)
+                if (isMihonRuntime(plugin.type)) {
+                    // The APK is downloaded and tracked. Browsing it requires the pinned
+                    // Mihon desktop-compatibility runtime; until that is bundled the host
+                    // keeps the other plugins alive and reports the limitation per source.
+                    System.err.println("kototoro-host: skipped Mihon extension ${plugin.id}: compatibility runtime unavailable")
+                    continue
+                }
                 val jvmJar = prepareJvmJar(raw)
                 registry.load(jvmJar, plugin.id)
             }
@@ -207,6 +216,11 @@ private fun prepareJvmJar(source: Path): Path {
         }
         target
     }
+}
+
+private fun isMihonRuntime(type: String): Boolean {
+    val value = type.trim().lowercase(Locale.ROOT)
+    return value == "mihon" || value == "aniyomi" || value == "tsundoku" || value == "kanade"
 }
 
 private fun operationOf(line: String): String? = try {

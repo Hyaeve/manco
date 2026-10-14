@@ -40,7 +40,7 @@ func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 			return nil, fmt.Errorf("解析插件来源配置: %w", err)
 		}
 	}
-	if strings.TrimSpace(config.Runtime) != RuntimeKototoro {
+	if runtime := strings.TrimSpace(config.Runtime); runtime != RuntimeKototoro && runtime != RuntimeMihon {
 		return nil, errors.New("不是 Kototoro 解析器来源")
 	}
 	if strings.TrimSpace(config.PluginID) == "" || strings.TrimSpace(config.SourceName) == "" {

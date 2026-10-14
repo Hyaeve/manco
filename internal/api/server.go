@@ -21,6 +21,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.17"
+	appVersion    = "v0.1.18"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -290,6 +291,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{id}/check", s.requireAuth(s.handleCheckSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download", s.requireAuth(s.handleDownloadSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download-all", s.requireAuth(s.handleDownloadAllSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/fill", s.requireAuth(s.handleFillSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/chapter-marker/backfill", s.requireAuth(s.handleBackfillChapterMarkers))
 	mux.HandleFunc("POST /api/subscriptions/{id}/archive", s.requireAuth(s.handleArchiveSubscription))
 
@@ -765,6 +767,22 @@ func resolvePluginSourceName(sourceID string) string {
 	}
 }
 
+var pluginIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// isPluginRuntime reports whether a persisted source config points at one of
+// the JVM plugin runtimes hosted by the embedded sidecar.
+func isPluginRuntime(runtime string) bool {
+	runtime = strings.TrimSpace(runtime)
+	return runtime == pluginruntime.RuntimeKototoro || runtime == pluginruntime.RuntimeMihon
+}
+
+func pluginRuntimeLabel(runtime string) string {
+	if runtime == pluginruntime.RuntimeMihon {
+		return "Mihon 插件"
+	}
+	return "Kototoro 解析器"
+}
+
 func (s *Server) pluginSourceName(ctx context.Context, sourceID string) (string, error) {
 	sourceID = strings.ToLower(strings.TrimSpace(sourceID))
 	if sourceID == "" {
@@ -775,11 +793,11 @@ func (s *Server) pluginSourceName(ctx context.Context, sourceID string) (string,
 		if fallback := resolvePluginSourceName(sourceID); fallback != "" {
 			return fallback, nil
 		}
-		return "", errors.New("该内容源不是 Kototoro 插件来源")
+		return "", errors.New("该内容源不是插件来源")
 	}
 	var config pluginruntime.Config
-	if err := json.Unmarshal(item.Config, &config); err != nil || config.Runtime != pluginruntime.RuntimeKototoro {
-		return "", errors.New("该内容源不是 Kototoro 插件来源")
+	if err := json.Unmarshal(item.Config, &config); err != nil || !isPluginRuntime(config.Runtime) {
+		return "", errors.New("该内容源不是插件来源")
 	}
 	if strings.TrimSpace(config.SourceName) == "" {
 		return "", errors.New("插件来源缺少 sourceName")
@@ -963,27 +981,54 @@ func (s *Server) handlePluginPreferenceUpdate(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// importKototoroPlugin installs one Kototoro parser JAR and returns the
-// candidate sources it declares. Installing a repository extension must not
-// silently add every source: the user chooses candidates explicitly from the
+// pluginRuntimeFor selects the JVM runtime that can execute one repository
+// extension. Kototoro Parsers ship Kotlin/JVM JARs; Mihon-family extensions
+// ship Android APKs that the same sidecar converts to JVM bytecode.
+func pluginRuntimeFor(repo model.ExtensionRepository, selected model.RepositoryExtension) string {
+	pluginType := strings.ToLower(strings.TrimSpace(firstNonEmptyText(selected.PluginType, repo.Kind)))
+	switch pluginType {
+	case "mihon", "aniyomi", "tsundoku", "kanade", "ireader", "cloudstream":
+		return pluginruntime.RuntimeMihon
+	}
+	if strings.HasSuffix(strings.ToLower(strings.Split(selected.InstallURL, "?")[0]), ".apk") {
+		return pluginruntime.RuntimeMihon
+	}
+	return pluginruntime.RuntimeKototoro
+}
+
+// importRepositoryPlugin installs one JVM extension and returns the candidate
+// sources it declares. Installing a repository extension must not silently add
+// every source: the user chooses candidates explicitly from the
 // resource-library add-source dialog.
-func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, repo model.ExtensionRepository, selected model.RepositoryExtension) {
+func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, repo model.ExtensionRepository, selected model.RepositoryExtension) {
 	if s.runtime == nil {
-		writeError(w, http.StatusBadRequest, "Kototoro 解析器运行时未初始化")
+		writeError(w, http.StatusBadRequest, "插件运行时未初始化")
 		return
 	}
 	if strings.TrimSpace(selected.InstallURL) == "" {
 		writeError(w, http.StatusBadRequest, "该来源缺少插件安装地址")
 		return
 	}
-	pluginID := "kototoro-" + repository.Slug(firstNonEmptyText(selected.PackageName, selected.Name, selected.ID))
-	sources, err := s.runtime.Install(r.Context(), pluginID, selected.InstallURL)
+	runtimeType := pluginRuntimeFor(repo, selected)
+	if runtimeType == pluginruntime.RuntimeMihon {
+		writeError(w, http.StatusBadGateway, "该内容源是 Mihon 系 Android/JVM 插件；当前镜像尚未内置 Mihon 桌面兼容运行时，暂时无法在容器内执行")
+		return
+	}
+	prefix := "kototoro-"
+	if runtimeType == pluginruntime.RuntimeMihon {
+		prefix = "mihon-"
+	}
+	pluginID := prefix + repository.Slug(firstNonEmptyText(selected.PackageName, selected.Name, selected.ID))
+	if !pluginIDPattern.MatchString(pluginID) {
+		pluginID = prefix + repository.Slug(selected.ID)
+	}
+	sources, err := s.runtime.InstallWithRuntime(r.Context(), pluginID, selected.InstallURL, runtimeType)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "安装 Kototoro 解析器失败："+err.Error())
+		writeError(w, http.StatusBadGateway, "安装插件失败："+err.Error())
 		return
 	}
 	if len(sources) == 0 {
-		writeError(w, http.StatusBadGateway, "Kototoro 插件未声明任何可用内容源")
+		writeError(w, http.StatusBadGateway, "插件未声明任何可用内容源")
 		return
 	}
 	candidates := make([]map[string]any, 0, len(sources))
@@ -998,7 +1043,7 @@ func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, re
 		}
 		sourceID := "ext-" + repository.Slug(pluginID+"-"+parsed.Name)
 		config, _ := json.Marshal(pluginruntime.Config{
-			Runtime:     pluginruntime.RuntimeKototoro,
+			Runtime:     runtimeType,
 			PluginID:    pluginID,
 			SourceName:  parsed.Name,
 			ContentType: parsed.ContentType,
@@ -1012,11 +1057,12 @@ func (s *Server) importKototoroPlugin(w http.ResponseWriter, r *http.Request, re
 			"kind":        pluginruntime.KindForContentType(parsed.ContentType),
 			"contentType": parsed.ContentType,
 			"locale":      parsed.Locale,
-			"description": firstNonEmptyText(selected.Description, "Kototoro 解析器来源"),
+			"description": firstNonEmptyText(selected.Description, pluginRuntimeLabel(runtimeType)+"来源"),
 			"homepage":    homepage,
 			"icon":        icon,
 			"repoUrl":     repo.URL,
 			"config":      json.RawMessage(config),
+			"runtime":     runtimeType,
 			"pluginId":    pluginID,
 		})
 	}
@@ -1169,9 +1215,13 @@ func (s *Server) handleSyncRepository(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncRepository(ctx context.Context, item model.ExtensionRepository) (model.ExtensionRepository, error) {
-	items, err := repository.Sync(ctx, s.registry.Client(), item)
+	metadata, err := repository.SyncWithMetadata(ctx, s.registry.Client(), item)
 	if err != nil {
 		return model.ExtensionRepository{}, err
+	}
+	items := metadata.Extensions
+	if metadata.Name != "" {
+		item.Name = metadata.Name
 	}
 	raw, err := json.Marshal(items)
 	if err != nil {
@@ -1217,16 +1267,11 @@ func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.
 		return
 	}
 	if selected.Runtime == "plugin" && strings.TrimSpace(selected.InstallURL) != "" {
-		isKototoroJar := strings.EqualFold(repo.Kind, "jar") || strings.EqualFold(selected.PluginType, "jar")
-		if !isKototoroJar {
-			writeError(w, http.StatusBadRequest, "该来源是 Mihon/Aniyomi 等 Android 插件；当前运行时只执行 Kototoro Parsers JAR 类型")
-			return
-		}
-		s.importKototoroPlugin(w, r, repo, *selected)
+		s.importRepositoryPlugin(w, r, repo, *selected)
 		return
 	}
 	if !selected.Installable || len(selected.Config) == 0 || strings.TrimSpace(selected.Homepage) == "" {
-		writeError(w, http.StatusBadRequest, "该扩展没有可直接导入的选择器配置；JAR/Mihon 插件需要兼容运行时")
+		writeError(w, http.StatusBadRequest, "该扩展没有可直接导入的配置")
 		return
 	}
 	baseID := strings.TrimSpace(selected.PackageName)
@@ -1340,7 +1385,7 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 		Hidden:      hidden,
 	}
 	var runtimeConfig pluginruntime.Config
-	isPlugin := json.Unmarshal(item.Config, &runtimeConfig) == nil && runtimeConfig.Runtime == pluginruntime.RuntimeKototoro
+	isPlugin := json.Unmarshal(item.Config, &runtimeConfig) == nil && isPluginRuntime(runtimeConfig.Runtime)
 	if isPlugin {
 		if strings.TrimSpace(runtimeConfig.PluginID) == "" || strings.TrimSpace(runtimeConfig.SourceName) == "" {
 			writeError(w, http.StatusBadRequest, "插件来源缺少 pluginId 或 sourceName")
@@ -1637,6 +1682,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	convert := s.loadSettings(r.Context()).ConvertToSimplified
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "缺少搜索关键词")
@@ -1652,7 +1698,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			for index := range cached.Items {
 				cached.Items[index] = s.annotateDiscover(info.ID, kind, cached.Items[index])
 			}
-			writeJSON(w, http.StatusOK, cached)
+			writeJSON(w, http.StatusOK, convertDiscoverResult(cached, convert))
 			return
 		}
 		writeCachedJSON(w, raw, storedAt)
@@ -1671,7 +1717,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cacheDiscoverItems(info, kind, result.Items)
 	_ = s.cache.Set(cacheKey, result)
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
 }
 
 func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
@@ -1682,6 +1728,7 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
 	page := intParam(r, "page", 1)
+	convert := s.loadSettings(r.Context()).ConvertToSimplified
 	sources := s.filteredSourceList(s.hiddenSources(r.Context()), nil)
 	type searchItem struct {
 		model.Comic
@@ -1743,6 +1790,12 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, strings.Join(errorsFound, "；"))
 		return
 	}
+	if convert {
+		for index := range result {
+			result[index].Comic = convertComicText(result[index].Comic)
+			result[index].SourceName = downloader.SimplifiedText(result[index].SourceName)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result, "errors": errorsFound, "page": page})
 }
 
@@ -1771,6 +1824,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	convert := s.loadSettings(r.Context()).ConvertToSimplified
 	options := model.BrowseOptions{
 		Category: strings.TrimSpace(r.URL.Query().Get("category")),
 		Sort:     strings.TrimSpace(r.URL.Query().Get("sort")),
@@ -1806,7 +1860,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 			for index := range cached.Items {
 				cached.Items[index] = s.annotateDiscover(info.ID, kind, cached.Items[index])
 			}
-			writeJSON(w, http.StatusOK, cached)
+			writeJSON(w, http.StatusOK, convertDiscoverResult(cached, convert))
 			return
 		}
 		writeCachedJSON(w, raw, storedAt)
@@ -1824,7 +1878,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
 	}
 	_ = s.cache.Set(cacheKey, result)
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
 }
 
 func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
@@ -1871,7 +1925,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 					}()
 				}
 			}
-			writeJSON(w, http.StatusOK, cached)
+			writeJSON(w, http.StatusOK, convertComicDetail(cached, s.loadSettings(r.Context()).ConvertToSimplified))
 			go s.refreshDiscoverDetail(sourceID, kind, comicID)
 			return
 		}
@@ -1896,7 +1950,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	writeJSON(w, http.StatusOK, model.ComicDetail{Comic: comic, Chapters: chapters})
+	writeJSON(w, http.StatusOK, convertComicDetail(detail, s.loadSettings(r.Context()).ConvertToSimplified))
 }
 
 func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
@@ -1904,12 +1958,50 @@ func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	convert := s.loadSettings(r.Context()).ConvertToSimplified
 	chapters, err := item.Chapters(r.Context(), account, r.PathValue("comicId"))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if convert {
+		for index := range chapters {
+			chapters[index].Title = downloader.SimplifiedText(chapters[index].Title)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": chapters})
+}
+
+func convertDiscoverResult(result model.SearchResult, convert bool) model.SearchResult {
+	if !convert {
+		return result
+	}
+	for index := range result.Items {
+		result.Items[index] = convertComicText(result.Items[index])
+	}
+	return result
+}
+
+func convertComicDetail(detail model.ComicDetail, convert bool) model.ComicDetail {
+	if !convert {
+		return detail
+	}
+	detail.Comic = convertComicText(detail.Comic)
+	for index := range detail.Chapters {
+		detail.Chapters[index].Title = downloader.SimplifiedText(detail.Chapters[index].Title)
+	}
+	return detail
+}
+
+func convertComicText(comic model.Comic) model.Comic {
+	comic.Title = downloader.SimplifiedText(comic.Title)
+	comic.Author = downloader.SimplifiedText(comic.Author)
+	comic.Description = downloader.SimplifiedText(comic.Description)
+	comic.Status = downloader.SimplifiedText(comic.Status)
+	for index := range comic.Tags {
+		comic.Tags[index] = downloader.SimplifiedText(comic.Tags[index])
+	}
+	return comic
 }
 
 func (s *Server) cacheDiscoverItems(info model.SourceInfo, kind string, items []model.Comic) {
@@ -2568,11 +2660,87 @@ func (s *Server) handleCheckSubscription(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
+	// A single check click should also recover previously failed chapters and
+	// repair missing series metadata (handled inside scheduler.CheckOne).
+	retried := s.retryFailedForSubscription(r.Context(), updated)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"item":      updated,
 		"completed": updated.CompletedAt != nil,
+		"retried":   retried,
 	})
+}
+
+// retryFailedForSubscription re-queues every failed or canceled chapter for a
+// subscribed work. It is used by the card check button so a single click also
+// recovers previously failed downloads.
+func (s *Server) retryFailedForSubscription(ctx context.Context, subscription model.Subscription) int {
+	jobs, err := s.store.FailedDownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
+	if err != nil {
+		s.logger.Printf("api: list failed jobs %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
+		return 0
+	}
+	retried := 0
+	for _, job := range jobs {
+		if err := s.engine.Retry(ctx, job.ID); err != nil {
+			s.logger.Printf("api: retry failed job %d: %v", job.ID, err)
+			continue
+		}
+		retried++
+	}
+	if retried > 0 {
+		s.logger.Printf("api: retried %d failed download(s) for %s/%s", retried, subscription.SourceID, subscription.Title)
+	}
+	return retried
+}
+
+// handleFillSubscription compares the source chapter list with the completed
+// download records and queues only the missing chapters.
+func (s *Server) handleFillSubscription(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	subscription, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	// 已完成的记录若对应的 CBZ 文件已被删除，也视为缺失并重新入队。
+	s.requeueMissingFiles(r.Context(), subscription)
+	queued, skipped, err := s.scheduler.QueueAll(r.Context(), subscription)
+	if err != nil {
+		if errors.Is(err, scheduler.ErrNoChapters) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": queued, "skipped": skipped, "missing": queued, "total": queued + skipped})
+}
+
+// requeueMissingFiles resets completed jobs whose CBZ file no longer exists on
+// disk so the following queue pass downloads them again.
+func (s *Server) requeueMissingFiles(ctx context.Context, subscription model.Subscription) {
+	jobs, err := s.store.CompletedDownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
+	if err != nil {
+		s.logger.Printf("api: list completed jobs %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
+		return
+	}
+	for _, job := range jobs {
+		path := strings.TrimSpace(job.FilePath)
+		if path == "" {
+			continue
+		}
+		if _, statErr := os.Stat(path); statErr == nil {
+			continue
+		}
+		if err := s.engine.Retry(ctx, job.ID); err != nil {
+			s.logger.Printf("api: requeue missing file job %d: %v", job.ID, err)
+		}
+	}
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
