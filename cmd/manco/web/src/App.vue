@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Activity,
@@ -7,7 +7,6 @@ import {
   CircleCheck,
   UserRound,
   Compass,
-  Download,
   HardDrive,
   Info,
   LayoutDashboard,
@@ -29,6 +28,37 @@ import MancoLogo from './components/MancoLogo.vue'
 import { api } from './api'
 import { useAuthStore } from './stores/auth'
 import { dismissNotice, notices } from './stores/notices'
+
+// 任务列表图标：待办清单 + 下载箭头，纯线条绘制。
+const TaskListIcon = defineComponent({
+  name: 'TaskListIcon',
+  props: { size: { type: [Number, String], default: 21 } },
+  setup(props) {
+    return () =>
+      h(
+        'svg',
+        {
+          xmlns: 'http://www.w3.org/2000/svg',
+          width: props.size,
+          height: props.size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          'stroke-width': 1.8,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          'aria-hidden': 'true',
+        },
+        [
+          h('path', { d: 'M3 6h8' }),
+          h('path', { d: 'M3 12h8' }),
+          h('path', { d: 'M3 18h6' }),
+          h('path', { d: 'M18 4.5v11' }),
+          h('path', { d: 'M14.8 12.3L18 15.5l3.2-3.2' }),
+        ],
+      )
+  },
+})
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -56,7 +86,7 @@ const navItems = [
   { name: 'dashboard', label: '总览', to: '/', icon: LayoutDashboard },
   { name: 'discover', label: '探索发现', to: '/discover', icon: Compass },
   { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
-  { name: 'downloads', label: '任务列表', to: '/downloads', icon: Download },
+  { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },
   { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
   { name: 'sources', label: '资源仓库', to: '/sources', icon: Server },
 ]

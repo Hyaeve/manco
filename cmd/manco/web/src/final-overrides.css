@@ -3314,8 +3314,26 @@
 .subscription-card .subscription-cover img {
   object-fit: cover;
 }
+/* 卡片高度由封面决定（16 + 183 + 16），封面上下留白一致；
+   右侧信息列压缩为单行，避免把卡片撑高。 */
 .subscription-card .subscription-meta {
-  padding-bottom: 56px;
+  padding-bottom: 0;
+  gap: 4px;
+}
+.subscription-card .subscription-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+.subscription-card .subscription-sub,
+.subscription-card .subscription-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subscription-card .subscription-line {
+  gap: 4px;
 }
 .subscription-card .subscription-source {
   top: 16px;
@@ -3335,6 +3353,11 @@
   height: 100%;
   border-radius: 10px;
   object-fit: contain;
+}
+.subscription-card .subscription-source svg {
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
 }
 .subscription-card .subscription-source.is-off {
   opacity: 0.35;
@@ -3411,26 +3434,19 @@
   color: #444;
   background: #d8d8d8;
 }
-.logs-page .log-raw-line.is-error .log-raw-text {
-  color: #c03434;
-}
-.logs-page .log-raw-line.is-warning .log-raw-text {
-  color: #a8730a;
-}
-.logs-page .log-raw-line.is-info .log-raw-text {
+/* 正文保持统一颜色，只用行首徽标区分级别。 */
+.logs-page .log-raw-text {
+  display: block;
   color: var(--text);
 }
-.logs-page .log-raw-line.is-debug .log-raw-text {
-  color: var(--text-muted);
+.logs-page .log-raw-text .log-time {
+  margin-right: 8px;
+}
+.logs-page .log-raw-message {
+  color: var(--text);
 }
 [data-theme='dark'] .logs-page .log-level.info {
   background: #2f6fbd;
-}
-[data-theme='dark'] .logs-page .log-raw-line.is-error .log-raw-text {
-  color: #ff8a8a;
-}
-[data-theme='dark'] .logs-page .log-raw-line.is-warning .log-raw-text {
-  color: #ffcf6b;
 }
 .logs-page .log-level {
   display: inline-flex;
@@ -3446,4 +3462,103 @@
 [data-theme='dark'] .logs-page .log-level.debug {
   color: #ddd;
   background: #4a4a4a;
+}
+
+/* v0.1.19：内容源编辑窗口加宽字段、图标库与类型图标回退。 */
+.settings-grid .field.span-2 {
+  grid-column: 1 / -1;
+}
+.source-editor-pair .field,
+.source-editor-pair .site-picker,
+.source-editor-pair .input,
+.source-editor-pair .textarea {
+  min-width: 0;
+}
+.source-editor-icon {
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  object-fit: contain;
+  color: var(--text-muted);
+}
+svg.source-editor-icon {
+  padding: 6px;
+  background: var(--surface-muted);
+}
+.source-icon-editor {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+.source-icon-preview {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+.source-icon-preview img,
+.source-icon-preview svg {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: contain;
+}
+.source-icon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.source-logo-button svg {
+  color: var(--text-muted);
+}
+.icon-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+.icon-library-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+.icon-library-item:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.icon-library-thumb {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+.icon-library-thumb img {
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  object-fit: contain;
+}
+.icon-library-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

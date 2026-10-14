@@ -15,6 +15,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import RoundedSelect from '../components/RoundedSelect.vue'
+import SourceIcon from '../components/SourceIcon.vue'
 import { notify } from '../stores/notices'
 import {
   discoverPanelsExpired,
@@ -463,7 +464,7 @@ function latestLabel(item) {
           :class="{ active: source.id === activeId }"
           @click="selectSource(source.id)"
         >
-          <img v-if="source.icon" class="source-tab-icon" :src="source.icon" alt="" />
+          <SourceIcon class="source-tab-icon" :src="source.icon" :kind="kindOf(source)" :alt="source.name" :size="18" />
           <span>{{ source.name }}</span>
         </button>
       </nav>

@@ -11,6 +11,8 @@ import {
   MoreVertical,
   Search,
   PackagePlus,
+  Images,
+  RotateCcw,
   Plus,
   RefreshCw,
   Pencil,
@@ -27,6 +29,7 @@ import { notify } from '../stores/notices'
 import PasswordInput from '../components/PasswordInput.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SitePicker from '../components/SitePicker.vue'
+import SourceIcon from '../components/SourceIcon.vue'
 
 const sources = ref([])
 const repositories = ref([])
@@ -58,6 +61,9 @@ const sourceSelection = ref(new Set())
 const sourceAnchor = ref(-1)
 const extensionCandidates = ref([])
 const candidateFilter = ref('all')
+const iconLibraryOpen = ref(false)
+const iconLibrary = ref([])
+const iconBusy = ref('')
 const candidateLoading = ref(false)
 const candidateLoadedRepos = ref(new Set())
 const pluginAuth = ref(null)
@@ -480,6 +486,69 @@ function openEditor(item) {
   editorSource.value = item
   editorOpen.value = true
   loadPluginSettings(item)
+}
+
+async function loadIconLibrary() {
+  try {
+    const payload = await api.sourceIcons()
+    iconLibrary.value = payload.items || []
+  } catch (err) {
+    iconLibrary.value = []
+    notify(`本地图标库加载失败：${err.message}`, 'error')
+  }
+}
+
+function openIconLibrary() {
+  iconLibraryOpen.value = true
+  loadIconLibrary()
+}
+
+async function chooseSourceIcon(icon) {
+  const item = editorSource.value
+  if (!item) return
+  iconBusy.value = item.id
+  try {
+    const result = await api.updateSourceIcon(item.id, { action: 'select', iconId: icon.id })
+    item.icon = `${result?.icon || ''}?t=${Date.now()}`
+    iconLibraryOpen.value = false
+    notify(`${item.name} 图标已更新`, 'success')
+  } catch (err) {
+    notify(`更新图标失败：${err.message}`, 'error')
+  } finally {
+    iconBusy.value = ''
+  }
+}
+
+async function retrySourceIcon(item) {
+  iconBusy.value = item.id
+  try {
+    const result = await api.updateSourceIcon(item.id, { action: 'fetch' })
+    item.icon = `${result?.icon || ''}?t=${Date.now()}`
+    notify(`${item.name} 图标已重新获取`, 'success')
+  } catch (err) {
+    // 获取失败时清空图标，界面会回退为内容源类型图标，避免图裂。
+    let fellBack = false
+    if (!item.icon || item.icon.startsWith('/api/icons/')) {
+      item.icon = ''
+      fellBack = true
+    }
+    notify(`${item.name} 图标获取失败${fellBack ? '，已回退为类型图标' : ''}`, 'warning')
+  } finally {
+    iconBusy.value = ''
+  }
+}
+
+async function resetSourceIcon(item) {
+  iconBusy.value = item.id
+  try {
+    const result = await api.updateSourceIcon(item.id, { action: 'reset' })
+    item.icon = `${result?.icon || ''}?t=${Date.now()}`
+    notify(`${item.name} 图标已恢复默认`, 'success')
+  } catch (err) {
+    notify(`恢复默认图标失败：${err.message}`, 'error')
+  } finally {
+    iconBusy.value = ''
+  }
 }
 
 async function loadPluginSettings(item) {
@@ -986,8 +1055,7 @@ function onDragEnd() {
           @click="toggleHidden(item)"
         >
           <Loader2 v-if="busy === `source-${item.id}`" :size="20" class="spin" />
-          <img v-else-if="item.icon" :src="item.icon" :alt="item.name" />
-          <Server v-else :size="22" />
+          <SourceIcon v-else :src="item.icon" :kind="item.kind" :alt="item.name" :size="22" />
         </button>
         <div class="source-simple-copy">
           <h2>{{ item.name }}</h2>
@@ -1275,7 +1343,13 @@ function onDragEnd() {
     <div class="modal modal-lg">
       <div class="modal-head">
         <div class="inline">
-          <img v-if="editorSource.icon" class="source-editor-icon" :src="editorSource.icon" alt="" />
+          <SourceIcon
+            class="source-editor-icon"
+            :src="editorSource.icon"
+            :kind="editorSource.kind"
+            :alt="editorSource.name"
+            :size="26"
+          />
           <div>
             <h2>{{ editorSource.name }}</h2>
             <p class="muted small">{{ sourceStatus(editorSource).label }}</p>
@@ -1365,28 +1439,16 @@ function onDragEnd() {
             </template>
           </template>
           <template v-else>
-            <label class="field">
-              <span>网站地址（留空自动优选）</span>
-              <SitePicker
-                v-model="forms[editorSource.id].homeUrl"
-                :options="editorSource.sites || []"
-                placeholder="留空自动选择，优选可用地址"
-              />
-            </label>
-            <template v-if="showsAccountLogin(editorSource)">
-              <div class="settings-grid">
-                <label class="field">
-                  <span>账号（邮箱或用户名）</span>
-                  <input v-model="forms[editorSource.id].username" class="input" autocomplete="username" />
-                </label>
-                <label class="field">
-                  <span>密码</span>
-                  <PasswordInput v-model="forms[editorSource.id].password" autocomplete="current-password" />
-                </label>
-              </div>
-            </template>
-            <template v-else-if="isJMComic(editorSource)">
-              <label class="field">
+            <div class="settings-grid source-editor-pair">
+              <label class="field" :class="{ 'span-2': showsAccountLogin(editorSource) }">
+                <span>网站地址（留空自动优选）</span>
+                <SitePicker
+                  v-model="forms[editorSource.id].homeUrl"
+                  :options="editorSource.sites || []"
+                  placeholder="留空自动选择，优选可用地址"
+                />
+              </label>
+              <label v-if="isJMComic(editorSource)" class="field">
                 <span>User-Agent（可选）</span>
                 <input
                   v-model="forms[editorSource.id].userAgent"
@@ -1394,16 +1456,66 @@ function onDragEnd() {
                   placeholder="留空使用默认浏览器标识"
                 />
               </label>
-            </template>
-            <label v-else class="field">
-              <span>Cookie（可选，可拖动调整高度）</span>
-              <textarea
-                v-model="forms[editorSource.id].cookie"
-                class="textarea cookie-textarea"
-                placeholder="粘贴浏览器中的 Cookie"
-              />
-            </label>
+              <label v-else-if="!showsAccountLogin(editorSource)" class="field">
+                <span>Cookie（可选，可拖动调整高度）</span>
+                <textarea
+                  v-model="forms[editorSource.id].cookie"
+                  class="textarea cookie-textarea"
+                  placeholder="粘贴浏览器中的 Cookie"
+                />
+              </label>
+            </div>
+            <div v-if="showsAccountLogin(editorSource)" class="settings-grid">
+              <label class="field">
+                <span>账号（邮箱或用户名）</span>
+                <input v-model="forms[editorSource.id].username" class="input" autocomplete="username" />
+              </label>
+              <label class="field">
+                <span>密码</span>
+                <PasswordInput v-model="forms[editorSource.id].password" autocomplete="current-password" />
+              </label>
+            </div>
           </template>
+        </section>
+
+        <section class="source-editor-section">
+          <h3>图标</h3>
+          <div class="source-icon-editor">
+            <span class="source-icon-preview">
+              <SourceIcon :src="editorSource.icon" :kind="editorSource.kind" :alt="editorSource.name" :size="26" />
+            </span>
+            <div class="source-icon-actions">
+              <button
+                class="btn secondary small"
+                type="button"
+                :disabled="iconBusy === editorSource.id"
+                @click="retrySourceIcon(editorSource)"
+              >
+                <Loader2 v-if="iconBusy === editorSource.id" :size="14" class="spin" />
+                <RefreshCw v-else :size="14" />
+                重新获取
+              </button>
+              <button
+                class="btn secondary small"
+                type="button"
+                :disabled="iconBusy === editorSource.id"
+                @click="openIconLibrary()"
+              >
+                <Images :size="14" />
+                从图标库选择
+              </button>
+              <button
+                class="btn secondary small"
+                type="button"
+                :disabled="iconBusy === editorSource.id"
+                @click="resetSourceIcon(editorSource)"
+              >
+                <RotateCcw :size="14" />
+                恢复默认
+              </button>
+            </div>
+          </div>
+          <p class="muted small">默认从内容源网站获取图标并保存到 /data/icon；获取失败时显示对应类型的默认图标。</p>
         </section>
 
         <section class="source-editor-section">
@@ -1471,6 +1583,41 @@ function onDragEnd() {
           <KeyRound :size="15" />
           登录并保存
         </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="iconLibraryOpen" class="modal-backdrop" @click.self="iconLibraryOpen = false">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2>本地图标库</h2>
+          <p class="muted small">图标保存在容器 /data/icon 目录</p>
+        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="iconLibraryOpen = false">
+          <X :size="18" />
+        </button>
+      </div>
+      <div class="modal-body">
+        <div v-if="!iconLibrary.length" class="empty">
+          <Images :size="24" />
+          <p>图标库为空。可先对内容源执行“重新获取”生成图标。</p>
+        </div>
+        <div v-else class="icon-library-grid">
+          <button
+            v-for="icon in iconLibrary"
+            :key="icon.id"
+            class="icon-library-item"
+            type="button"
+            :disabled="iconBusy === editorSource?.id"
+            @click="chooseSourceIcon(icon)"
+          >
+            <span class="icon-library-thumb">
+              <img :src="icon.url" :alt="icon.name || icon.id" loading="lazy" />
+            </span>
+            <span class="icon-library-name">{{ icon.name || icon.id }}</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>

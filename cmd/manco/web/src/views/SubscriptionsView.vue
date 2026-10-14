@@ -22,6 +22,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
+import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import { rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
@@ -353,7 +354,6 @@ async function downloadAll(item) {
       :class="{ disabled: !item.enabled, 'menu-open': openMenu === item.id }"
     >
       <button
-        v-if="sourceIcon(item)"
         class="subscription-source"
         :class="{ 'is-off': !item.enabled }"
         type="button"
@@ -361,7 +361,7 @@ async function downloadAll(item) {
         :aria-label="item.enabled ? `禁用《${item.title}》` : `启用《${item.title}》`"
         @click.stop="toggleEnabled(item)"
       >
-        <img :src="sourceIcon(item)" :alt="item.sourceId" loading="lazy" />
+        <SourceIcon :src="sourceIcon(item)" :kind="itemKind(item)" :alt="item.sourceId" :size="22" />
       </button>
       <div class="subscription-main">
         <RouterLink

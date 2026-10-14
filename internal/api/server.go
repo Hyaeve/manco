@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.18"
+	appVersion    = "v0.1.19"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -255,7 +255,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
+	mux.HandleFunc("GET /api/icons", s.requireAuth(s.handleListIcons))
 	mux.HandleFunc("GET /api/icons/{id}", s.requireAuth(s.handleSourceIcon))
+	mux.HandleFunc("POST /api/sources/{id}/icon", s.requireAuth(s.handleUpdateSourceIcon))
 	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
 	mux.HandleFunc("GET /api/repositories", s.requireAuth(s.handleListRepositories))
 	mux.HandleFunc("POST /api/repositories", s.requireAuth(s.handleCreateRepository))
@@ -466,25 +468,18 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSourceIcon(w http.ResponseWriter, r *http.Request) {
 	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
-	sourceURL, ok := sourceIconSources[id]
-	if !ok || s.icons == nil {
+	if id == "" || s.icons == nil {
 		http.NotFound(w, r)
 		return
 	}
-	if reader, _, err := s.icons.Open(id); err == nil {
-		_ = reader.Close()
-		file, entry, err := s.icons.Open(id)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
+	if file, entry, err := s.icons.Open(id); err == nil {
 		defer file.Close()
 		http.ServeContent(w, r, entry.File, entry.UpdatedAt, file)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	if _, err := s.icons.Fetch(ctx, id, sourceURL); err != nil {
+	if _, err := s.fetchSourceIcon(ctx, id); err != nil {
 		if fallback := sourceIconFallbacks[id]; fallback != "" {
 			http.Redirect(w, r, fallback, http.StatusTemporaryRedirect)
 			return
@@ -499,6 +494,105 @@ func (s *Server) handleSourceIcon(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	http.ServeContent(w, r, entry.File, entry.UpdatedAt, file)
+}
+
+// fetchSourceIcon resolves the default favicon URL for a source and caches it.
+func (s *Server) fetchSourceIcon(ctx context.Context, id string) (iconcache.Entry, error) {
+	if s.icons == nil {
+		return iconcache.Entry{}, errors.New("图标缓存未启用")
+	}
+	sourceURL := strings.TrimSpace(sourceIconSources[id])
+	if sourceURL == "" {
+		if item, err := s.registry.Get(id); err == nil {
+			if homepage := strings.TrimRight(strings.TrimSpace(item.Info().Homepage), "/"); homepage != "" {
+				sourceURL = homepage + "/favicon.ico"
+			}
+		}
+	}
+	if sourceURL == "" {
+		return iconcache.Entry{}, errors.New("该内容源没有可用的默认图标地址")
+	}
+	return s.icons.Fetch(ctx, id, sourceURL)
+}
+
+// handleListIcons lists the locally cached icons under /data/icon.
+func (s *Server) handleListIcons(w http.ResponseWriter, r *http.Request) {
+	if s.icons == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	entries := s.icons.List()
+	items := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, map[string]any{
+			"id":        entry.ID,
+			"name":      entry.ID,
+			"url":       s.icons.URL(entry.ID),
+			"updatedAt": entry.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// handleUpdateSourceIcon fetches, selects or resets the icon of one source.
+func (s *Server) handleUpdateSourceIcon(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	if id == "" || s.icons == nil {
+		writeError(w, http.StatusBadRequest, "无效的内容源 ID")
+		return
+	}
+	if _, err := s.registry.Get(id); err != nil {
+		writeError(w, http.StatusNotFound, "内容源不存在")
+		return
+	}
+	var payload struct {
+		Action string `json:"action"`
+		IconID string `json:"iconId"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, "无效的请求内容")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
+	case "reset":
+		if err := s.icons.Delete(id); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_, _ = s.fetchSourceIcon(ctx, id)
+	case "fetch":
+		if err := s.icons.Delete(id); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, err := s.fetchSourceIcon(ctx, id); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+	case "select":
+		iconID := strings.TrimSpace(payload.IconID)
+		file, _, err := s.icons.Open(iconID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "本地图标库中没有该图标")
+			return
+		}
+		data, readErr := io.ReadAll(io.LimitReader(file, 5<<20))
+		_ = file.Close()
+		if readErr != nil {
+			writeError(w, http.StatusInternalServerError, readErr.Error())
+			return
+		}
+		if _, err := s.icons.Save(id, data, ""); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "未知的图标操作")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "icon": s.icons.URL(id)})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -670,7 +764,10 @@ func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string]
 	items := s.registry.List()
 	orderSetting := s.sourceOrder(context.Background())
 	for index := range items {
-		if _, ok := sourceIconSources[items[index].ID]; ok && s.icons != nil {
+		// 内置来源始终使用本地 /data/icon 缓存；其他来源仅在用户
+		// 自定义过图标时（缓存里已有文件）才覆盖清单自带图标。
+		_, builtin := sourceIconSources[items[index].ID]
+		if s.icons != nil && (builtin || s.icons.Has(items[index].ID)) {
 			items[index].Icon = s.icons.URL(items[index].ID)
 		}
 		items[index].Hidden = hidden[items[index].ID]

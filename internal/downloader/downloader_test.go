@@ -3,12 +3,18 @@ package downloader
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/source"
 )
 
 func TestSafeName(t *testing.T) {
@@ -115,5 +121,52 @@ func TestBookFileExtension(t *testing.T) {
 		if got := bookFileExtension(input); got != want {
 			t.Fatalf("bookFileExtension(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+// 禁漫等来源的图床按 User-Agent 做防盗链，图片请求必须优先使用来源账号
+// 里配置的 UA，否则浏览与封面正常但下载章节会失败。
+func TestFetchImageUsesAccountUserAgent(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("User-Agent"))
+		if r.Header.Get("User-Agent") != "custom-agent" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png-data"))
+	}))
+	defer server.Close()
+
+	data, err := fetchImage(context.Background(), server.Client(), source.Account{UserAgent: "custom-agent"}, model.Page{URL: server.URL})
+	if err != nil {
+		t.Fatalf("fetchImage: %v", err)
+	}
+	if string(data) != "png-data" {
+		t.Fatalf("unexpected data %q", data)
+	}
+	if len(seen) == 0 || seen[0] != "custom-agent" {
+		t.Fatalf("expected account UA first, got %v", seen)
+	}
+}
+
+func TestFetchImageFallsBackToDefaultUserAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") == "custom-agent" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("fallback-data"))
+	}))
+	defer server.Close()
+
+	data, err := fetchImage(context.Background(), server.Client(), source.Account{UserAgent: "custom-agent"}, model.Page{URL: server.URL})
+	if err != nil {
+		t.Fatalf("fetchImage: %v", err)
+	}
+	if string(data) != "fallback-data" {
+		t.Fatalf("unexpected data %q", data)
 	}
 }

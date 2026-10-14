@@ -53,6 +53,9 @@ export const api = {
     request(`/api/custom-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   updateSource: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  sourceIcons: () => request('/api/icons'),
+  updateSourceIcon: (id, payload) =>
+    request(`/api/sources/${encodeURIComponent(id)}/icon`, { method: 'POST', body: JSON.stringify(payload) }),
   saveAccount: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAccount: (id) => request(`/api/sources/${encodeURIComponent(id)}/account`, { method: 'DELETE' }),

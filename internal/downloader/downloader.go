@@ -1060,54 +1060,68 @@ func canMaterializeCover(item source.Source, coverURL string) bool {
 
 func fetchImage(ctx context.Context, client *http.Client, account source.Account, page model.Page) ([]byte, error) {
 	candidates := append([]string{page.URL}, page.Alternatives...)
+	// 部分站点（禁漫天堂等）会按 User-Agent 做防盗链，优先用来源账号配置的
+	// UA；若该 UA 被 CDN 拒绝，再回退到库默认浏览器 UA。
+	userAgents := make([]string, 0, 2)
+	if ua := strings.TrimSpace(account.UserAgent); ua != "" {
+		userAgents = append(userAgents, ua)
+	}
+	if len(userAgents) == 0 || userAgents[0] != source.DefaultUserAgent {
+		userAgents = append(userAgents, source.DefaultUserAgent)
+	}
 	var lastErr error
 	for _, address := range candidates {
 		if strings.TrimSpace(address) == "" {
 			continue
 		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-		if err != nil {
-			lastErr = err
-			continue
+		for _, userAgent := range userAgents {
+			data, err := requestImage(ctx, client, account, page, address, userAgent)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			return data, nil
 		}
-		request.Header.Set("User-Agent", source.DefaultUserAgent)
-		request.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
-		request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
-		if page.Referer != "" {
-			request.Header.Set("Referer", page.Referer)
-		}
-		for key, value := range page.Headers {
-			request.Header.Set(key, value)
-		}
-		for key, value := range source.HeaderCookie(account.Cookie) {
-			request.Header.Set(key, value)
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			lastErr = fmt.Errorf("HTTP %d", response.StatusCode)
-			_ = response.Body.Close()
-			continue
-		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
-		_ = response.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if len(data) == 0 {
-			lastErr = errors.New("空响应")
-			continue
-		}
-		return data, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("没有可用的图片地址")
 	}
 	return nil, lastErr
+}
+
+func requestImage(ctx context.Context, client *http.Client, account source.Account, page model.Page, address, userAgent string) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
+	if page.Referer != "" {
+		request.Header.Set("Referer", page.Referer)
+	}
+	for key, value := range page.Headers {
+		request.Header.Set(key, value)
+	}
+	for key, value := range source.HeaderCookie(account.Cookie) {
+		request.Header.Set(key, value)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<20))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, errors.New("空响应")
+	}
+	return data, nil
 }
 
 func writeZip(path string, entries []pageEntry) error {

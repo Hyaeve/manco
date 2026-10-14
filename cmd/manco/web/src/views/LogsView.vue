@@ -124,7 +124,10 @@ onUnmounted(() => {
             :class="`is-${entry.level}`"
           >
             <span class="log-raw-marker" :class="`is-${entry.level}`">{{ levelLabel(entry.level) }}</span>
-            <span class="log-raw-text">{{ entry.raw || `${entry.time || '--'} ${entry.message}` }}</span>
+            <span class="log-raw-text">
+              <time v-if="entry.time" class="log-time">{{ entry.time }}</time>
+              <span class="log-raw-message">{{ entry.message }}</span>
+            </span>
           </div>
         </div>
         <div v-else class="log-list">

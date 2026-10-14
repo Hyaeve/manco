@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +61,102 @@ func New(dir string, client *http.Client) (*Cache, error) {
 
 func (c *Cache) URL(id string) string {
 	return "/api/icons/" + url.PathEscape(strings.TrimSpace(id))
+}
+
+// Has reports whether an icon file is cached for the given id.
+func (c *Cache) Has(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	c.mu.Lock()
+	entry, ok := c.items[id]
+	c.mu.Unlock()
+	if !ok || entry.File == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, entry.File)); err != nil {
+		return false
+	}
+	return true
+}
+
+// List returns every cached icon that still has a file on disk, sorted by id.
+func (c *Cache) List() []Entry {
+	c.mu.Lock()
+	items := make([]Entry, 0, len(c.items))
+	for _, entry := range c.items {
+		if entry.File == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(c.dir, entry.File)); err != nil {
+			continue
+		}
+		items = append(items, entry)
+	}
+	c.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items
+}
+
+// Save writes icon bytes for an id (used for uploaded or library icons).
+func (c *Cache) Save(id string, data []byte, extension string) (Entry, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || len(data) == 0 {
+		return Entry{}, errors.New("icon id and data are required")
+	}
+	if len(data) > maxIconBytes {
+		return Entry{}, errors.New("icon is too large")
+	}
+	extension = strings.TrimSpace(extension)
+	if extension == "" {
+		extension = iconExtension("", "", data)
+	}
+	if extension == "" {
+		return Entry{}, errors.New("unsupported icon format")
+	}
+	if !strings.HasPrefix(extension, ".") {
+		extension = "." + extension
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	name := safeID(id) + extension
+	finalPath := filepath.Join(c.dir, name)
+	tempPath := finalPath + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return Entry{}, err
+	}
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		_ = os.Remove(tempPath)
+		return Entry{}, err
+	}
+	if previous, ok := c.items[id]; ok && previous.File != "" && previous.File != name {
+		_ = os.Remove(filepath.Join(c.dir, previous.File))
+	}
+	entry := Entry{ID: id, File: name, UpdatedAt: time.Now().UTC()}
+	c.items[id] = entry
+	if err := c.writeIndex(); err != nil {
+		return entry, err
+	}
+	return entry, nil
+}
+
+// Delete removes a cached icon so it can be fetched again.
+func (c *Cache) Delete(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.items[id]; ok {
+		if entry.File != "" {
+			_ = os.Remove(filepath.Join(c.dir, entry.File))
+		}
+		delete(c.items, id)
+	}
+	return c.writeIndex()
 }
 
 func (c *Cache) Open(id string) (*os.File, Entry, error) {
