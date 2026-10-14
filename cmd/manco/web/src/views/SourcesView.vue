@@ -1440,7 +1440,7 @@ function onDragEnd() {
           </template>
           <template v-else>
             <div class="settings-grid source-editor-pair">
-              <label class="field" :class="{ 'span-2': showsAccountLogin(editorSource) }">
+              <label class="field">
                 <span>网站地址（留空自动优选）</span>
                 <SitePicker
                   v-model="forms[editorSource.id].homeUrl"

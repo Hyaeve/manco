@@ -3576,3 +3576,17 @@ svg.source-editor-icon {
 .source-comic-card .comic-meta {
   line-height: 1.25;
 }
+
+/* v0.1.22：内容源编辑窗口的网站地址、UA/Cookie、账号、密码一行两个并撑满各自半栏。 */
+.source-editor-section .settings-grid .field,
+.source-editor-section .settings-grid .field > .site-picker,
+.source-editor-section .settings-grid .field > .password-control,
+.source-editor-section .settings-grid .field > .input,
+.source-editor-section .settings-grid .field > .select,
+.source-editor-section .settings-grid .field > .textarea {
+  width: 100%;
+  min-width: 0;
+}
+.source-editor-section .source-editor-pair .field {
+  min-width: 0;
+}
