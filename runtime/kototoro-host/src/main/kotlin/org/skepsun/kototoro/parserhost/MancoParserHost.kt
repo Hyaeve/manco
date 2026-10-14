@@ -157,7 +157,7 @@ private fun serve(args: Array<String>) {
                 ParserSourceRuntime(registry, platform, images),
                 { request, error ->
                     System.err.println(
-                        "kototoro-host: ${request.call::class.simpleName}: ${error.message ?: error::class.java.name}",
+                        "kototoro-host: failed ${request.call::class.simpleName}: ${causeChain(error)}",
                     )
                     error.printStackTrace(System.err)
                 },
@@ -195,6 +195,19 @@ private fun serve(args: Array<String>) {
 private fun resolve(base: Path, value: String): Path {
     val path = Path.of(value)
     return if (path.isAbsolute) path.normalize() else base.resolve(path).normalize()
+}
+
+/** Renders the full cause chain so runtime failures are diagnosable from one log line. */
+private fun causeChain(error: Throwable): String {
+    val parts = ArrayList<String>(4)
+    var current: Throwable? = error
+    var depth = 0
+    while (current != null && depth++ < 16) {
+        val message = current.message?.trim().orEmpty()
+        parts += if (message.isEmpty()) current::class.java.simpleName else "${current::class.java.simpleName}: $message"
+        current = current.cause?.takeIf { it !== current }
+    }
+    return parts.joinToString(" <- ")
 }
 
 private fun prepareJvmJar(source: Path): Path {
