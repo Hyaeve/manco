@@ -3562,3 +3562,16 @@ svg.source-editor-icon {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* v0.1.20：探索发现网格封面下方标题与更新信息两行收紧。 */
+.source-comic-card .comic-body {
+  gap: 1px;
+  padding: 6px 9px 8px;
+}
+.source-comic-card .comic-title {
+  min-height: 0;
+  line-height: 1.25;
+}
+.source-comic-card .comic-meta {
+  line-height: 1.25;
+}
