@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.27"
+	appVersion    = "v0.1.28"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2932,7 +2932,7 @@ func (s *Server) requeueMissingFiles(ctx context.Context, subscription model.Sub
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 600))
+	items, err := s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 0))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

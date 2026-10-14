@@ -857,10 +857,8 @@ func (s *Store) DownloadJob(ctx context.Context, id int64) (model.DownloadJob, e
 
 func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.DownloadJob, error) {
 	if limit <= 0 {
-		limit = 600
-	}
-	if limit > 600 {
-		limit = 600
+		// SQLite treats a negative LIMIT as unlimited.
+		limit = -1
 	}
 	// 进行中、失败和已完成记录分开查询，再合并结果。失败记录不能被大量
 	// 排队任务挤出结果集，因此三类记录各自使用独立的 LIMIT。

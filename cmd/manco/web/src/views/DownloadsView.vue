@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -8,7 +8,6 @@ import {
   CircleCheck,
   Compass,
   FileArchive,
-  FolderOpen,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -26,6 +25,8 @@ const busy = ref(0)
 const selected = ref(new Set())
 const selecting = ref(false)
 const expandedGroups = ref(new Set())
+const completedWindowOpen = ref(true)
+const completedWindow = ref(null)
 const route = useRoute()
 const router = useRouter()
 let lastIndex = -1
@@ -35,7 +36,6 @@ const filters = [
   { value: 'all', label: '全部' },
   { value: 'active', label: '进行中' },
   { value: 'queued', label: '排队' },
-  { value: 'completed', label: '已完成' },
   { value: 'failed', label: '失败' },
 ]
 
@@ -60,30 +60,36 @@ const scopedItems = computed(() => {
   })
 })
 
+const nonCompletedItems = computed(() => scopedItems.value.filter((item) => item.status !== 'completed'))
+const completedItems = computed(() => scopedItems.value.filter((item) => item.status === 'completed'))
+
 const counts = computed(() => {
-  const result = { all: scopedItems.value.length, active: 0, queued: 0, completed: 0, failed: 0 }
-  for (const item of scopedItems.value) {
+  const result = { all: nonCompletedItems.value.length, active: 0, queued: 0, completed: completedItems.value.length, failed: 0 }
+  for (const item of nonCompletedItems.value) {
     if (item.status === 'running') result.active += 1
     if (['queued', 'waiting', 'paused'].includes(item.status)) result.queued += 1
-    if (item.status === 'completed') result.completed += 1
     if (item.status === 'failed' || item.status === 'canceled') result.failed += 1
   }
   return result
 })
 
 const visible = computed(() => {
-  if (filter.value === 'all') return scopedItems.value
-  if (filter.value === 'active') return scopedItems.value.filter((item) => item.status === 'running')
-  if (filter.value === 'queued') return scopedItems.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
-  if (filter.value === 'completed') return scopedItems.value.filter((item) => item.status === 'completed')
-  return scopedItems.value.filter((item) => ['failed', 'canceled'].includes(item.status))
+  if (filter.value === 'all') return nonCompletedItems.value
+  if (filter.value === 'active') return nonCompletedItems.value.filter((item) => item.status === 'running')
+  if (filter.value === 'queued') return nonCompletedItems.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
+  return nonCompletedItems.value.filter((item) => ['failed', 'canceled'].includes(item.status))
 })
 
 const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting', 'running', 'paused'].includes(item.status)))
 
 watch(
   () => route.query.filter,
-  (value) => {
+  async (value) => {
+    if (value === 'completed') {
+      filter.value = 'all'
+      await focusCompletedWindow()
+      return
+    }
     const next = typeof value === 'string' && filterValues.has(value) ? value : 'all'
     if (filter.value !== next) filter.value = next
   },
@@ -100,7 +106,7 @@ watch(
 
 const completedGroups = computed(() => {
   const groups = new Map()
-  for (const item of visible.value) {
+  for (const item of completedItems.value) {
     const key = `${item.sourceId || ''}:${item.comicId || item.comicTitle || item.id}`
     let group = groups.get(key)
     if (!group) {
@@ -126,6 +132,12 @@ const completedGroups = computed(() => {
     return group
   })
 })
+
+async function focusCompletedWindow() {
+  completedWindowOpen.value = true
+  await nextTick()
+  completedWindow.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 function isGroupExpanded(key) {
   return expandedGroups.value.has(key)
@@ -219,6 +231,7 @@ function onKeydown(event) {
 
 onMounted(async () => {
   await load()
+  if (route.query.filter === 'completed') await focusCompletedWindow()
   window.addEventListener('keydown', onKeydown)
   timer = window.setInterval(() => {
     if (hasActive.value) load(true)
@@ -233,7 +246,7 @@ onUnmounted(() => {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const payload = await api.downloads(600)
+    const payload = await api.downloads()
     items.value = payload.items || []
     if (silent) error.value = ''
   } catch (err) {
@@ -418,106 +431,115 @@ async function remove(item, removeFile) {
       浏览漫画源
     </RouterLink>
   </div>
-  <div v-else-if="!visible.length" class="card empty">
-    <CircleCheck :size="26" />
-    <p>当前筛选条件下没有任务。</p>
-  </div>
-  <div v-else-if="filter === 'completed'" class="completed-task-groups">
-    <article v-for="group in completedGroups" :key="group.key" class="completed-task-group">
-      <button
-        class="completed-task-head"
-        type="button"
-        :aria-expanded="isGroupExpanded(group.key)"
-        @click="toggleGroup(group.key)"
+  <div v-else>
+    <div v-if="!visible.length" class="card empty">
+      <CircleCheck :size="26" />
+      <p>当前筛选条件下没有任务。</p>
+    </div>
+    <div v-else class="download-table">
+      <div class="download-head">
+        <span>作品章节</span>
+        <span>状态</span>
+        <span>时间</span>
+        <span>操作</span>
+      </div>
+      <article
+        v-for="(item, index) in visible"
+        :key="item.id"
+        class="download-row"
+        :class="{ selected: rowSelected(item.id) }"
+        @contextmenu="onContextMenu(item, index, $event)"
+        @click="selecting ? toggleRow(item, index, $event) : null"
       >
-        <span class="completed-task-title">
-          <strong>{{ group.title }}</strong>
-          <small>{{ group.author }}</small>
-        </span>
-        <span class="completed-task-summary">
-          <span class="badge success">已完成 {{ group.items.length }} 章</span>
-        </span>
-        <ChevronDown v-if="isGroupExpanded(group.key)" :size="18" />
-        <ChevronRight v-else :size="18" />
-      </button>
-      <div v-if="isGroupExpanded(group.key)" class="completed-task-chapters">
-        <div v-for="item in group.items" :key="item.id" class="completed-task-chapter">
-          <span class="completed-chapter-title" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
-          <span class="completed-chapter-time">{{ formatTime(item) }}</span>
-          <button class="icon-btn danger" type="button" :disabled="busy === item.id" aria-label="删除任务记录" @click="remove(item, false)">
+        <div class="download-main">
+          <RouterLink
+            class="comic-title"
+            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+            @click.stop
+          >
+            {{ item.comicTitle }}
+          </RouterLink>
+          <span class="download-chapter" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
+        </div>
+        <div class="download-status">
+          <div class="download-status-head">
+            <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
+            <span class="download-progress-text">{{ progressText(item) }}</span>
+          </div>
+          <div class="download-progress" :class="`is-${item.status}`" role="progressbar" :aria-valuenow="progressPercent(item)" aria-valuemin="0" aria-valuemax="100">
+            <span class="download-progress-fill" :style="{ width: `${progressPercent(item)}%` }" />
+          </div>
+        </div>
+        <div class="download-time">{{ formatTime(item) }}</div>
+        <div class="download-actions">
+          <button
+            v-if="retryable(item.status)"
+            class="icon-btn"
+            type="button"
+            :disabled="busy === item.id"
+            aria-label="重试"
+            @click.stop="retry(item)"
+          >
+            <RotateCcw :size="15" />
+          </button>
+          <button
+            class="icon-btn danger"
+            type="button"
+            :disabled="busy === item.id"
+            aria-label="删除任务记录"
+            @click.stop="remove(item, false)"
+          >
             <Trash2 :size="15" />
           </button>
         </div>
-      </div>
-    </article>
-  </div>
-  <div v-else class="download-table">
-    <div class="download-head">
-      <span>作品章节</span>
-      <span>状态</span>
-      <span>时间</span>
-      <span>操作</span>
+      </article>
     </div>
-    <article
-      v-for="(item, index) in visible"
-      :key="item.id"
-      class="download-row"
-      :class="{ selected: rowSelected(item.id) }"
-      @contextmenu="onContextMenu(item, index, $event)"
-      @click="selecting ? toggleRow(item, index, $event) : null"
-    >
-      <div class="download-main">
-        <RouterLink
-          class="comic-title"
-          :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
-          @click.stop
-        >
-          {{ item.comicTitle }}
-        </RouterLink>
-        <span class="download-chapter" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
+
+    <section v-if="completedItems.length" ref="completedWindow" class="completed-task-window">
+      <button
+        class="completed-task-window-head"
+        type="button"
+        :aria-expanded="completedWindowOpen"
+        @click="completedWindowOpen = !completedWindowOpen"
+      >
+        <span class="completed-task-window-title">
+          <FileArchive :size="18" />
+          <strong>已完成任务</strong>
+          <span class="badge success">{{ counts.completed }} 章</span>
+        </span>
+        <ChevronDown v-if="completedWindowOpen" :size="18" />
+        <ChevronRight v-else :size="18" />
+      </button>
+      <div v-show="completedWindowOpen" class="completed-task-groups">
+        <article v-for="group in completedGroups" :key="group.key" class="completed-task-group">
+          <button
+            class="completed-task-head"
+            type="button"
+            :aria-expanded="isGroupExpanded(group.key)"
+            @click="toggleGroup(group.key)"
+          >
+            <span class="completed-task-title">
+              <strong>{{ group.title }}</strong>
+              <small>{{ group.author }}</small>
+            </span>
+            <span class="completed-task-summary">
+              <span class="badge success">已完成 {{ group.items.length }} 章</span>
+            </span>
+            <ChevronDown v-if="isGroupExpanded(group.key)" :size="18" />
+            <ChevronRight v-else :size="18" />
+          </button>
+          <div v-if="isGroupExpanded(group.key)" class="completed-task-chapters">
+            <div v-for="item in group.items" :key="item.id" class="completed-task-chapter">
+              <span class="completed-chapter-title" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
+              <span class="completed-chapter-time">{{ formatTime(item) }}</span>
+              <button class="icon-btn danger" type="button" :disabled="busy === item.id" aria-label="删除任务记录" @click="remove(item, false)">
+                <Trash2 :size="15" />
+              </button>
+            </div>
+          </div>
+        </article>
       </div>
-      <div class="download-status">
-        <div class="download-status-head">
-          <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
-          <span class="download-progress-text">{{ progressText(item) }}</span>
-        </div>
-        <div class="download-progress" :class="`is-${item.status}`" role="progressbar" :aria-valuenow="progressPercent(item)" aria-valuemin="0" aria-valuemax="100">
-          <span class="download-progress-fill" :style="{ width: `${progressPercent(item)}%` }" />
-        </div>
-      </div>
-      <div class="download-time">{{ formatTime(item) }}</div>
-      <div class="download-actions">
-        <button
-          v-if="retryable(item.status)"
-          class="icon-btn"
-          type="button"
-          :disabled="busy === item.id"
-          aria-label="重试"
-          @click.stop="retry(item)"
-        >
-          <RotateCcw :size="15" />
-        </button>
-        <button
-          v-if="item.status === 'completed' && item.filePath"
-          class="icon-btn"
-          type="button"
-          :disabled="busy === item.id"
-          aria-label="删除任务和文件"
-          @click.stop="remove(item, true)"
-        >
-          <FolderOpen :size="15" />
-        </button>
-        <button
-          class="icon-btn danger"
-          type="button"
-          :disabled="busy === item.id"
-          aria-label="删除任务记录"
-          @click.stop="remove(item, false)"
-        >
-          <Trash2 :size="15" />
-        </button>
-      </div>
-    </article>
+    </section>
   </div>
 
   <div v-if="selecting" class="selection-pill">

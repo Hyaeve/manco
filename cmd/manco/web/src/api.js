@@ -114,7 +114,7 @@ export const api = {
   archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
   backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),
 
-  downloads: (limit = 200) => request(`/api/downloads?limit=${limit}`),
+  downloads: (limit = 0) => request(`/api/downloads?limit=${limit}`),
   createDownload: (payload) => request('/api/downloads', { method: 'POST', body: JSON.stringify(payload) }),
   retryDownload: (id) => request(`/api/downloads/${id}/retry`, { method: 'POST' }),
   retryDownloads: async (ids) => {

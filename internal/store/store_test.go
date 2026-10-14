@@ -90,6 +90,23 @@ func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	}
 }
 
+func TestListDownloadJobsWithoutLimitReturnsEveryRecord(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	const total = 605
+	for index := 0; index < total; index++ {
+		createJob(t, repository, strconv.Itoa(index+1))
+	}
+
+	jobs, err := repository.ListDownloadJobs(ctx, 0)
+	if err != nil {
+		t.Fatalf("list download jobs: %v", err)
+	}
+	if len(jobs) != total {
+		t.Fatalf("download jobs = %d, want %d", len(jobs), total)
+	}
+}
+
 func TestUpdateUsername(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)
