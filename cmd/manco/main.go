@@ -166,6 +166,24 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	}
 	engine.Start(ctx)
 	scanner.Start(ctx)
+	// 登录保活：按各内容源设置的周期重新登录，避免 Token 过期后无法浏览或下载。
+	go func() {
+		for _, message := range registry.KeepAliveLogins(ctx) {
+			logger.Printf("manco: %s", message)
+		}
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			for _, message := range registry.KeepAliveLogins(ctx) {
+				logger.Printf("manco: %s", message)
+			}
+		}
+	}()
 	go server.RunSubscriptionMaintenance(ctx, 30*time.Minute)
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)

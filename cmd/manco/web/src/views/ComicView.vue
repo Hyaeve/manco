@@ -19,6 +19,7 @@ import { api } from '../api'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { notify } from '../stores/notices'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
+import { splitAuthors } from '../utils/metadata'
 
 const route = useRoute()
 const router = useRouter()
@@ -97,6 +98,7 @@ const existingSubscription = ref(null)
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
 
 const comic = computed(() => detail.value?.comic || null)
+const comicAuthors = computed(() => splitAuthors(comic.value?.author))
 const chapters = computed(() => detail.value?.chapters || [])
 const displayChapters = computed(() => {
   const keyword = appliedQuery.value.trim().toLowerCase()
@@ -214,8 +216,8 @@ function goBack() {
   }
 }
 
-function searchAuthor() {
-  const author = String(comic.value?.author || '').trim()
+function searchAuthor(name) {
+  const author = String(name || comic.value?.author || '').trim()
   if (!author) return
   router.push({ name: 'search', query: { q: author, kind: isBook.value ? 'book' : 'comic' } })
 }
@@ -423,10 +425,18 @@ async function downloadSelected() {
           </div>
         </div>
         <div class="meta detail-meta-line">
-          <button v-if="comic.author" class="author-pill" type="button" @click="searchAuthor">
-            <UserRound :size="14" />
-            {{ comic.author }}
-          </button>
+          <template v-if="comicAuthors.length">
+            <button
+              v-for="name in comicAuthors"
+              :key="name"
+              class="author-pill"
+              type="button"
+              @click="searchAuthor(name)"
+            >
+              <UserRound :size="14" />
+              {{ name }}
+            </button>
+          </template>
           <span v-else>未知作者</span>
           <span v-if="comic.status"> · {{ comic.status }}</span>
         </div>

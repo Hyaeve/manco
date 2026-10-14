@@ -1517,13 +1517,44 @@
   min-width: 0;
 }
 
-.discover-search.source-search {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+/* v0.1.27：探索发现搜索栏，搜索图标内嵌在输入框内。 */
+.discover-search {
   flex: 0 0 330px;
-  width: 330px;
+  width: min(330px, 100%);
   margin-left: auto;
+}
+.discover-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+.discover-search-field:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: var(--surface);
+}
+.discover-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.discover-search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+.discover-search-field .icon-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
 }
 
 .source-page {
@@ -2883,26 +2914,36 @@
   flex-direction: column;
   gap: 10px;
 }
-.plugin-preference-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
+/* v0.1.27：插件内容源的域名、UA 等偏好项一行两个并撑满各自半栏。 */
+.plugin-preference-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
-.plugin-preference-row:last-child {
+.plugin-preference-grid .plugin-preference-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
   border-bottom: 0;
 }
-.plugin-preference-row > span {
-  flex: 1 1 auto;
+.plugin-preference-grid .plugin-preference-row > span {
   min-width: 0;
-  color: var(--text);
+  color: var(--text-muted);
   font-size: 13px;
 }
-.plugin-preference-row input,
-.plugin-preference-row select {
-  flex: 0 0 55%;
-  max-width: 55%;
+.plugin-preference-grid .plugin-preference-row input,
+.plugin-preference-grid .plugin-preference-row select,
+.plugin-preference-grid .plugin-preference-row .input,
+.plugin-preference-grid .plugin-preference-row .switch-row {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+@media (max-width: 760px) {
+  .plugin-preference-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 /* 添加内容源窗口：固定大小，列表内部滚动 */
 .source-add-modal .modal-body {
@@ -3373,10 +3414,11 @@
   gap: 4px;
 }
 .subscription-card .subscription-title {
-  display: -webkit-box;
+  display: block;
+  max-width: calc(100% - 46px);
   overflow: hidden;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .subscription-card .subscription-sub,
 .subscription-card .subscription-line {
@@ -3668,24 +3710,38 @@ svg.source-editor-icon {
   border-radius: 6px;
 }
 
-/* v0.1.26：订阅统计可直接进入任务列表，并显示当前作品范围。 */
-.task-work-filter {
-  display: inline-flex;
-  height: 32px;
+/* v0.1.27：任务列表刷新按钮右侧的关键词搜索栏，搜索图标内嵌在输入框里。 */
+.task-search {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 5px 0 11px;
-  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--primary-soft);
-  color: var(--primary-strong);
-  font-size: 12px;
-  white-space: nowrap;
+  background: var(--surface-muted);
+  color: var(--text-muted);
 }
-
-.task-work-filter .icon-btn {
-  width: 24px;
-  height: 24px;
+.task-search:focus-within {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: var(--surface);
+}
+.task-search-input {
+  width: clamp(170px, 24vw, 280px);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.task-search-input::-webkit-search-cancel-button {
+  appearance: none;
+}
+.task-search .icon-btn {
+  width: 22px;
+  height: 22px;
   padding: 0;
 }
 
@@ -3706,4 +3762,23 @@ svg.source-editor-icon {
 }
 .hidden-file-input {
   display: none;
+}
+
+/* v0.1.27：内容源编辑窗口加宽；网站地址/UA/Cookie 一行自适应，单独一项时整行撑满。 */
+.source-editor-modal {
+  width: min(1040px, 100%);
+}
+.source-editor-modal .source-editor-pair {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.source-editor-modal .source-editor-pair > .field {
+  width: 100%;
+  min-width: 0;
+}
+.source-editor-modal .source-editor-pair .site-picker,
+.source-editor-modal .source-editor-pair .site-picker-control,
+.source-editor-modal .source-editor-pair .input,
+.source-editor-modal .source-editor-pair .textarea {
+  width: 100%;
+  min-width: 0;
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -11,6 +13,10 @@ import (
 )
 
 var ErrAuthRequired = errors.New("source account is not connected")
+
+// DefaultReloginDays is the keep-alive window applied to login sources that
+// have not stored their own re-login interval.
+const DefaultReloginDays = 7
 
 // Source kinds. Comic sources yield image chapters packed into CBZ files;
 // book sources yield per-chapter text files instead.
@@ -28,6 +34,65 @@ type Account struct {
 	UserAgent string
 	HomeURL   string
 	Extra     map[string]any
+}
+
+// AccountReloginDays returns the configured keep-alive window in days. A
+// missing or non-positive value falls back to fallback.
+func AccountReloginDays(account Account, fallback int) int {
+	if account.Extra != nil {
+		switch value := account.Extra["reloginDays"].(type) {
+		case float64:
+			if value > 0 {
+				return int(value)
+			}
+		case int:
+			if value > 0 {
+				return value
+			}
+		case int64:
+			if value > 0 {
+				return int(value)
+			}
+		case json.Number:
+			if parsed, err := value.Int64(); err == nil && parsed > 0 {
+				return int(parsed)
+			}
+		case string:
+			if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return fallback
+}
+
+// AccountLastLogin reports when the account credentials were last refreshed.
+func AccountLastLogin(account Account) time.Time {
+	if account.Extra == nil {
+		return time.Time{}
+	}
+	raw, _ := account.Extra["lastLoginAt"].(string)
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+// SetAccountReloginDays stores the keep-alive window in the account extras.
+func SetAccountReloginDays(account *Account, days int) {
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra["reloginDays"] = days
+}
+
+// MarkAccountLoggedIn records the current time as the last successful login.
+func MarkAccountLoggedIn(account *Account, now time.Time) {
+	if account.Extra == nil {
+		account.Extra = map[string]any{}
+	}
+	account.Extra["lastLoginAt"] = now.UTC().Format(time.RFC3339)
 }
 
 func AccountFromModel(box *secret.Box, stored model.SourceAccount) (Account, error) {

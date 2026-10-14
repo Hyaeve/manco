@@ -29,7 +29,7 @@ import { api } from './api'
 import { useAuthStore } from './stores/auth'
 import { dismissNotice, notices } from './stores/notices'
 
-// 任务列表图标：待办清单 + 下载箭头，纯线条绘制。
+// 任务列表图标：向下箭头落入下载托盘，纯线条绘制。
 const TaskListIcon = defineComponent({
   name: 'TaskListIcon',
   props: { size: { type: [Number, String], default: 21 } },
@@ -50,11 +50,10 @@ const TaskListIcon = defineComponent({
           'aria-hidden': 'true',
         },
         [
-          h('path', { d: 'M3 6h8' }),
-          h('path', { d: 'M3 12h8' }),
-          h('path', { d: 'M3 18h6' }),
-          h('path', { d: 'M18 4.5v11' }),
-          h('path', { d: 'M14.8 12.3L18 15.5l3.2-3.2' }),
+          h('path', { d: 'M12 3.5v9.2' }),
+          h('path', { d: 'm8.6 9.3 3.4 3.4 3.4-3.4' }),
+          h('path', { d: 'M4 14.4v4.1a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4.1' }),
+          h('path', { d: 'M4 14.4h4.3l1.1 2.1h5.2l1.1-2.1H20' }),
         ],
       )
   },

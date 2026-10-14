@@ -230,6 +230,14 @@ function chapterCount(item) {
   return jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId).length
 }
 
+// 订阅卡片标题最多展示 10 个字符（含中文标点与省略号），避免压到右上角来源图标。
+function cardTitle(item) {
+  const text = String(item?.title || '').trim()
+  if (!text) return '未命名作品'
+  const chars = Array.from(text)
+  return chars.length > 10 ? `${chars.slice(0, 9).join('')}…` : text
+}
+
 function jobStats(item) {
   const key = `${item.sourceId}\u0000${item.comicId}`
   const aggregated = jobStatsData.value[key]
@@ -251,9 +259,7 @@ function downloadTaskLink(item, filter) {
     name: 'downloads',
     query: {
       filter,
-      sourceId: item.sourceId,
-      comicId: item.comicId,
-      title: item.title,
+      q: item.title || '',
     },
   }
 }
@@ -388,8 +394,9 @@ async function downloadAll(item) {
           <RouterLink
             class="subscription-title"
             :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+            :title="item.title"
           >
-            {{ item.title }}
+            {{ cardTitle(item) }}
           </RouterLink>
           <span class="subscription-sub">{{ item.author || '未知作者' }}</span>
           <span class="subscription-sub">

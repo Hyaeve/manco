@@ -12,6 +12,7 @@ import {
   List,
   Loader2,
   Search,
+  X,
 } from 'lucide-vue-next'
 import { api } from '../api'
 import RoundedSelect from '../components/RoundedSelect.vue'
@@ -323,6 +324,13 @@ async function submitSearch() {
   afterLoad()
 }
 
+async function clearSourceSearch() {
+  const panel = activePanel.value
+  if (!panel) return
+  panel.query = ''
+  await submitSearch()
+}
+
 async function changeFilter() {
   const panel = activePanel.value
   if (!panel) return
@@ -427,16 +435,22 @@ function latestLabel(item) {
           </button>
         </div>
       </div>
-      <div v-if="activeSource && activePanel" class="source-search discover-search">
-        <Loader2 v-if="activePanel.loading" :size="16" class="spin" />
-        <Search :size="16" />
-        <input
-          v-model="activePanel.query"
-          class="input"
-          :disabled="!activeSource.canSearch || activePanel.loading"
-          placeholder="搜索作品"
-          @keyup.enter="submitSearch"
-        />
+      <div v-if="activeSource && activePanel" class="discover-search">
+        <label class="discover-search-field">
+          <Search :size="15" />
+          <input
+            v-model="activePanel.query"
+            class="discover-search-input"
+            type="search"
+            :disabled="!activeSource.canSearch || activePanel.loading"
+            placeholder="搜索作品"
+            @keyup.enter="submitSearch"
+          />
+          <Loader2 v-if="activePanel.loading" :size="15" class="spin" />
+          <button v-else-if="activePanel.query" class="icon-btn" type="button" aria-label="清除搜索" @click="clearSourceSearch">
+            <X :size="14" />
+          </button>
+        </label>
       </div>
     </div>
 

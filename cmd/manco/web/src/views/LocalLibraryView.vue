@@ -23,6 +23,7 @@ import {
 import { api } from '../api'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
+import { splitAuthors } from '../utils/metadata'
 
 const items = ref([])
 const loading = ref(true)
@@ -91,6 +92,7 @@ const comicCount = computed(() => items.value.filter((item) => item.kind !== 'bo
 const bookCount = computed(() => items.value.filter((item) => item.kind === 'book').length)
 
 const activeFiles = computed(() => active.value?.files || [])
+const activeAuthors = computed(() => splitAuthors(active.value?.author))
 const activeChapterFiles = computed(() => {
   const keyword = chapterApplied.value.trim().toLowerCase()
   const list = (activeFiles.value || []).filter((file) => {
@@ -452,10 +454,12 @@ function downloadReaderFile() {
           <span class="badge" :class="active.kind === 'book' ? 'primary' : ''">
             {{ active.kind === 'book' ? '书籍' : '漫画' }}
           </span>
-          <span v-if="active.author" class="author-pill">
-            <UserRound :size="14" />
-            {{ active.author }}
-          </span>
+          <template v-if="activeAuthors.length">
+            <span v-for="name in activeAuthors" :key="name" class="author-pill">
+              <UserRound :size="14" />
+              {{ name }}
+            </span>
+          </template>
           <span v-else>未知作者</span>
         </div>
         <div v-if="active.tags?.length" class="tag-list">

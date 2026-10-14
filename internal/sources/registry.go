@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/pluginruntime"
@@ -195,6 +196,105 @@ func (r *Registry) RemoveAccount(ctx context.Context, id string) error {
 		return nil
 	}
 	return r.store.DeleteSourceAccount(ctx, id)
+}
+
+// KeepAliveLogins re-signs login-based sources whose keep-alive window has
+// elapsed so browsing and downloads keep working without manual logins. It
+// returns human-readable messages for the caller to write to the run log.
+func (r *Registry) KeepAliveLogins(ctx context.Context) []string {
+	if r == nil || r.store == nil || r.box == nil {
+		return nil
+	}
+	stored, err := r.store.ListSourceAccounts(ctx)
+	if err != nil {
+		return []string{fmt.Sprintf("list source accounts: %v", err)}
+	}
+	now := time.Now().UTC()
+	messages := make([]string, 0, len(stored))
+	for _, record := range stored {
+		item, ok := r.byID[record.SourceID]
+		if !ok {
+			continue
+		}
+		loginSource, ok := item.(source.LoginSource)
+		if !ok {
+			continue
+		}
+		account, err := source.AccountFromModel(r.box, record)
+		if err != nil {
+			messages = append(messages, fmt.Sprintf("%s: keep-alive decode account: %v", record.SourceID, err))
+			continue
+		}
+		fallback := 0
+		if record.SourceID == "picacg" {
+			fallback = source.DefaultReloginDays
+		}
+		days := source.AccountReloginDays(account, fallback)
+		if days <= 0 || strings.TrimSpace(account.Username) == "" || account.Password == "" {
+			continue
+		}
+		if last := source.AccountLastLogin(account); !last.IsZero() && now.Sub(last) < time.Duration(days)*24*time.Hour {
+			continue
+		}
+		result, err := loginSource.Login(ctx, account)
+		if err != nil {
+			messages = append(messages, fmt.Sprintf("%s: keep-alive login failed: %v", record.SourceID, err))
+			continue
+		}
+		if result.Token != "" {
+			account.Token = result.Token
+		}
+		for key, value := range result.Extra {
+			if account.Extra == nil {
+				account.Extra = map[string]any{}
+			}
+			account.Extra[key] = value
+		}
+		source.MarkAccountLoggedIn(&account, now)
+		if err := r.saveAccount(ctx, record, account); err != nil {
+			messages = append(messages, fmt.Sprintf("%s: keep-alive save credentials: %v", record.SourceID, err))
+			continue
+		}
+		messages = append(messages, fmt.Sprintf("%s: keep-alive login refreshed (%d day interval)", record.SourceID, days))
+	}
+	return messages
+}
+
+func (r *Registry) saveAccount(ctx context.Context, record model.SourceAccount, account source.Account) error {
+	passwordCipher, err := r.box.Encrypt(account.Password)
+	if err != nil {
+		return err
+	}
+	tokenCipher, err := r.box.Encrypt(account.Token)
+	if err != nil {
+		return err
+	}
+	cookieCipher, err := r.box.Encrypt(account.Cookie)
+	if err != nil {
+		return err
+	}
+	userAgentCipher, err := r.box.Encrypt(account.UserAgent)
+	if err != nil {
+		return err
+	}
+	extra := account.Extra
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	raw, err := json.Marshal(extra)
+	if err != nil {
+		return err
+	}
+	return r.store.UpsertSourceAccount(ctx, model.SourceAccount{
+		SourceID:        record.SourceID,
+		Username:        account.Username,
+		SecretCipher:    passwordCipher,
+		TokenCipher:     tokenCipher,
+		CookieCipher:    cookieCipher,
+		UserAgentCipher: userAgentCipher,
+		HomeURL:         account.HomeURL,
+		Extra:           raw,
+	})
 }
 
 func (r *Registry) Client() *http.Client { return r.client }

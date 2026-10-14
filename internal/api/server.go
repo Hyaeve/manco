@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.26"
+	appVersion    = "v0.1.27"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -429,16 +429,17 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	hidden := s.hiddenSources(r.Context())
 	type accountView struct {
-		Settings  model.SourceDownloadSettings `json:"settings"`
-		SourceID  string                       `json:"sourceId"`
-		Username  string                       `json:"username,omitempty"`
-		Password  string                       `json:"password,omitempty"`
-		UserAgent string                       `json:"userAgent,omitempty"`
-		HomeURL   string                       `json:"homeUrl,omitempty"`
-		UseProxy  bool                         `json:"useProxy"`
-		HasToken  bool                         `json:"hasToken"`
-		HasCookie bool                         `json:"hasCookie"`
-		UpdatedAt time.Time                    `json:"updatedAt"`
+		Settings    model.SourceDownloadSettings `json:"settings"`
+		SourceID    string                       `json:"sourceId"`
+		Username    string                       `json:"username,omitempty"`
+		Password    string                       `json:"password,omitempty"`
+		UserAgent   string                       `json:"userAgent,omitempty"`
+		HomeURL     string                       `json:"homeUrl,omitempty"`
+		UseProxy    bool                         `json:"useProxy"`
+		ReloginDays int                          `json:"reloginDays"`
+		HasToken    bool                         `json:"hasToken"`
+		HasCookie   bool                         `json:"hasCookie"`
+		UpdatedAt   time.Time                    `json:"updatedAt"`
 	}
 	accounts := map[string]accountView{}
 	stored, err := s.store.ListSourceAccounts(r.Context())
@@ -446,17 +447,28 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		for _, account := range stored {
 			plainPassword, _ := s.box.Decrypt(account.SecretCipher)
 			plain, _ := source.AccountFromModel(s.box, account)
+			reloginDays := 0
+			if item, err := s.registry.Get(account.SourceID); err == nil {
+				if _, ok := item.(source.LoginSource); ok {
+					fallback := 0
+					if account.SourceID == "picacg" {
+						fallback = source.DefaultReloginDays
+					}
+					reloginDays = source.AccountReloginDays(plain, fallback)
+				}
+			}
 			accounts[account.SourceID] = accountView{
-				Settings:  s.sourceDownloadSettings(account.Extra),
-				SourceID:  account.SourceID,
-				Username:  account.Username,
-				Password:  plainPassword,
-				UserAgent: plain.UserAgent,
-				HomeURL:   account.HomeURL,
-				UseProxy:  source.AccountUsesProxy(plain),
-				HasToken:  account.TokenCipher != "",
-				HasCookie: account.CookieCipher != "",
-				UpdatedAt: account.UpdatedAt,
+				Settings:    s.sourceDownloadSettings(account.Extra),
+				SourceID:    account.SourceID,
+				Username:    account.Username,
+				Password:    plainPassword,
+				UserAgent:   plain.UserAgent,
+				HomeURL:     account.HomeURL,
+				UseProxy:    source.AccountUsesProxy(plain),
+				ReloginDays: reloginDays,
+				HasToken:    account.TokenCipher != "",
+				HasCookie:   account.CookieCipher != "",
+				UpdatedAt:   account.UpdatedAt,
 			}
 		}
 	}
@@ -1723,15 +1735,16 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Settings  *model.SourceDownloadSettings `json:"settings"`
-		Username  string                        `json:"username"`
-		Password  string                        `json:"password"`
-		Token     string                        `json:"token"`
-		Cookie    string                        `json:"cookie"`
-		UserAgent string                        `json:"userAgent"`
-		HomeURL   *string                       `json:"homeUrl"`
-		UseProxy  *bool                         `json:"useProxy"`
-		Login     bool                          `json:"login"`
+		Settings    *model.SourceDownloadSettings `json:"settings"`
+		Username    string                        `json:"username"`
+		Password    string                        `json:"password"`
+		Token       string                        `json:"token"`
+		Cookie      string                        `json:"cookie"`
+		UserAgent   string                        `json:"userAgent"`
+		HomeURL     *string                       `json:"homeUrl"`
+		UseProxy    *bool                         `json:"useProxy"`
+		ReloginDays *int                          `json:"reloginDays"`
+		Login       bool                          `json:"login"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -1764,6 +1777,13 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 	if payload.UseProxy != nil {
 		source.SetAccountUseProxy(&account, *payload.UseProxy)
 	}
+	if payload.ReloginDays != nil {
+		days := *payload.ReloginDays
+		if days < 0 {
+			days = 0
+		}
+		source.SetAccountReloginDays(&account, days)
+	}
 	if payload.Login {
 		loginSource, ok := item.(source.LoginSource)
 		if !ok {
@@ -1779,6 +1799,13 @@ func (s *Server) handleSaveAccount(w http.ResponseWriter, r *http.Request) {
 		if result.Username != "" {
 			account.Username = result.Username
 		}
+		for key, value := range result.Extra {
+			if account.Extra == nil {
+				account.Extra = map[string]any{}
+			}
+			account.Extra[key] = value
+		}
+		source.MarkAccountLoggedIn(&account, time.Now())
 	}
 	secretCipher, err := s.box.Encrypt(account.Password)
 	if err != nil {

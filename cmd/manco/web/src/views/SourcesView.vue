@@ -215,6 +215,7 @@ async function load() {
           cookie: '',
           userAgent: account.userAgent || '',
           homeUrl: account.homeUrl || '',
+          reloginDays: Number(account.reloginDays ?? 7),
           useProxy: account.useProxy !== false,
           chapterConcurrency: Number(settings.chapterConcurrency ?? 1),
           pageConcurrency: Number(settings.pageConcurrency ?? 2),
@@ -226,6 +227,7 @@ async function load() {
         if (account.password) forms[item.id].password = account.password
         forms[item.id].homeUrl = account.homeUrl || ''
         forms[item.id].userAgent = account.userAgent || ''
+        forms[item.id].reloginDays = Number(account.reloginDays ?? 7)
         forms[item.id].useProxy = account.useProxy !== false
         forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency ?? 1)
         forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
@@ -246,6 +248,11 @@ function accountOf(id) {
 
 function isJMComic(item) {
   return item && String(item.id).toLowerCase() === 'jmcomic'
+}
+
+// 哔咔需要按周期重新登录，避免 Token 过期导致浏览与下载失败。
+function supportsRelogin(item) {
+  return item && String(item.id).toLowerCase() === 'picacg'
 }
 
 function isSourceSelected(item) {
@@ -706,6 +713,10 @@ async function saveSource(item, login = false) {
     if (form.password) payload.password = form.password
     if (form.cookie) payload.cookie = form.cookie
     if (form.userAgent) payload.userAgent = form.userAgent
+    if (supportsRelogin(item)) {
+      const days = Number(form.reloginDays)
+      payload.reloginDays = Number.isFinite(days) && days > 0 ? Math.round(days) : 7
+    }
     await api.saveAccount(item.id, payload)
     form.cookie = ''
     notify(login ? `${item.name} 登录成功，设置已保存` : `${item.name} 设置已保存`, 'success')
@@ -1366,7 +1377,7 @@ function onDragEnd() {
     </section>
   </div>
   <div v-if="editorOpen && editorSource && forms[editorSource.id]" class="modal-backdrop" @click.self="editorOpen = false">
-    <div class="modal modal-lg">
+    <div class="modal modal-lg source-editor-modal">
       <div class="modal-head">
         <div class="inline">
           <SourceIcon
@@ -1434,8 +1445,8 @@ function onDragEnd() {
                 <ShieldCheck :size="14" />
                 浏览器验证
               </button>
-              <div v-for="node in pluginPreferenceNodes()" :key="node.id" class="plugin-preference-row">
-                <label class="field">
+              <div v-if="pluginPreferenceNodes().length" class="settings-grid plugin-preference-grid">
+                <div v-for="node in pluginPreferenceNodes()" :key="node.id" class="field plugin-preference-row">
                   <span>{{ node.title }}</span>
                   <select
                     v-if="node.kind === 'CHOICE'"
@@ -1460,7 +1471,7 @@ function onDragEnd() {
                     @input="setPluginPreferenceValue(node, $event.target.value)"
                     @change="savePluginPreference(node)"
                   />
-                </label>
+                </div>
               </div>
             </template>
           </template>
@@ -1482,12 +1493,23 @@ function onDragEnd() {
                   placeholder="留空使用默认浏览器标识"
                 />
               </label>
-              <label v-else-if="!showsAccountLogin(editorSource)" class="field">
+              <label v-else-if="!showsAccountLogin(editorSource) && !supportsRelogin(editorSource)" class="field">
                 <span>Cookie（可选，可拖动调整高度）</span>
                 <textarea
                   v-model="forms[editorSource.id].cookie"
                   class="textarea cookie-textarea"
                   placeholder="粘贴浏览器中的 Cookie"
+                />
+              </label>
+              <label v-if="supportsRelogin(editorSource)" class="field">
+                <span>重新登录保活（天）</span>
+                <input
+                  v-model.number="forms[editorSource.id].reloginDays"
+                  class="input"
+                  type="number"
+                  min="1"
+                  max="365"
+                  placeholder="默认 7 天"
                 />
               </label>
             </div>

@@ -12,6 +12,7 @@ import {
   Loader2,
   RefreshCw,
   RotateCcw,
+  Search,
   Trash2,
   X,
 } from 'lucide-vue-next'
@@ -46,22 +47,17 @@ function queryText(value) {
   return typeof value === 'string' ? value : ''
 }
 
-const workFilter = computed(() => {
-  const sourceId = queryText(route.query.sourceId)
-  const comicId = queryText(route.query.comicId)
-  if (!sourceId || !comicId) return null
-  return {
-    sourceId,
-    comicId,
-    title: queryText(route.query.title) || '当前作品',
-  }
-})
+const keyword = ref(queryText(route.query.q).trim())
+const searchInput = ref(keyword.value)
 
+// 关键词过滤：作品名、章节名、作者任一命中即可，便于从订阅卡片直达失败项。
 const scopedItems = computed(() => {
-  if (!workFilter.value) return items.value
-  return items.value.filter(
-    (item) => item.sourceId === workFilter.value.sourceId && item.comicId === workFilter.value.comicId,
-  )
+  const key = keyword.value.trim().toLowerCase()
+  if (!key) return items.value
+  return items.value.filter((item) => {
+    const haystack = `${item.comicTitle || ''} ${item.chapterTitle || ''} ${item.comicAuthor || ''}`.toLowerCase()
+    return haystack.includes(key)
+  })
 })
 
 const counts = computed(() => {
@@ -90,6 +86,15 @@ watch(
   (value) => {
     const next = typeof value === 'string' && filterValues.has(value) ? value : 'all'
     if (filter.value !== next) filter.value = next
+  },
+)
+
+watch(
+  () => route.query.q,
+  (value) => {
+    const next = queryText(value).trim()
+    if (keyword.value !== next) keyword.value = next
+    if (searchInput.value !== next) searchInput.value = next
   },
 )
 
@@ -244,12 +249,17 @@ function setFilter(value) {
   router.replace({ name: 'downloads', query })
 }
 
-function clearWorkFilter() {
+function applyKeyword() {
+  keyword.value = searchInput.value.trim()
   const query = { ...route.query }
-  delete query.sourceId
-  delete query.comicId
-  delete query.title
+  if (keyword.value) query.q = keyword.value
+  else delete query.q
   router.replace({ name: 'downloads', query })
+}
+
+function clearKeyword() {
+  searchInput.value = ''
+  applyKeyword()
 }
 
 // 任务列表状态只保留成功/失败/等待/下载中四类，详细错误请查看运行日志。
@@ -375,17 +385,25 @@ async function remove(item, removeFile) {
         <span class="segmented-count">{{ counts[item.value] }}</span>
       </button>
     </div>
-    <div v-if="workFilter" class="task-work-filter">
-      <span>仅查看《{{ workFilter.title }}》</span>
-      <button class="icon-btn" type="button" aria-label="清除作品筛选" @click="clearWorkFilter">
-        <X :size="13" />
-      </button>
-    </div>
     <span class="spacer" />
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
       <RefreshCw :size="15" :class="{ spin: loading }" />
       刷新
     </button>
+    <label class="task-search">
+      <Search :size="15" />
+      <input
+        v-model="searchInput"
+        class="task-search-input"
+        type="search"
+        placeholder="搜索作品或章节"
+        @keyup.enter="applyKeyword"
+        @search="applyKeyword"
+      />
+      <button v-if="searchInput" class="icon-btn" type="button" aria-label="清除搜索" @click="clearKeyword">
+        <X :size="14" />
+      </button>
+    </label>
   </div>
 
   <div v-if="loading && !items.length" class="empty">
@@ -402,7 +420,7 @@ async function remove(item, removeFile) {
   </div>
   <div v-else-if="!visible.length" class="card empty">
     <CircleCheck :size="26" />
-    <p>{{ workFilter ? '这部作品在当前筛选条件下没有任务。' : '当前筛选条件下没有任务。' }}</p>
+    <p>当前筛选条件下没有任务。</p>
   </div>
   <div v-else-if="filter === 'completed'" class="completed-task-groups">
     <article v-for="group in completedGroups" :key="group.key" class="completed-task-group">
