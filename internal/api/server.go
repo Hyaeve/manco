@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.2"
+	appVersion    = "v0.4.3"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -969,6 +969,59 @@ func (s *Server) disabledCategories(ctx context.Context) map[string][]string {
 	return disabled
 }
 
+// sourceFilterGroups returns the static filters advertised by a source, or
+// asks a runtime-backed source to discover them lazily.
+func sourceFilterGroups(ctx context.Context, item source.Source) ([]model.FilterGroup, error) {
+	if item == nil {
+		return nil, nil
+	}
+	info := item.Info()
+	if len(info.Filters) > 0 {
+		return info.Filters, nil
+	}
+	filterSource, ok := item.(source.FilterSource)
+	if !ok {
+		return info.Filters, nil
+	}
+	return filterSource.Filters(ctx)
+}
+
+func normalizeDisabledCategories(groups []model.FilterGroup, values []string) []string {
+	valid := map[string]bool{}
+	for _, group := range groups {
+		for _, option := range group.Options {
+			if option.Value != "" {
+				valid[option.Value] = true
+			}
+		}
+	}
+	normalized := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || !valid[value] || seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+func applyDisabledCategories(filters []model.FilterGroup, disabled []string) []model.FilterGroup {
+	blocked := map[string]bool{}
+	for _, value := range disabled {
+		blocked[value] = true
+	}
+	for groupIndex := range filters {
+		for optionIndex := range filters[groupIndex].Options {
+			option := &filters[groupIndex].Options[optionIndex]
+			option.Disabled = blocked[option.Value]
+		}
+	}
+	return filters
+}
+
 func (s *Server) sourceOrder(ctx context.Context) map[string][]string {
 	result := map[string][]string{}
 	value, err := s.store.Setting(ctx, "source_order")
@@ -1724,24 +1777,14 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		valid := map[string]bool{}
-		for _, group := range adapter.Info().Filters {
-			for _, option := range group.Options {
-				if option.Value != "" {
-					valid[option.Value] = true
-				}
-			}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		groups, err := sourceFilterGroups(ctx, adapter)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "加载来源筛选失败："+err.Error())
+			return
 		}
-		normalized := make([]string, 0, len(*payload.DisabledCategories))
-		seen := map[string]bool{}
-		for _, value := range *payload.DisabledCategories {
-			value = strings.TrimSpace(value)
-			if value == "" || !valid[value] || seen[value] {
-				continue
-			}
-			seen[value] = true
-			normalized = append(normalized, value)
-		}
+		normalized := normalizeDisabledCategories(groups, *payload.DisabledCategories)
 		disabled := s.disabledCategories(r.Context())
 		if len(normalized) == 0 {
 			delete(disabled, id)
@@ -2060,18 +2103,14 @@ func (s *Server) handleSourceFilters(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	filterSource, ok := item.(source.FilterSource)
-	if !ok {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []model.FilterGroup{}})
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	filters, err := filterSource.Filters(ctx)
+	filters, err := sourceFilterGroups(ctx, item)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "加载来源筛选失败："+err.Error())
 		return
 	}
+	filters = applyDisabledCategories(filters, s.disabledCategories(r.Context())[r.PathValue("id")])
 	writeJSON(w, http.StatusOK, map[string]any{"items": filters})
 }
 

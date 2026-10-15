@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { BookOpen, ImageOff, Loader2, Search, X } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -108,7 +109,7 @@ watch(
       <p>{{ errors.length ? errors.join('；') : '没有找到匹配的作品' }}</p>
     </div>
     <div v-else class="search-results-grid">
-      <RouterLink
+      <ContentLink
         v-for="item in items"
         :key="`${item.sourceId}-${item.id}`"
         class="comic-card search-result-card"
@@ -123,7 +124,7 @@ watch(
           <span class="comic-title">{{ item.title }}</span>
           <span class="comic-meta">{{ item.sourceName || item.sourceId }}</span>
         </div>
-      </RouterLink>
+      </ContentLink>
     </div>
   </section>
 </template>

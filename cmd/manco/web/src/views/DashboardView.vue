@@ -1,8 +1,8 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import { CircleCheck, Download, Library, Loader2, Plus, Rss, Server } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 
 const stats = ref(null)
 const downloads = ref([])
@@ -78,20 +78,20 @@ function statusClass(status) {
     <section class="section">
       <div class="section-head">
         <h2>漫画源</h2>
-        <RouterLink class="btn secondary small" to="/sources">
+        <ContentLink class="btn secondary small" to="/sources">
           <Server :size="15" />
           管理漫画源
-        </RouterLink>
+        </ContentLink>
       </div>
       <div class="card card-pad inline">
-        <RouterLink
+        <ContentLink
           v-for="item in sources"
           :key="item.id"
           class="badge primary"
           :to="{ name: 'discover', query: { source: item.id } }"
         >
           {{ item.name }}
-        </RouterLink>
+        </ContentLink>
         <span v-if="!sources.length" class="muted small">尚未加载漫画源</span>
       </div>
     </section>
@@ -99,10 +99,10 @@ function statusClass(status) {
     <section class="section">
       <div class="section-head">
         <h2>最近下载</h2>
-        <RouterLink class="btn secondary small" to="/downloads">
+        <ContentLink class="btn secondary small" to="/downloads">
           <Plus :size="15" />
           新建下载
-        </RouterLink>
+        </ContentLink>
       </div>
       <div class="card table-wrap">
         <table>

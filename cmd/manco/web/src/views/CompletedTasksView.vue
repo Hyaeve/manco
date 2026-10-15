@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ChevronDown, ChevronRight, CircleCheck, Loader2, RefreshCw, Search, Trash2, X } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
 
 const route = useRoute()
@@ -140,9 +141,9 @@ async function remove(item) {
 
     <div class="toolbar completed-toolbar">
       <div class="inline">
-        <RouterLink class="btn ghost icon" to="/downloads" aria-label="返回任务列表">
+        <ContentLink class="btn ghost icon" to="/downloads" aria-label="返回任务列表">
           <ArrowLeft :size="17" />
-        </RouterLink>
+        </ContentLink>
         <strong>已完成</strong>
         <span class="badge success">{{ completedItems.length }}</span>
       </div>
@@ -174,7 +175,7 @@ async function remove(item) {
     <div v-else-if="!completedItems.length" class="card empty">
       <CircleCheck :size="26" />
       <p>还没有已完成的章节。</p>
-      <RouterLink class="btn small" to="/downloads">查看任务列表</RouterLink>
+      <ContentLink class="btn small" to="/downloads">查看任务列表</ContentLink>
     </div>
     <div v-else-if="!groups.length" class="card empty">
       <Search :size="26" />

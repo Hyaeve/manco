@@ -1270,8 +1270,6 @@ tbody tr:hover {
 
 .detail-info .description {
   color: #334155;
-  max-height: 7.5em;
-  overflow: hidden;
   margin-bottom: 14px;
 }
 

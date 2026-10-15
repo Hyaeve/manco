@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
   CircleCheck,
@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
 
 const items = ref([])
@@ -405,9 +406,9 @@ async function remove(item, removeFile) {
         {{ item.label }}
         <span class="segmented-count">{{ counts[item.value] }}</span>
       </button>
-      <RouterLink class="completed-tab" to="/completed">
+      <ContentLink class="completed-tab" to="/completed">
         已完成
-      </RouterLink>
+      </ContentLink>
     </div>
     <span class="spacer" />
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
@@ -437,10 +438,10 @@ async function remove(item, removeFile) {
   <div v-else-if="!items.length" class="card empty">
     <FileArchive :size="26" />
     <p>还没有下载任务。每个章节会单独打包成一个 CBZ 文件。</p>
-    <RouterLink class="btn small" to="/discover">
+    <ContentLink class="btn small" to="/discover">
       <Compass :size="15" />
       浏览漫画源
-    </RouterLink>
+    </ContentLink>
   </div>
   <div v-else>
     <div v-if="!visible.length" class="card empty">
@@ -469,14 +470,14 @@ async function remove(item, removeFile) {
             @contextmenu="onContextMenu(entry.item, entry.index, $event)"
             @click="selecting ? toggleRow(entry.item, entry.index, $event) : null"
           >
-            <RouterLink
+            <ContentLink
               class="download-work"
               :to="{ name: 'comic', params: { sourceId: entry.item.sourceId, comicId: entry.item.comicId } }"
               :title="entry.item.comicTitle"
               @click.stop
             >
               {{ entry.item.comicTitle }}
-            </RouterLink>
+            </ContentLink>
             <span class="download-chapter" :title="entry.item.chapterTitle">{{ entry.item.chapterTitle }}</span>
             <div class="download-status">
               <div class="download-status-head">

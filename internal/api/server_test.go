@@ -9,8 +9,66 @@ import (
 	"testing"
 
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/sources"
 )
+
+type lazyFilterFixture struct {
+	info    model.SourceInfo
+	filters []model.FilterGroup
+	calls   int
+}
+
+func (f *lazyFilterFixture) Info() model.SourceInfo { return f.info }
+func (f *lazyFilterFixture) Search(context.Context, source.Account, string, int) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
+}
+func (f *lazyFilterFixture) Browse(context.Context, source.Account, model.BrowseOptions, int) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
+}
+func (f *lazyFilterFixture) Detail(context.Context, source.Account, string) (model.Comic, error) {
+	return model.Comic{}, nil
+}
+func (f *lazyFilterFixture) Chapters(context.Context, source.Account, string) ([]model.Chapter, error) {
+	return nil, nil
+}
+func (f *lazyFilterFixture) Pages(context.Context, source.Account, string, model.Chapter) ([]model.Page, error) {
+	return nil, nil
+}
+func (f *lazyFilterFixture) Filters(context.Context) ([]model.FilterGroup, error) {
+	f.calls++
+	return f.filters, nil
+}
+
+func TestLazyPluginFiltersCanBeNormalizedAndMarkedDisabled(t *testing.T) {
+	item := &lazyFilterFixture{
+		info: model.SourceInfo{ID: "plugin-source"},
+		filters: []model.FilterGroup{{
+			Key:   "category",
+			Label: "类型",
+			Options: []model.FilterOption{
+				{Value: "MANGA", Label: "漫画"},
+				{Value: "MANHWA", Label: "韩漫"},
+			},
+		}},
+	}
+	groups, err := sourceFilterGroups(context.Background(), item)
+	if err != nil {
+		t.Fatalf("sourceFilterGroups: %v", err)
+	}
+	if item.calls != 1 || len(groups) != 1 {
+		t.Fatalf("lazy filters = calls %d groups %d, want 1 and 1", item.calls, len(groups))
+	}
+
+	normalized := normalizeDisabledCategories(groups, []string{"MANHWA", "missing", "MANHWA"})
+	if len(normalized) != 1 || normalized[0] != "MANHWA" {
+		t.Fatalf("normalized disabled categories = %#v, want [MANHWA]", normalized)
+	}
+	marked := applyDisabledCategories(groups, normalized)
+	if !marked[0].Options[1].Disabled || marked[0].Options[0].Disabled {
+		t.Fatalf("disabled flags = %#v, want only MANHWA disabled", marked[0].Options)
+	}
+}
 
 func TestParseLogEntryAddsModuleAndLevel(t *testing.T) {
 	entry := parseLogEntry("2026/10/11 16:00:00 downloader: chapter failed: timeout")

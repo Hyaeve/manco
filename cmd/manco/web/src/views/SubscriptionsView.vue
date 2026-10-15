@@ -1,6 +1,5 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import {
   Archive,
   BookOpen,
@@ -21,6 +20,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
@@ -352,10 +352,10 @@ async function downloadAll(item) {
       <RefreshCw :size="15" :class="{ spin: loading }" />
       刷新
     </button>
-    <RouterLink class="btn secondary small archive-entry" to="/archive">
+        <ContentLink class="btn secondary small archive-entry" to="/archive">
       <Archive :size="15" />
       归档集
-    </RouterLink>
+        </ContentLink>
   </div>
 
   <div v-if="loading && !items.length" class="empty">
@@ -365,7 +365,7 @@ async function downloadAll(item) {
   <div v-else-if="!items.length" class="card empty">
     <Rss :size="26" />
     <p>还没有订阅。在探索发现打开作品后即可订阅追更。</p>
-    <RouterLink class="btn small" to="/discover">去探索发现</RouterLink>
+        <ContentLink class="btn small" to="/discover">去探索发现</ContentLink>
   </div>
   <div v-else-if="!visibleItems.length" class="card empty">
     <p>当前栏目下没有订阅。</p>
@@ -389,22 +389,22 @@ async function downloadAll(item) {
         <SourceIcon :src="sourceIcon(item)" :kind="itemKind(item)" :alt="item.sourceId" :size="22" />
       </button>
       <div class="subscription-main">
-        <RouterLink
+        <ContentLink
           class="subscription-cover"
           :class="{ blurred: item.coverBlur }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
         >
           <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
           <BookOpen v-else :size="24" />
-        </RouterLink>
+        </ContentLink>
         <div class="subscription-meta">
-          <RouterLink
+          <ContentLink
             class="subscription-title"
             :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
             :title="item.title"
           >
             {{ cardTitle(item) }}
-          </RouterLink>
+          </ContentLink>
           <span class="subscription-sub">{{ item.author || '未知作者' }}</span>
           <span class="subscription-sub">
             {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}
@@ -418,12 +418,12 @@ async function downloadAll(item) {
             <span>{{ item.downloadDir || '未设置下载目录' }}</span>
           </div>
           <div class="subscription-job-stats">
-            <RouterLink class="subscription-stat success" :to="downloadTaskLink(item, 'completed')">
+            <ContentLink class="subscription-stat success" :to="downloadTaskLink(item, 'completed')">
               成功 {{ jobStats(item).success }}
-            </RouterLink>
-            <RouterLink class="subscription-stat failed" :to="downloadTaskLink(item, 'failed')">
+            </ContentLink>
+            <ContentLink class="subscription-stat failed" :to="downloadTaskLink(item, 'failed')">
               失败 {{ jobStats(item).failed }}
-            </RouterLink>
+            </ContentLink>
           </div>
         </div>
       </div>

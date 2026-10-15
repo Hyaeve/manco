@@ -46,6 +46,7 @@ const addRepositoryID = ref('')
 const addUseProxy = ref(true)
 const sourceSearch = ref('')
 const categoryOpen = ref(false)
+const categoryLoading = ref('')
 const categorySource = ref(null)
 const categorySelection = ref({})
 const editorOpen = ref(false)
@@ -365,8 +366,22 @@ function groupAllSelected(group) {
   return values.length > 0 && values.every((value) => categorySelection.value[group.key]?.includes(value))
 }
 
-function openCategory(item) {
-  const groups = categoryFilters(item)
+async function openCategory(item) {
+  let groups = categoryFilters(item)
+  if (!groups.length && !item.filtersLoaded) {
+    categoryLoading.value = item.id
+    try {
+      const result = await api.sourceFilters(item.id)
+      item.filters = Array.isArray(result.items) ? result.items : []
+      item.filtersLoaded = true
+      groups = categoryFilters(item)
+    } catch (err) {
+      notify(`${item.name} 分类加载失败：${err.message}`, 'error')
+      return
+    } finally {
+      categoryLoading.value = ''
+    }
+  }
   if (!groups.length) {
     notify(`${item.name} 暂无可配置分类`, 'info')
     return
@@ -416,6 +431,7 @@ async function saveCategories() {
       ...group,
       options: (group.options || []).map((option) => ({ ...option, disabled: disabled.has(String(option.value)) })),
     }))
+    item.filtersLoaded = true
     categoryOpen.value = false
     notify(`${item.name} 的分类显示设置已保存`, 'success')
   } catch (err) {
@@ -1156,9 +1172,11 @@ function onDragEnd() {
           class="icon-btn source-category-button"
           type="button"
           aria-label="筛选分类"
+          :disabled="categoryLoading === item.id"
           @click="openCategory(item)"
         >
-          <SlidersHorizontal :size="17" />
+          <Loader2 v-if="categoryLoading === item.id" :size="17" class="spin" />
+          <SlidersHorizontal v-else :size="17" />
         </button>
         <button
           class="icon-btn source-more-button"

@@ -1863,6 +1863,24 @@
   line-height: 1.72;
 }
 
+.detail-info {
+  min-width: 0;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.detail-info-head h2 {
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.detail-info .description {
+  max-height: none;
+  overflow: visible;
+}
+
 .detail-chapters {
   margin-top: 0;
   padding: 0;

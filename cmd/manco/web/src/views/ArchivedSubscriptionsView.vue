@@ -1,8 +1,8 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { RouterLink } from 'vue-router'
 import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { notify } from '../stores/notices'
 
@@ -87,9 +87,9 @@ function jobStats(item) {
   <div class="page-panel archive-page">
     <div class="toolbar archive-toolbar">
       <div class="inline">
-        <RouterLink class="btn ghost icon" to="/subscriptions" aria-label="返回订阅清单">
+    <ContentLink class="btn ghost icon" to="/subscriptions" aria-label="返回订阅清单">
           <ArrowLeft :size="17" />
-        </RouterLink>
+    </ContentLink>
         <strong>归档集</strong>
         <span class="badge">{{ items.length }}</span>
       </div>
@@ -110,14 +110,14 @@ function jobStats(item) {
     </div>
     <div v-else class="archive-grid archive-page-grid">
       <article v-for="item in items" :key="item.id" class="archive-card">
-        <RouterLink class="archive-cover" :to="archiveComicLink(item)" :title="item.title">
+        <ContentLink class="archive-cover" :to="archiveComicLink(item)" :title="item.title">
           <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
           <BookOpen v-else :size="22" />
-        </RouterLink>
+        </ContentLink>
         <div class="archive-meta">
-          <RouterLink class="archive-title" :to="archiveComicLink(item)" :title="item.title">
+          <ContentLink class="archive-title" :to="archiveComicLink(item)" :title="item.title">
             {{ item.title }}
-          </RouterLink>
+          </ContentLink>
           <span class="archive-sub">{{ item.author || '未知作者' }}</span>
           <span class="archive-sub">
             {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}
@@ -128,12 +128,12 @@ function jobStats(item) {
           <span class="subscription-source archive-stat-source">
             <SourceIcon :src="sources[item.sourceId]?.icon || ''" :kind="itemKind(item)" :alt="item.sourceId" :size="18" />
           </span>
-          <RouterLink class="subscription-stat success" :to="completedTaskLink(item)">
+          <ContentLink class="subscription-stat success" :to="completedTaskLink(item)">
             成功 {{ jobStats(item).success }}
-          </RouterLink>
-          <RouterLink class="subscription-stat failed" :to="completedTaskLink(item)">
+          </ContentLink>
+          <ContentLink class="subscription-stat failed" :to="completedTaskLink(item)">
             失败 {{ jobStats(item).failed }}
-          </RouterLink>
+          </ContentLink>
         </div>
       </article>
     </div>

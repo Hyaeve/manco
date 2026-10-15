@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
   BookMarked,
@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import ContentLink from '../components/ContentLink.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { notify } from '../stores/notices'
@@ -583,7 +584,7 @@ function latestLabel(item) {
         <span>没有作品</span>
       </div>
       <div v-else-if="viewMode === 'grid'" class="source-comic-grid source-comic-grid-7">
-        <RouterLink
+        <ContentLink
           v-for="item in visibleItems"
           :key="`${item.sourceId}-${item.id}`"
           class="comic-card source-comic-card"
@@ -598,10 +599,10 @@ function latestLabel(item) {
             <span class="comic-title">{{ item.title }}</span>
             <span class="comic-meta">{{ latestLabel(item) }}</span>
           </div>
-        </RouterLink>
+        </ContentLink>
       </div>
       <div v-else class="source-list-view">
-        <RouterLink
+        <ContentLink
           v-for="item in visibleItems"
           :key="`${item.sourceId}-${item.id}`"
           class="source-list-card"
@@ -617,7 +618,7 @@ function latestLabel(item) {
             <span>{{ item.author || '未知作者' }} · {{ item.status || '连载中' }}</span>
             <p>{{ item.description || '暂无简介' }}</p>
           </div>
-        </RouterLink>
+        </ContentLink>
       </div>
 
       <div class="source-pagination">
