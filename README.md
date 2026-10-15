@@ -230,7 +230,7 @@ Kototoro Parsers 插件的使用方式：
 发新版本：
 
 ```bash
-git tag v0.1.31 && git push origin v0.1.31   # 构建并发布 :v0.1.31
+git tag v0.1.32 && git push origin v0.1.32   # 构建并发布 :v0.1.32
 docker compose pull && docker compose up -d  # NAS 上升级到最新镜像
 ```
 

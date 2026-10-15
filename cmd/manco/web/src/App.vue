@@ -3,6 +3,7 @@ import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Activity,
+  Archive,
   Bell,
   CircleCheck,
   UserRound,
@@ -86,7 +87,9 @@ const navItems = [
   { name: 'dashboard', label: '总览', to: '/', icon: LayoutDashboard },
   { name: 'discover', label: '探索发现', to: '/discover', icon: Compass },
   { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
+  { name: 'archive', label: '归档集', to: '/archive', icon: Archive },
   { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },
+  { name: 'completed', label: '已完成', to: '/completed', icon: CircleCheck },
   { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
   { name: 'sources', label: '资源仓库', to: '/sources', icon: Server },
 ]

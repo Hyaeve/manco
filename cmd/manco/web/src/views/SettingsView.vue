@@ -249,9 +249,9 @@ async function checkUpdate() {
         <div class="settings-card-title">
           <div class="inline">
             <Archive :size="17" />
-            <h2>订阅归档</h2>
+            <h2>订阅归档与繁转简</h2>
           </div>
-          <Loader2 v-if="saving === 'archive'" :size="16" class="spin muted" />
+          <Loader2 v-if="saving === 'archive' || saving === 'convert'" :size="16" class="spin muted" />
         </div>
         <p class="muted small settings-card-help">
           全局设置。超过设定天数没有检测到更新时关闭订阅；关闭满 15 天无人重新启用后自动归档。
@@ -270,23 +270,19 @@ async function checkUpdate() {
           <span>天未更新后关闭订阅</span>
         </div>
         <p class="muted small">留空或填 0 表示不启用，修改后自动保存。</p>
-      </section>
-
-      <section id="settings-convert" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
+        <div id="settings-convert" class="settings-feature-group">
+          <div class="inline settings-feature-heading">
             <Languages :size="17" />
-            <h2>繁转简</h2>
+            <h3>繁转简</h3>
           </div>
-          <Loader2 v-if="saving === 'convert'" :size="16" class="spin muted" />
+          <p class="muted small settings-card-help">
+            开启后探索发现、搜索结果和作品详情中的名称、作者、简介与标签统一显示为简体中文，原始数据与本地缓存不会被改写。
+          </p>
+          <label class="switch-row">
+            <input v-model="form.convertToSimplified" type="checkbox" @change="saveConvertToSimplified" />
+            <span>全局繁转简</span>
+          </label>
         </div>
-        <p class="muted small settings-card-help">
-          开启后探索发现、搜索结果和作品详情中的名称、作者、简介与标签统一显示为简体中文，原始数据与本地缓存不会被改写。
-        </p>
-        <label class="switch-row">
-          <input v-model="form.convertToSimplified" type="checkbox" @change="saveConvertToSimplified" />
-          <span>全局繁转简</span>
-        </label>
       </section>
 
       <section id="settings-about" class="card card-pad settings-compact-card">

@@ -16,34 +16,38 @@ defineProps({
     xmlns="http://www.w3.org/2000/svg"
   >
     <path
-      class="logo-page"
-      d="M13.5 17.2c6.2-2.1 12.4-2.1 18.5 0v32.5c-6.1-2.1-12.3-2.1-18.5 0z"
+      class="logo-panel"
+      d="M15.5 11.5h33a6 6 0 0 1 6 6v29a6 6 0 0 1-6 6h-33a6 6 0 0 1-6-6v-29a6 6 0 0 1 6-6Z"
     />
     <path
-      class="logo-page"
-      d="M50.5 17.2c-6.2-2.1-12.4-2.1-18.5 0v32.5c6.1-2.1 12.3-2.1 18.5 0z"
+      class="logo-bookmark"
+      d="M40.2 11.5v13.4l5.5-4.6 5.5 4.6V11.5"
     />
-    <path
-      class="logo-arrow"
-      d="M32 25.5v12.6m-5.2-5.2 5.2 5.2 5.2-5.2"
-    />
+    <circle class="logo-dot" cx="37.5" cy="46.5" r="4" />
   </svg>
 </template>
 
 <style scoped>
-.logo-page,
-.logo-arrow {
+.logo-panel,
+.logo-bookmark {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.logo-page {
+.logo-panel,
+.logo-bookmark {
   stroke: currentColor;
-  stroke-width: 3;
 }
 
-.logo-arrow {
-  stroke: var(--logo-accent, #75864a);
+.logo-panel {
+  stroke-width: 3.2;
+}
+
+.logo-bookmark {
   stroke-width: 2.8;
+}
+
+.logo-dot {
+  fill: var(--logo-accent, #e0a338);
 }
 </style>

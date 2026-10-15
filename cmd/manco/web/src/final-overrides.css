@@ -959,6 +959,21 @@
   text-align: center;
 }
 
+.settings-feature-group {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  scroll-margin-top: 24px;
+}
+
+.settings-feature-heading {
+  margin-bottom: 8px;
+}
+
+.settings-feature-heading h3 {
+  font-size: 14px;
+}
+
 .settings-bottom-pair {
   margin-top: 2px;
 }
@@ -3993,6 +4008,28 @@ svg.source-editor-icon {
   display: flex;
   grid-column: 1 / -1;
   gap: 10px;
+}
+
+/* v0.1.32：归档集与已完成拆为独立栏目页面 */
+.archive-page-grid {
+  margin-top: 14px;
+}
+
+.archive-stat-source {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.completed-page .completed-task-groups {
+  margin-top: 14px;
+}
+
+.completed-page .completed-task-group {
+  background: var(--surface);
 }
 
 /* 归档集进入详情页：已下载章节正常显示，未下载章节标灰。 */
