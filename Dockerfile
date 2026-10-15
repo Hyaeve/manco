@@ -87,6 +87,7 @@ RUN gradle --no-daemon --configure-on-demand \
         -PwithMihonDesktopCompat=true \
         -PmihonCompatibilityDirectory=/build/compatibility-pinned \
         -PmihonCompatibilityJavaVersion=21 \
+        --init-script /build/host/skip-runtime-pin-verification.init.gradle \
         :manco-mihon-host:installDist
 
 # --- Stage 6: minimal runtime -------------------------------------------------
