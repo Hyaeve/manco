@@ -140,6 +140,10 @@ func TestRequeueRunningJobsRestoresInterruptedWork(t *testing.T) {
 	if err := repository.UpdateDownloadJob(ctx, running.ID, "running", 12, 3, "", ""); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
+	canceled := createJob(t, repository, "2")
+	if err := repository.UpdateDownloadJob(ctx, canceled.ID, "canceled", 8, 2, "", "服务停止"); err != nil {
+		t.Fatalf("mark canceled: %v", err)
+	}
 	if err := repository.RequeueRunningJobs(ctx); err != nil {
 		t.Fatalf("requeue running jobs: %v", err)
 	}
@@ -148,11 +152,20 @@ func TestRequeueRunningJobsRestoresInterruptedWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list queued: %v", err)
 	}
-	if len(jobs) != 1 || jobs[0].ID != running.ID {
-		t.Fatalf("queued jobs = %v, want only job %d", jobs, running.ID)
+	if len(jobs) != 2 {
+		t.Fatalf("queued jobs = %v, want 2 restored jobs", jobs)
 	}
-	if jobs[0].Status != "queued" {
-		t.Fatalf("requeued status = %q, want queued", jobs[0].Status)
+	wantProgress := map[int64]int{running.ID: 3, canceled.ID: 2}
+	for _, job := range jobs {
+		if job.Status != "queued" {
+			t.Fatalf("job %d requeued status = %q, want queued", job.ID, job.Status)
+		}
+		if job.CompletedPages != wantProgress[job.ID] {
+			t.Fatalf("job %d completed pages = %d, want %d", job.ID, job.CompletedPages, wantProgress[job.ID])
+		}
+		if job.StartedAt != nil || job.FinishedAt != nil || job.Error != "" {
+			t.Fatalf("job %d retained interrupted metadata: %+v", job.ID, job)
+		}
 	}
 }
 

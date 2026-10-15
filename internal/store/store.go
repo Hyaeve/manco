@@ -916,11 +916,16 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	return jobs, rows.Err()
 }
 
-// RequeueRunningJobs resets jobs that were interrupted by a restart back to
-// the queue. It must only be called once at startup: the download engine owns
-// the running state afterwards and requeueing mid-run would corrupt progress.
+// RequeueRunningJobs restores jobs interrupted by a process restart. Graceful
+// shutdown cancels active contexts, so canceled jobs are included alongside
+// running jobs. Page progress is preserved and the downloader resumes cached
+// pages instead of starting the chapter from zero. It must only be called once
+// at startup: the download engine owns the running state afterwards.
 func (s *Store) RequeueRunningJobs(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE download_jobs SET status = 'queued', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running'`)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE download_jobs
+		SET status = 'queued', error = '', started_at = NULL, finished_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE status IN ('running', 'canceled')`)
 	return err
 }
 
@@ -1115,4 +1120,3 @@ func (s *Store) FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID
 	return jobs, rows.Err()
 }
 
-// RequeueRunningJobs resets jobs that were interrupted by a restart back to

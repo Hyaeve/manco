@@ -196,6 +196,75 @@ func (s *staticSource) Pages(_ context.Context, _ source.Account, _ string, chap
 	return s.pages[chapter.ID], nil
 }
 
+type resumableSource struct {
+	*staticSource
+	mu             sync.Mutex
+	cond           *sync.Cond
+	firstDone      bool
+	failSecond     bool
+	firstRequests  int
+	secondRequests int
+	firstPage      []byte
+	secondPage     []byte
+}
+
+func newResumableSource(base *staticSource, firstPage, secondPage []byte) *resumableSource {
+	source := &resumableSource{
+		staticSource: base,
+		firstPage:    firstPage,
+		secondPage:   secondPage,
+	}
+	source.cond = sync.NewCond(&source.mu)
+	return source
+}
+
+func (s *resumableSource) PageImage(_ context.Context, _ source.Account, _ string, _ model.Chapter, page model.Page) ([]byte, string, error) {
+	switch page.URL {
+	case "page-1":
+		s.mu.Lock()
+		s.firstRequests++
+		s.firstDone = true
+		s.cond.Broadcast()
+		data := s.firstPage
+		s.mu.Unlock()
+		return data, "", nil
+	case "page-2":
+		s.mu.Lock()
+		for s.failSecond && !s.firstDone {
+			s.cond.Wait()
+		}
+		s.secondRequests++
+		fail := s.failSecond
+		data := s.secondPage
+		s.mu.Unlock()
+		if fail {
+			return nil, "", fmt.Errorf("temporary failure")
+		}
+		return data, "", nil
+	default:
+		return nil, "", fmt.Errorf("unknown page %q", page.URL)
+	}
+}
+
+func (s *resumableSource) CoverImage(context.Context, source.Account, model.Comic) ([]byte, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.firstPage, "", nil
+}
+
+func (s *resumableSource) setFailSecond(fail bool) {
+	s.mu.Lock()
+	s.failSecond = fail
+	s.cond.Broadcast()
+	s.mu.Unlock()
+}
+
+func (s *resumableSource) requestCounts() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.firstRequests, s.secondRequests
+}
+
 func pngImage(t *testing.T, shade uint8) []byte {
 	t.Helper()
 	canvas := image.NewRGBA(image.Rect(0, 0, 8, 8))
@@ -345,6 +414,82 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 	if !bytes.Contains(embedded, []byte("<Series>测试作品</Series>")) || !bytes.Contains(embedded, []byte("<PageCount>3</PageCount>")) {
 		t.Fatalf("embedded ComicInfo.xml content mismatch: %s", embedded)
+	}
+}
+
+func TestDownloadResumesCachedPagesAfterInterruption(t *testing.T) {
+	firstPage := pngImage(t, 0x32)
+	secondPage := pngImage(t, 0x33)
+	resumable := newResumableSource(&staticSource{
+		detail: model.Comic{
+			SourceID: "stub",
+			ID:       "1",
+			Title:    "断点作品",
+		},
+		pages: map[string][]model.Page{
+			"1": {
+				{URL: "page-1"},
+				{URL: "page-2"},
+			},
+		},
+	}, firstPage, secondPage)
+	resumable.setFailSecond(true)
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(resumable)
+
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	cacheDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 1, 2, log.New(io.Discard, "", 0))
+	engine.SetCacheDir(cacheDir)
+	ctx := context.Background()
+	job, err := store.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:     "stub",
+		ComicID:      "1",
+		ComicTitle:   "断点作品",
+		ChapterID:    "1",
+		ChapterTitle: "第1话",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	if err := engine.download(ctx, job); err == nil {
+		t.Fatal("first download unexpectedly succeeded")
+	}
+	jobDir := filepath.Join(cacheDir, fmt.Sprintf("job-%d", job.ID))
+	if _, err := os.Stat(filepath.Join(jobDir, "001.bin")); err != nil {
+		t.Fatalf("first page was not retained for resume: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(jobDir, "002.bin")); !os.IsNotExist(err) {
+		t.Fatalf("failed page should not be cached: %v", err)
+	}
+	if interrupted, _ := store.find(job.ID); interrupted.CompletedPages != 1 || interrupted.TotalPages != 2 {
+		t.Fatalf("interrupted progress = %d/%d, want 1/2", interrupted.CompletedPages, interrupted.TotalPages)
+	}
+
+	resumable.setFailSecond(false)
+	if err := engine.download(ctx, job); err != nil {
+		t.Fatalf("resumed download: %v", err)
+	}
+	firstRequests, secondRequests := resumable.requestCounts()
+	if firstRequests != 1 {
+		t.Fatalf("first page requests = %d, want 1 cached request", firstRequests)
+	}
+	if secondRequests != 2 {
+		t.Fatalf("second page requests = %d, want one failed and one resumed request", secondRequests)
+	}
+	archive := readZip(t, filepath.Join(downloadDir, "断点作品", "第1话.cbz"))
+	assertEntries(t, archive, []string{"001.png", "002.png", "ComicInfo.xml"})
+	if !bytes.Equal(archive["001.png"], firstPage) || !bytes.Equal(archive["002.png"], secondPage) {
+		t.Fatal("resumed archive content mismatch")
+	}
+	if _, err := os.Stat(jobDir); !os.IsNotExist(err) {
+		t.Fatalf("completed resume cache was not cleaned up: %v", err)
+	}
+	if completed, _ := store.find(job.ID); completed.CompletedPages != 2 || completed.TotalPages != 2 {
+		t.Fatalf("resumed progress = %d/%d, want 2/2", completed.CompletedPages, completed.TotalPages)
 	}
 }
 

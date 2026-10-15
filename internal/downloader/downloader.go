@@ -445,6 +445,11 @@ func (e *Engine) runJob(parent context.Context, job model.DownloadJob) {
 		e.markBatchComplete(job.SourceID)
 		return
 	}
+	// Reload persisted page progress before recording the terminal state. A
+	// resumed attempt may have advanced further than the queued snapshot.
+	if latest, reloadErr := e.store.DownloadJob(context.Background(), job.ID); reloadErr == nil {
+		job = latest
+	}
 	message := err.Error()
 	if len(message) > 500 {
 		message = message[:500]
@@ -485,7 +490,9 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if source.KindOf(item.Info()) == source.KindBook {
 		return e.downloadBook(ctx, item, account, job)
 	}
-	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", 0, 0, "", ""); err != nil {
+	// Keep the persisted progress from a previous attempt until the current
+	// page list is available, so a list-pages failure does not erase it.
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", job.TotalPages, job.CompletedPages, "", ""); err != nil {
 		return err
 	}
 	chapter := model.Chapter{
@@ -501,48 +508,80 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if len(pages) == 0 {
 		return errors.New("章节没有可用图片")
 	}
-	_ = e.store.UpdateDownloadJob(ctx, job.ID, "running", len(pages), 0, "", "")
 
 	downloadRoot, err := e.jobDownloadDir(job)
 	if err != nil {
 		return err
 	}
 	tempDir := e.stagingDir(job)
-	if err := os.RemoveAll(tempDir); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
 		return err
 	}
-	defer os.RemoveAll(tempDir)
+	removeStagingParts(tempDir)
+	cachedPages := countCachedPages(tempDir, len(pages))
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", len(pages), cachedPages, "", ""); err != nil {
+		return err
+	}
+	finished := false
+	defer func() {
+		if finished {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
 
 	client := e.registry.ClientForAccount(account)
 	if client == nil {
 		client = source.NewHTTPClient()
 	}
 	type fetched struct {
-		index        int
-		data         []byte
-		materialized bool
-		err          error
+		index  int
+		cached bool
+		err    error
 	}
 	results := make(chan fetched, len(pages))
 	semaphore := make(chan struct{}, e.pageConcurrency(job.SourceID))
+	pageCtx, cancelPages := context.WithCancel(ctx)
+	defer cancelPages()
 	var wait sync.WaitGroup
 	for index, page := range pages {
 		index, page := index, page
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
+			cachePath := stagingPagePath(tempDir, index)
+			if info, statErr := os.Stat(cachePath); statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
+				results <- fetched{index: index, cached: true}
+				return
+			}
 			select {
 			case semaphore <- struct{}{}:
-			case <-ctx.Done():
-				results <- fetched{index: index, err: ctx.Err()}
+			case <-pageCtx.Done():
+				results <- fetched{index: index, err: pageCtx.Err()}
 				return
 			}
 			defer func() { <-semaphore }()
-			data, materialized, err := fetchPageImage(ctx, client, account, item, job.ComicID, chapter, page)
-			results <- fetched{index: index, data: data, materialized: materialized, err: err}
+			data, materialized, fetchErr := fetchPageImage(pageCtx, client, account, item, job.ComicID, chapter, page)
+			if fetchErr != nil {
+				results <- fetched{index: index, err: fetchErr}
+				return
+			}
+			processed := data
+			if page.DescrambleParts > 0 && !materialized {
+				processed, fetchErr = Descramble(data, page.DescrambleParts)
+				if fetchErr != nil {
+					results <- fetched{index: index, err: fmt.Errorf("解扰失败: %w", fetchErr)}
+					return
+				}
+			}
+			if len(processed) == 0 {
+				results <- fetched{index: index, err: errors.New("页面为空")}
+				return
+			}
+			if writeErr := writeFileAtomic(cachePath, processed); writeErr != nil {
+				results <- fetched{index: index, err: writeErr}
+				return
+			}
+			results <- fetched{index: index}
 		}()
 	}
 	go func() {
@@ -550,37 +589,34 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		close(results)
 	}()
 
-	images := make([][]byte, len(pages))
-	materialized := make([]bool, len(pages))
-	completed := 0
+	completed := cachedPages
+	var firstErr error
 	for result := range results {
 		if result.err != nil {
-			return fmt.Errorf("第 %d 页下载失败: %w", result.index+1, result.err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("第 %d 页下载失败: %w", result.index+1, result.err)
+				cancelPages()
+			}
+			continue
 		}
-		images[result.index] = result.data
-		materialized[result.index] = result.materialized
+		if result.cached {
+			continue
+		}
 		completed++
 		_ = e.store.UpdateDownloadProgress(ctx, job.ID, completed)
 	}
+	if firstErr != nil {
+		return firstErr
+	}
 
-	entries := make([]pageEntry, 0, len(images))
-	for index, data := range images {
-		if len(data) == 0 {
-			return fmt.Errorf("第 %d 页为空", index+1)
+	entries := make([]pageEntry, 0, len(pages))
+	for index, page := range pages {
+		path := stagingPagePath(tempDir, index)
+		extension, extensionErr := imageExtensionFromFile(path, page.URL)
+		if extensionErr != nil {
+			return fmt.Errorf("读取第 %d 页缓存失败: %w", index+1, extensionErr)
 		}
-		processed := data
-		if pages[index].DescrambleParts > 0 && !materialized[index] {
-			processed, err = Descramble(data, pages[index].DescrambleParts)
-			if err != nil {
-				return fmt.Errorf("第 %d 页解扰失败: %w", index+1, err)
-			}
-		}
-		extension := imageExtension(data, pages[index].URL)
 		name := fmt.Sprintf("%03d%s", index+1, extension)
-		path := filepath.Join(tempDir, name)
-		if err := os.WriteFile(path, processed, 0o644); err != nil {
-			return err
-		}
 		entries = append(entries, pageEntry{name: name, path: path})
 	}
 
@@ -634,12 +670,61 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if err := writeZip(outputPath, entries); err != nil {
 		return err
 	}
-	return e.store.UpdateDownloadJob(ctx, job.ID, "completed", len(pages), len(pages), outputPath, "")
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", len(pages), len(pages), outputPath, ""); err != nil {
+		return err
+	}
+	finished = true
+	return nil
 }
 
 type pageEntry struct {
 	name string
 	path string
+}
+
+func stagingPagePath(dir string, index int) string {
+	return filepath.Join(dir, fmt.Sprintf("%03d.bin", index+1))
+}
+
+func countCachedPages(dir string, total int) int {
+	count := 0
+	for index := 0; index < total; index++ {
+		info, err := os.Stat(stagingPagePath(dir, index))
+		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func removeStagingParts(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".part") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
+}
+
+func imageExtensionFromFile(path, address string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	header := make([]byte, 16)
+	count, err := file.Read(header)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	if extension := detectImageExtension(header[:count]); extension != "" {
+		return extension, nil
+	}
+	return imageExtension(header[:count], address), nil
 }
 
 // ComicInfo mirrors the ComicInfo.xml schema used by comic readers so the
