@@ -8,10 +8,12 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   placeholder: { type: String, default: '留空使用默认目录' },
   suffix: { type: String, default: '' },
+  suffixValue: { type: String, default: null },
+  convertToSimplified: { type: Boolean, default: false },
   allowDefault: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['update:modelValue', 'change'])
+const emit = defineEmits(['update:modelValue', 'update:suffixValue', 'change', 'suffixChange'])
 
 const opened = ref(false)
 const loading = ref(false)
@@ -27,10 +29,38 @@ const folderName = ref('')
 const showCreate = ref(false)
 const error = ref('')
 
+// 作品目录会补在选择的基础目录后面。未手动修改时使用后端返回的实际目录名
+//（含繁转简与非法字符替换）；用户改过以后，就以该名称为绑定目录。
+const suffixDraft = ref('')
+let suffixToken = 0
+async function refreshSuffix() {
+  const custom = String(props.suffixValue ?? '').trim()
+  if (custom) {
+    suffixDraft.value = custom
+    return
+  }
+  const text = String(props.suffix || '').trim()
+  if (!text) {
+    suffixDraft.value = ''
+    return
+  }
+  const token = ++suffixToken
+  try {
+    const payload = await api.seriesDirName(text, Boolean(props.convertToSimplified))
+    if (token === suffixToken) suffixDraft.value = String(payload?.name || text).trim()
+  } catch {
+    if (token === suffixToken) suffixDraft.value = text
+  }
+}
+
+watch([() => props.suffix, () => props.suffixValue, () => props.convertToSimplified], refreshSuffix, {
+  immediate: true,
+})
+
 const previewBase = computed(() =>
   current.value || draft.value.trim() || (props.allowDefault ? defaultDir.value : '') || '选择下载目录',
 )
-const previewSuffix = computed(() => String(props.suffix || '').replace(/^[/\\]+|[/\\]+$/g, ''))
+const previewSuffix = computed(() => suffixDraft.value.replace(/^[/\\]+|[/\\]+$/g, ''))
 const previewPath = computed(() => (previewSuffix.value ? `${previewBase.value}/${previewSuffix.value}` : previewBase.value))
 
 watch(
@@ -45,6 +75,14 @@ function commit(value = draft.value) {
   draft.value = next
   emit('update:modelValue', next)
   emit('change', next)
+}
+
+function commitSuffix() {
+  const next = suffixDraft.value.trim()
+  suffixDraft.value = next
+  emit('update:suffixValue', next)
+  emit('suffixChange', next)
+  if (!next) refreshSuffix()
 }
 
 async function loadRoots() {
@@ -118,11 +156,13 @@ function closePicker() {
 }
 
 function selectBase(path) {
+  commitSuffix()
   commit(path)
   closePicker()
 }
 
 function selectDefault() {
+  commitSuffix()
   commit('')
   closePicker()
 }
@@ -157,21 +197,34 @@ async function createFolder() {
 }
 
 function chooseCurrent() {
+  commitSuffix()
   selectBase(current.value || defaultDir.value)
 }
 </script>
 
 <template>
   <div class="directory-picker-wrap">
-    <div class="directory-picker-control">
+    <div class="directory-picker-control" :class="{ 'has-suffix': suffix || suffixValue }">
       <input
         v-model="draft"
-        class="input"
+        class="directory-picker-input"
         :placeholder="placeholder"
         spellcheck="false"
         @keyup.enter="commit()"
         @blur="commit()"
       />
+      <span v-if="suffix || suffixValue" class="directory-path-edit">
+        <span>/</span>
+        <input
+          v-model="suffixDraft"
+          class="directory-path-suffix-input"
+          :title="previewPath"
+          aria-label="作品目录名称"
+          spellcheck="false"
+          @keyup.enter="commitSuffix"
+          @blur="commitSuffix"
+        />
+      </span>
       <button
         class="directory-picker-button"
         type="button"
@@ -182,9 +235,6 @@ function chooseCurrent() {
         <FolderOpen :size="18" />
       </button>
     </div>
-    <p v-if="previewSuffix" class="directory-path-preview" :title="previewPath">
-      <span>{{ previewBase }}</span><span class="directory-path-suffix">/{{ previewSuffix }}</span>
-    </p>
 
     <Teleport to="body">
       <div v-if="opened" class="directory-modal-backdrop" @click.self="closePicker">
@@ -192,7 +242,7 @@ function chooseCurrent() {
           <header class="directory-modal-head">
             <div>
               <h2>选择下载位置</h2>
-              <p>选择基础目录，作品目录会自动补在当前位置。</p>
+              <p>选择基础目录，作品目录名称可在右侧直接修改。</p>
             </div>
             <div class="directory-head-actions">
               <button class="btn secondary small" type="button" :disabled="creating" @click="showCreate = !showCreate">
@@ -286,7 +336,17 @@ function chooseCurrent() {
           <footer class="directory-modal-foot">
             <div class="directory-preview" :title="previewPath">
               <span>实际位置：</span>
-              <strong>{{ previewBase }}</strong><em>/{{ previewSuffix || '' }}</em>
+              <strong>{{ previewBase }}</strong>
+              <em v-if="suffix || suffixValue">
+                /
+                <input
+                  v-model="suffixDraft"
+                  aria-label="作品目录名称"
+                  spellcheck="false"
+                  @keyup.enter="commitSuffix"
+                  @blur="commitSuffix"
+                />
+              </em>
             </div>
             <div class="inline">
               <button v-if="allowDefault" class="btn secondary" type="button" @click="selectDefault">使用默认目录</button>
@@ -311,11 +371,35 @@ function chooseCurrent() {
 
 .directory-picker-control {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 40px;
+  padding: 0 42px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.directory-picker-control .input {
-  min-height: 40px;
-  padding-right: 44px;
+.directory-picker-control:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.directory-picker-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.directory-picker-input::placeholder {
+  color: var(--text-muted);
 }
 
 .directory-picker-button {
@@ -340,19 +424,33 @@ function chooseCurrent() {
   background: var(--primary-soft);
 }
 
-.directory-path-preview {
-  display: block;
-  margin: 6px 2px 0;
+.directory-path-edit {
+  display: flex;
+  flex: 0 1 44%;
+  min-width: 118px;
+  align-items: center;
   overflow: hidden;
-  color: var(--text-muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.directory-path-suffix {
   color: var(--primary);
   font-weight: 650;
+}
+
+.directory-path-edit > span {
+  flex: none;
+}
+
+.directory-path-suffix-input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  outline: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .directory-modal-backdrop {
@@ -540,9 +638,26 @@ function chooseCurrent() {
 }
 
 .directory-preview em {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
   color: var(--primary);
   font-style: normal;
   font-weight: 700;
+}
+
+.directory-preview em input {
+  width: min(220px, 28vw);
+  min-width: 70px;
+  padding: 2px 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  outline: none;
+  text-overflow: ellipsis;
 }
 
 .directory-modal-error {

@@ -36,6 +36,8 @@ type Subscription struct {
 	ComicID             string     `json:"comicId"`
 	Title               string     `json:"title"`
 	Cover               string     `json:"cover"`
+	LocalCover          string     `json:"localCover,omitempty"`
+	CachedCover         string     `json:"cachedCover,omitempty"`
 	Author              string     `json:"author"`
 	Enabled             bool       `json:"enabled"`
 	AutoDownload        bool       `json:"autoDownload"`
@@ -72,6 +74,7 @@ type DownloadJob struct {
 	TotalPages          int        `json:"totalPages"`
 	CompletedPages      int        `json:"completedPages"`
 	FilePath            string     `json:"filePath,omitempty"`
+	LocalCover          string     `json:"localCover,omitempty"`
 	Size                int64      `json:"size,omitempty"`
 	Error               string     `json:"error,omitempty"`
 	RetryCount          int        `json:"retryCount"`

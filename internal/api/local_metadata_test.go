@@ -141,3 +141,31 @@ func TestApplyComicMetaReadsLegacyStatusElement(t *testing.T) {
 		t.Fatalf("legacy ComicInfo status = %q, want 连载中", item.Status)
 	}
 }
+
+func TestApplyComicMetaReadsNotesStatusAndBookKind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ComicInfo.xml")
+	// 单范式 ComicInfo 用 Genre 里的「书籍」标记作品类型，并把 v2.1 没有的
+	// Status 以 url 转义键值放进 Notes。
+	payload := `<?xml version="1.0" encoding="UTF-8"?>
+<ComicInfo>
+  <Series>插件小说</Series>
+  <Writer>测试作者</Writer>
+  <Genre>小说,测试,书籍</Genre>
+  <Notes>Manco source=archive-book comicId=book-1 status=%E8%BF%9E%E8%BD%BD%E4%B8%AD</Notes>
+</ComicInfo>`
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := localItemEntry{Title: "目录名", Kind: "comic"}
+	applyComicMeta(path, &item)
+	if item.Kind != "book" {
+		t.Fatalf("genre 书籍 should mark the entry as a book, got %q", item.Kind)
+	}
+	if item.Status != "连载中" {
+		t.Fatalf("notes status = %q, want 连载中", item.Status)
+	}
+	if item.SourceID != "archive-book" || item.ComicID != "book-1" {
+		t.Fatalf("notes identity = %q/%q", item.SourceID, item.ComicID)
+	}
+}

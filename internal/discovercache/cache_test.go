@@ -45,6 +45,9 @@ func TestNamedSourceCacheRoundTrip(t *testing.T) {
 	if !got.Comic.Cached || strings.TrimSpace(got.Comic.CachedCover) == "" {
 		t.Fatalf("Get() cached metadata = %#v", got.Comic)
 	}
+	if cachedURL := cache.CachedCoverURL("baozimh", "work-1"); cachedURL != got.Comic.CachedCover {
+		t.Fatalf("CachedCoverURL() = %q, want %q", cachedURL, got.Comic.CachedCover)
+	}
 	if len(got.Chapters) != 1 || got.Chapters[0].ID != "ch-1" {
 		t.Fatalf("Get() chapters = %#v", got.Chapters)
 	}

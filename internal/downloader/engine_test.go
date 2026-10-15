@@ -498,33 +498,29 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 		t.Fatalf("ComicInfo.xml contains a non-v2.1 Status element: %s", embedded)
 	}
 
-	// Komga reads Mylar series.json for series-level metadata and OPF for the
-	// EPUB-style fields. Both sidecars must stay valid alongside the legacy
-	// standalone ComicInfo.xml.
-	seriesJSON, err := os.ReadFile(filepath.Join(downloadDir, "测试作品", "series.json"))
+	// KMRS reads the series summary only from series.json. Keep it strict enough
+	// for its serde model even when numeric/string fields are empty or zero.
+	seriesPath := filepath.Join(downloadDir, "测试作品", "series.json")
+	if !validMylarSeriesJSON(seriesPath) {
+		t.Fatalf("series.json does not match KMRS's Mylar schema")
+	}
+	seriesPayload, err := os.ReadFile(seriesPath)
 	if err != nil {
 		t.Fatalf("read series.json: %v", err)
 	}
 	var series MylarSeries
-	if err := json.Unmarshal(seriesJSON, &series); err != nil {
+	if err := json.Unmarshal(seriesPayload, &series); err != nil {
 		t.Fatalf("parse series.json: %v", err)
 	}
-	if series.Metadata.Name != "测试作品" || series.Metadata.ComicID != "1" {
-		t.Fatalf("unexpected series.json metadata: %+v", series.Metadata)
+	if series.Metadata.Name != "测试作品" || series.Metadata.DescriptionText != "测试简介" {
+		t.Fatalf("unexpected series metadata: %+v", series.Metadata)
 	}
-	if series.Metadata.Status != "Continuing" || series.Metadata.ComicImage != "cover.png" {
-		t.Fatalf("series.json status/cover mismatch: %+v", series.Metadata)
+	if series.Metadata.Status != "Continuing" || series.Metadata.TotalIssues != 2 || series.Metadata.ComicImage != "cover.png" {
+		t.Fatalf("series identity/status mismatch: %+v", series.Metadata)
 	}
-	if len(series.Metadata.Genres) != 2 || series.Metadata.Genres[0] != "测试" || series.Metadata.Genres[1] != "漫画" {
-		t.Fatalf("series.json genres = %v", series.Metadata.Genres)
-	}
-	opf, err := os.ReadFile(filepath.Join(downloadDir, "测试作品", "metadata.opf"))
-	if err != nil {
-		t.Fatalf("read metadata.opf: %v", err)
-	}
-	for _, value := range []string{`<dc:title>测试作品</dc:title>`, `<dc:creator>测试作者</dc:creator>`, `<dc:description>测试简介</dc:description>`, `page-progression-direction="rtl"`} {
-		if !bytes.Contains(opf, []byte(value)) {
-			t.Fatalf("metadata.opf is missing %q: %s", value, opf)
+	for _, obsolete := range []string{"metadata.opf", "book.json"} {
+		if _, err := os.Stat(filepath.Join(downloadDir, "测试作品", obsolete)); !os.IsNotExist(err) {
+			t.Fatalf("obsolete metadata sidecar %s should not exist: %v", obsolete, err)
 		}
 	}
 }
@@ -621,12 +617,18 @@ func TestPluginBookChapterDownloadsAsKototoroCBZ(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(downloadDir, "插件小说", "第1章.txt")); !os.IsNotExist(err) {
 		t.Fatalf("fallback text file should not exist: %v", err)
 	}
-	bookMetadata, err := os.ReadFile(filepath.Join(downloadDir, "插件小说", "book.json"))
-	if err != nil {
-		t.Fatalf("read book metadata: %v", err)
+	// Book downloads keep the same single sidecar format as comics.
+	if _, err := os.Stat(filepath.Join(downloadDir, "插件小说", "book.json")); !os.IsNotExist(err) {
+		t.Fatalf("book.json should not be written any more: %v", err)
 	}
-	if !bytes.Contains(bookMetadata, []byte(`"type": "book"`)) {
-		t.Fatalf("unexpected book.json: %s", bookMetadata)
+	seriesInfo, err := os.ReadFile(filepath.Join(downloadDir, "插件小说", "ComicInfo.xml"))
+	if err != nil {
+		t.Fatalf("read series ComicInfo.xml: %v", err)
+	}
+	for _, value := range []string{"<Series>插件小说</Series>", "<Writer>测试作者</Writer>", "<Manga>No</Manga>"} {
+		if !bytes.Contains(seriesInfo, []byte(value)) {
+			t.Fatalf("series ComicInfo.xml is missing %q: %s", value, seriesInfo)
+		}
 	}
 }
 
@@ -851,6 +853,14 @@ func TestEnsureSeriesMetadataRepairsMissingFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(seriesDir, "第1话.cbz"), []byte("zip"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Older Manco versions left multiple metadata formats behind, and some
+	// series.json files omitted required empty/zero fields. A repair must
+	// rewrite the JSON and remove only the obsolete OPF/Manco sidecars.
+	for _, legacy := range []string{"series.json", "metadata.opf", "book.json"} {
+		if err := os.WriteFile(filepath.Join(seriesDir, legacy), []byte("legacy"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	repaired, err = engine.EnsureSeriesMetadata(ctx, subscription)
 	if err != nil {
@@ -872,6 +882,25 @@ func TestEnsureSeriesMetadataRepairsMissingFiles(t *testing.T) {
 	}
 	if !bytes.Contains(info, []byte("<Series>测试作品</Series>")) {
 		t.Fatalf("unexpected ComicInfo.xml: %s", info)
+	}
+	if !validMylarSeriesJSON(filepath.Join(seriesDir, "series.json")) {
+		t.Fatalf("repair did not write a valid KMRS series.json")
+	}
+	seriesJSON, err := os.ReadFile(filepath.Join(seriesDir, "series.json"))
+	if err != nil {
+		t.Fatalf("read repaired series.json: %v", err)
+	}
+	var repairedSeries MylarSeries
+	if err := json.Unmarshal(seriesJSON, &repairedSeries); err != nil {
+		t.Fatalf("parse repaired series.json: %v", err)
+	}
+	if repairedSeries.Metadata.TotalIssues != 1 {
+		t.Fatalf("repaired total_issues = %d, want 1", repairedSeries.Metadata.TotalIssues)
+	}
+	for _, obsolete := range []string{"metadata.opf", "book.json"} {
+		if _, err := os.Stat(filepath.Join(seriesDir, obsolete)); !os.IsNotExist(err) {
+			t.Fatalf("obsolete sidecar %s should have been removed: %v", obsolete, err)
+		}
 	}
 
 	// A second check finds nothing missing.
@@ -961,13 +990,47 @@ func TestMarshalComicInfoV21SchemaOrder(t *testing.T) {
 	}
 }
 
+func TestMylarSeriesJSONIncludesRequiredZeroFields(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeSeriesMetadataFiles(model.Comic{}, model.SourceInfo{}, dir); err != nil {
+		t.Fatalf("write series.json: %v", err)
+	}
+	path := filepath.Join(dir, "series.json")
+	if !validMylarSeriesJSON(path) {
+		t.Fatalf("minimal series.json does not match KMRS's Mylar schema")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("parse series.json: %v", err)
+	}
+	for _, field := range []string{
+		"type",
+		"publisher",
+		"name",
+		"comicid",
+		"year",
+		"booktype",
+		"comic_image",
+		"total_issues",
+		"publication_run",
+		"status",
+	} {
+		if _, ok := payload.Metadata[field]; !ok {
+			t.Fatalf("required KMRS field %q is missing from series.json: %s", field, raw)
+		}
+	}
+}
+
 func TestComicInfoAgeRatingUsesV21Enums(t *testing.T) {
 	comic := model.Comic{Tags: []string{"成人"}}
 	if got := comicInfoAgeRating(comic, comic.Tags); got != "Adults Only 18+" {
 		t.Fatalf("ComicInfo age rating = %q, want Adults Only 18+", got)
-	}
-	if got := mylarAgeRating(comic, comic.Tags); got != "Adult" {
-		t.Fatalf("Mylar age rating = %q, want Adult", got)
 	}
 }
 

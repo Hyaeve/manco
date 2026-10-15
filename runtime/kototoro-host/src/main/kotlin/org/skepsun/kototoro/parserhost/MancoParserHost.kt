@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -169,7 +170,7 @@ private fun serve(args: Array<String>) {
                 if (line.isBlank()) continue
                 val operation = operationOf(line)
                 platform.useProxy = useProxyOf(line) ?: true
-                val response = if (operation == "metadata") {
+                val rawResponse = if (operation == "metadata") {
                     metadataResponse(line, registry)
                 } else {
                     when (operation) {
@@ -178,6 +179,7 @@ private fun serve(args: Array<String>) {
                         else -> runBlocking { endpoint.exchange(line) }
                     }
                 }
+                val response = if (operation == "list") trimListChapters(rawResponse) else rawResponse
                 cookieStore.save(cookieJar)
                 writer.write(response)
                 writer.newLine()
@@ -241,6 +243,36 @@ private fun operationOf(line: String): String? = try {
     (envelope["call"] as? JsonObject)?.get("operation")?.jsonPrimitive?.content
 } catch (_: Exception) {
     null
+}
+
+/**
+ * List and search only need the card metadata. Some parsers include their full
+ * chapter list in each Content object; dropping it here avoids serializing and
+ * parsing those chapters on every discovery page request.
+ */
+private fun trimListChapters(response: String): String = try {
+    val envelope = hostJson.parseToJsonElement(response).jsonObject
+    val result = envelope["result"] as? JsonObject
+    val content = result?.get("content") as? JsonArray
+    if (result == null || content == null) {
+        response
+    } else {
+        val trimmedContent = buildJsonArray {
+            content.forEach { element ->
+                val item = element as? JsonObject
+                if (item == null) {
+                    add(element)
+                } else {
+                    add(JsonObject(item.filterKeys { key -> key != "chapters" }))
+                }
+            }
+        }
+        val nextResult = JsonObject(result.toMutableMap().apply { put("content", trimmedContent) })
+        val nextEnvelope = JsonObject(envelope.toMutableMap().apply { put("result", nextResult) })
+        hostJson.encodeToString(JsonObject.serializer(), nextEnvelope)
+    }
+} catch (_: Exception) {
+    response
 }
 
 /**

@@ -80,7 +80,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	if err := configFiles.PersistAll(context.Background(), repository); err != nil {
 		return err
 	}
-	discoverCache, err := diskcache.Open(filepath.Join(cfg.DataDir, "discover-cache.json"), 30*time.Minute)
+	discoverCache, err := diskcache.Open(filepath.Join(cfg.DataDir, "response-cache"), 30*time.Minute)
 	if err != nil {
 		return err
 	}

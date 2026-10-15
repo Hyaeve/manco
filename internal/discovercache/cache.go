@@ -25,7 +25,7 @@ import (
 
 const (
 	defaultMaxAge = 30 * 24 * time.Hour
-	maxCoverBytes = 20 << 20
+	maxCoverBytes = 8 << 20
 )
 
 type Cache struct {
@@ -86,6 +86,27 @@ func (c *Cache) Root() string {
 		return ""
 	}
 	return c.root
+}
+
+// CachedCoverURL returns the API URL for a locally materialized discover
+// cover without loading the full cached detail into the caller.
+func (c *Cache) CachedCoverURL(sourceID, comicID string) string {
+	if c == nil {
+		return ""
+	}
+	entry, path, ok := c.findBySourceAndID(sourceID, comicID)
+	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
+		return ""
+	}
+	info, err := os.Stat(filepath.Join(path, entry.CoverFile))
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return ""
+	}
+	id := strings.TrimSpace(entry.Comic.ID)
+	if id == "" {
+		id = strings.TrimSpace(comicID)
+	}
+	return coverURL(sourceID, entry.Kind, id)
 }
 
 func (c *Cache) Get(sourceID, kind, comicID string) (model.ComicDetail, bool) {

@@ -1,15 +1,17 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw } from 'lucide-vue-next'
+import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw, RotateCcw } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
 import SourceIcon from '../components/SourceIcon.vue'
+import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 
 const items = ref([])
 const sources = ref({})
 const jobStatsData = ref({})
 const loading = ref(true)
+const busy = ref(0)
 
 onMounted(load)
 
@@ -38,6 +40,8 @@ function itemKind(item) {
 }
 
 function cover(item) {
+  if (item.localCover) return api.localFileUrl(item.localCover)
+  if (item.cachedCover) return item.cachedCover
   return api.imageUrl(item.cover, item.sourceId)
 }
 
@@ -66,6 +70,25 @@ function completedTaskLink(item) {
 
 function chapterCount(item) {
   return Number(item.chapterCount || 0)
+}
+
+async function restore(item) {
+  const confirmed = await askConfirm({
+    title: '移出归档',
+    message: `确定把《${item.title}》移出归档并恢复到订阅清单吗？恢复后会重新启用该订阅。`,
+    confirmText: '移出归档',
+  })
+  if (!confirmed) return
+  busy.value = item.id
+  try {
+    await api.restoreSubscription(item.id)
+    items.value = items.value.filter((row) => row.id !== item.id)
+    notify(`《${item.title}》已移出归档，并恢复到订阅清单`, 'success')
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    busy.value = 0
+  }
 }
 
 function jobStats(item) {
@@ -111,7 +134,7 @@ function jobStats(item) {
     <div v-else class="archive-grid archive-page-grid">
       <article v-for="item in items" :key="item.id" class="archive-card">
         <ContentLink class="archive-cover" :to="archiveComicLink(item)" :title="item.title">
-          <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+          <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" />
           <BookOpen v-else :size="22" />
         </ContentLink>
         <div class="archive-meta">
@@ -134,6 +157,17 @@ function jobStats(item) {
           <ContentLink class="subscription-stat failed" :to="completedTaskLink(item)">
             失败 {{ jobStats(item).failed }}
           </ContentLink>
+          <button
+            class="btn secondary small archive-restore"
+            type="button"
+            :disabled="busy === item.id"
+            title="移出归档，恢复到订阅清单"
+            @click="restore(item)"
+          >
+            <Loader2 v-if="busy === item.id" :size="14" class="spin" />
+            <RotateCcw v-else :size="14" />
+            移出归档
+          </button>
         </div>
       </article>
     </div>

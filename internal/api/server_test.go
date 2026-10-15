@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/hyaeve/manco/internal/config"
+	"github.com/hyaeve/manco/internal/discovercache"
 	"github.com/hyaeve/manco/internal/iconcache"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
@@ -94,6 +97,85 @@ func TestLocalizeCustomSourceIconStoresWebsiteIconLocally(t *testing.T) {
 	}
 	if !cache.Has(item.ID) {
 		t.Fatal("expected icon to be cached locally")
+	}
+}
+
+func TestSubscriptionSeriesDirNameHonorsManualOverride(t *testing.T) {
+	if got := subscriptionSeriesDirName("", "龍珠", true); got != "龙珠" {
+		t.Fatalf("generated series dir = %q, want 龙珠", got)
+	}
+	if got := subscriptionSeriesDirName("自定/义:目录", "龍珠", true); got != "自定_义_目录" {
+		t.Fatalf("manual series dir = %q, want sanitized custom name", got)
+	}
+}
+
+func TestLocalCoverForJobUsesSeriesCover(t *testing.T) {
+	root := t.TempDir()
+	seriesDir := filepath.Join(root, "测试作品")
+	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
+		t.Fatalf("mkdir series: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "cover.jpg"), []byte("cover"), 0o644); err != nil {
+		t.Fatalf("write cover: %v", err)
+	}
+	server := &Server{cfg: config.Config{DownloadDir: root}}
+	got := server.localCoverForJob(model.DownloadJob{
+		DownloadDir: root,
+		FilePath:    filepath.Join(seriesDir, "第1话.cbz"),
+	})
+	want := localPath(root, "测试作品/cover.jpg")
+	if got != want {
+		t.Fatalf("local cover = %q, want %q", got, want)
+	}
+}
+
+func TestSubscriptionCoversPreferLocalThenDiscoverCache(t *testing.T) {
+	coverServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\ncover"))
+	}))
+	defer coverServer.Close()
+
+	root := t.TempDir()
+	cache, err := discovercache.Open(filepath.Join(root, "discover"), 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("discovercache.Open: %v", err)
+	}
+	if err := cache.PutNamed(context.Background(), coverServer.Client(), "demo", "示例源", "comic", model.ComicDetail{
+		Comic: model.Comic{
+			ID:       "work-1",
+			SourceID: "demo",
+			Title:    "测试作品",
+			Cover:    coverServer.URL + "/cover.png",
+		},
+	}); err != nil {
+		t.Fatalf("cache put: %v", err)
+	}
+	server := &Server{cfg: config.Config{DownloadDir: root}, discover: cache}
+	subscription := model.Subscription{
+		SourceID:    "demo",
+		ComicID:     "work-1",
+		Title:       "测试作品",
+		SeriesDir:   "自定义目录",
+		DownloadDir: root,
+		Cover:       coverServer.URL + "/source.png",
+	}
+	cached := server.subscriptionWithCovers(context.Background(), subscription)
+	if cached.LocalCover != "" || cached.CachedCover == "" {
+		t.Fatalf("cached covers = local %q cached %q", cached.LocalCover, cached.CachedCover)
+	}
+
+	seriesDir := filepath.Join(root, "自定义目录")
+	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
+		t.Fatalf("mkdir series: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "cover.jpg"), []byte("local"), 0o644); err != nil {
+		t.Fatalf("write local cover: %v", err)
+	}
+	local := server.subscriptionWithCovers(context.Background(), subscription)
+	want := localPath(root, "自定义目录/cover.jpg")
+	if local.LocalCover != want {
+		t.Fatalf("local cover = %q, want %q", local.LocalCover, want)
 	}
 }
 

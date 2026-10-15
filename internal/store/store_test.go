@@ -341,6 +341,49 @@ func TestListArchivedSubscriptionsSeparatesArchivedFromActive(t *testing.T) {
 	}
 }
 
+func TestRestoreSubscriptionReturnsToActiveList(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	sub, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID: "stub",
+		ComicID:  "restore-1",
+		Title:    "待恢复作品",
+		Enabled:  true,
+		CronExpr: "0 10 * * 5",
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if err := repository.ArchiveSubscription(ctx, sub.ID, "manual"); err != nil {
+		t.Fatalf("archive subscription: %v", err)
+	}
+	if err := repository.RestoreSubscription(ctx, sub.ID); err != nil {
+		t.Fatalf("restore subscription: %v", err)
+	}
+
+	archived, err := repository.ListArchivedSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list archived subscriptions: %v", err)
+	}
+	if len(archived) != 0 {
+		t.Fatalf("恢复后归档集应为空，got %+v", archived)
+	}
+
+	active, err := repository.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list subscriptions: %v", err)
+	}
+	if len(active) != 1 || active[0].ID != sub.ID {
+		t.Fatalf("恢复后订阅清单应包含该订阅，got %+v", active)
+	}
+	if !active[0].Enabled {
+		t.Fatal("恢复后的订阅应重新启用")
+	}
+	if active[0].ArchivedAt != nil || active[0].ArchiveReason != "" {
+		t.Fatalf("恢复后应清除归档标记，got archivedAt=%v reason=%q", active[0].ArchivedAt, active[0].ArchiveReason)
+	}
+}
+
 func TestCompletedDownloadJobsByComic(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

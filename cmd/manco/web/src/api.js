@@ -117,6 +117,7 @@ export const api = {
   downloadAllSubscription: (id) => request(`/api/subscriptions/${id}/download-all`, { method: 'POST' }),
   fillSubscription: (id) => request(`/api/subscriptions/${id}/fill`, { method: 'POST' }),
   archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
+  restoreSubscription: (id) => request(`/api/subscriptions/${id}/restore`, { method: 'POST' }),
   backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),
 
   downloads: (limit = 0) => request(`/api/downloads?limit=${limit}`),
@@ -163,6 +164,11 @@ export const api = {
   },
   createDownloadDirectory: (parent, name) =>
     request('/api/download-directories', { method: 'POST', body: JSON.stringify({ parent, name }) }),
+  seriesDirName: (title, convertToSimplified) =>
+    request('/api/tools/series-dir-name', {
+      method: 'POST',
+      body: JSON.stringify({ title, convertToSimplified: Boolean(convertToSimplified) }),
+    }),
 
   imageUrl: (url, sourceId, referer) => {
     if (!url) return ''

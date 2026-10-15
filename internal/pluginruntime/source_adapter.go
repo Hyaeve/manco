@@ -22,6 +22,8 @@ import (
 
 const pageSize = 30
 
+const maxCoverArtifactBytes = 8 << 20
+
 type Adapter struct {
 	manager      *Manager
 	item         model.CustomSource
@@ -230,7 +232,7 @@ func (a *Adapter) CoverImage(ctx context.Context, account source.Account, comic 
 	if err != nil {
 		return nil, "", err
 	}
-	return a.readArtifact(result)
+	return a.readArtifactLimit(result, maxCoverArtifactBytes)
 }
 
 func (a *Adapter) ChapterContent(ctx context.Context, account source.Account, _ string, chapter model.Chapter) (string, error) {
@@ -653,6 +655,10 @@ func (a *Adapter) toComic(item map[string]any) model.Comic {
 }
 
 func (a *Adapter) readArtifact(result map[string]any) ([]byte, string, error) {
+	return a.readArtifactLimit(result, 0)
+}
+
+func (a *Adapter) readArtifactLimit(result map[string]any, maxBytes int64) ([]byte, string, error) {
 	artifact, ok := result["artifact"].(map[string]any)
 	if !ok {
 		return nil, "", errors.New("解析器没有返回图片文件")
@@ -661,6 +667,15 @@ func (a *Adapter) readArtifact(result map[string]any) ([]byte, string, error) {
 	path := a.manager.ImagePath(a.config.Runtime, relativePath)
 	if path == "" {
 		return nil, "", errors.New("解析器返回了不安全图片路径")
+	}
+	if maxBytes > 0 {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, "", err
+		}
+		if info.Size() > maxBytes {
+			return nil, "", fmt.Errorf("解析器返回图片过大: %d bytes", info.Size())
+		}
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

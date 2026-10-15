@@ -32,6 +32,9 @@ const (
 	RuntimeMihon    = "mihon"
 	RuntimeKototoro = "kototoro-parser"
 	ProtocolVersion = 1
+
+	defaultKototoroHostJVMOptions = "-Xms32m -Xmx384m -XX:MaxMetaspaceSize=192m -XX:ReservedCodeCacheSize=64m -XX:ActiveProcessorCount=2 -XX:+UseSerialGC"
+	defaultMihonHostJVMOptions    = "-Xms48m -Xmx512m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=96m -XX:ActiveProcessorCount=2 -XX:+UseSerialGC"
 )
 
 var (
@@ -373,7 +376,14 @@ func (m *Manager) CallWithProxy(ctx context.Context, operation string, fields ma
 	if useProxy != nil {
 		call["useProxy"] = *useProxy
 	}
-	return process.request(ctx, call)
+	result, err := process.request(ctx, call)
+	if err != nil {
+		return nil, err
+	}
+	if operation == "list" {
+		result = trimListResult(result)
+	}
+	return result, nil
 }
 
 // BrowserSession asks the plugin runtime where a user should complete a site
@@ -729,6 +739,29 @@ func runtimeOperation(runtimeType, operation string) string {
 	return operation
 }
 
+// trimListResult removes heavyweight chapter arrays from list/search results.
+// Detail pages request those chapters explicitly, so discovery only carries
+// the card metadata needed to render covers, titles, authors, and tags.
+func trimListResult(result map[string]any) map[string]any {
+	if result == nil {
+		return result
+	}
+	values, ok := result["content"].([]any)
+	if !ok {
+		return result
+	}
+	for index, value := range values {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(item, "chapters")
+		values[index] = item
+	}
+	result["content"] = values
+	return result
+}
+
 func runtimeLabel(runtimeType string) string {
 	if normalizeRuntime(runtimeType) == RuntimeMihon {
 		return "Mihon"
@@ -872,6 +905,8 @@ func startHost(binary, configPath, label, environmentPrefix, proxyURL, proxyUser
 	}
 	command := exec.Command(binary, "serve", configPath)
 	command.Env = append(os.Environ(),
+		environmentPrefix+"_HOST_OPTS="+hostJVMOptions(environmentPrefix),
+		"JAVA_OPTS="+hostJVMOptions(environmentPrefix),
 		environmentPrefix+"_PROXY_URL="+proxyURL,
 		environmentPrefix+"_PROXY_USERNAME="+proxyUsername,
 		environmentPrefix+"_PROXY_PASSWORD="+proxyPassword,
@@ -903,6 +938,17 @@ func startHost(binary, configPath, label, environmentPrefix, proxyURL, proxyUser
 		}
 	}()
 	return process, nil
+}
+
+func hostJVMOptions(environmentPrefix string) string {
+	key := environmentPrefix + "_HOST_OPTS"
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	if environmentPrefix == "MANCO_MIHON" {
+		return defaultMihonHostJVMOptions
+	}
+	return defaultKototoroHostJVMOptions
 }
 
 func (p *hostProcess) request(ctx context.Context, call map[string]any) (map[string]any, error) {

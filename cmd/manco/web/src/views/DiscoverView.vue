@@ -43,13 +43,15 @@ const sourcesError = ref('')
 const savedFilters = ref(readSavedFilters())
 const viewMode = ref(localStorage.getItem(VIEW_STORAGE_KEY) === 'list' ? 'list' : 'grid')
 const sourceStripRef = ref(null)
+const gridRef = ref(null)
 const stripCanLeft = ref(false)
 const stripCanRight = ref(false)
+const gridColumns = ref(7)
 const requestStates = new Map()
 
 const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
 const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
-const pageSize = computed(() => (viewMode.value === 'list' ? 30 : 49))
+const pageSize = computed(() => (viewMode.value === 'list' ? 30 : Math.max(1, gridColumns.value * 7)))
 
 // Kototoro 的排序能力会作为 sort 筛选组返回；没有声明的来源统一提供“最新”，
 // 并把排序器固定放在网格/列表按钮左侧。
@@ -201,7 +203,10 @@ async function loadSources() {
 
 onMounted(() => {
   window.addEventListener('resize', updateStripBounds)
-  loadSources().then(() => nextTick(updateStripBounds))
+  loadSources().then(() => {
+    nextTick(updateStripBounds)
+    nextTick(measureGridColumns)
+  })
 })
 
 watch(
@@ -224,6 +229,16 @@ function updateStripBounds() {
   }
   stripCanLeft.value = element.scrollLeft > 2
   stripCanRight.value = element.scrollLeft + element.clientWidth < element.scrollWidth - 2
+  nextTick(measureGridColumns)
+}
+
+function measureGridColumns() {
+  nextTick(() => {
+    const element = gridRef.value
+    if (!element) return
+    const tracks = window.getComputedStyle(element).gridTemplateColumns.split(/\s+/).filter(Boolean)
+    if (tracks.length) gridColumns.value = tracks.length
+  })
 }
 
 function scrollStrip(direction) {
@@ -250,7 +265,14 @@ watch(viewMode, (value) => {
   localStorage.setItem(VIEW_STORAGE_KEY, value)
   const panel = activePanel.value
   if (panel) panel.page = 1
+  nextTick(measureGridColumns)
   afterLoad()
+})
+
+watch(pageSize, () => {
+  const panel = activePanel.value
+  if (!panel?.loaded || panel.loading) return
+  void ensure(activeSource.value, panel, panel.page)
 })
 
 async function switchKind(kind) {
@@ -402,6 +424,7 @@ function afterLoad() {
   jumpInput.value = ''
   rememberPosition()
   scrollPageTop()
+  nextTick(measureGridColumns)
 }
 
 function scrollPageTop() {
@@ -586,7 +609,7 @@ function latestLabel(item) {
         <ImageOff :size="24" />
         <span>没有作品</span>
       </div>
-      <div v-else-if="viewMode === 'grid'" class="source-comic-grid source-comic-grid-7">
+      <div v-else-if="viewMode === 'grid'" ref="gridRef" class="source-comic-grid source-comic-grid-7">
         <ContentLink
           v-for="item in visibleItems"
           :key="`${item.sourceId}-${item.id}`"

@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.8"
+	appVersion    = "v0.4.9"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -87,6 +87,18 @@ type Server struct {
 	logger    *log.Logger
 	logs      *logbuf.Buffer
 	assets    fs.FS
+
+	discoverQueueOnce sync.Once
+	discoverQueue     chan discoverCacheTask
+}
+
+var pluginCoverFetchSlots = make(chan struct{}, 2)
+
+type discoverCacheTask struct {
+	sourceID   string
+	sourceName string
+	kind       string
+	items      []model.Comic
 }
 
 // Settings mirrors the persisted values in the settings table.
@@ -300,6 +312,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{id}/fill", s.requireAuth(s.handleFillSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/chapter-marker/backfill", s.requireAuth(s.handleBackfillChapterMarkers))
 	mux.HandleFunc("POST /api/subscriptions/{id}/archive", s.requireAuth(s.handleArchiveSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/restore", s.requireAuth(s.handleRestoreSubscription))
 
 	mux.HandleFunc("GET /api/downloads", s.requireAuth(s.handleListDownloads))
 	mux.HandleFunc("POST /api/downloads", s.requireAuth(s.handleCreateDownload))
@@ -323,6 +336,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/activity", s.requireAuth(s.handleActivity))
 	mux.HandleFunc("GET /api/download-directories", s.requireAuth(s.handleDownloadDirectories))
 	mux.HandleFunc("POST /api/download-directories", s.requireAuth(s.handleCreateDownloadDirectory))
+	mux.HandleFunc("POST /api/tools/series-dir-name", s.requireAuth(s.handleSeriesDirectoryName))
 	mux.HandleFunc("GET /api/proxy/image", s.requireAuth(s.handleImageProxy))
 
 	mux.HandleFunc("/", s.handleSPA)
@@ -2383,19 +2397,39 @@ func (s *Server) cacheDiscoverItems(info model.SourceInfo, kind string, items []
 	if s.discover == nil || len(items) == 0 {
 		return
 	}
-	copyItems := append([]model.Comic(nil), items...)
-	go func() {
+	task := discoverCacheTask{
+		sourceID:   info.ID,
+		sourceName: info.Name,
+		kind:       kind,
+		items:      append([]model.Comic(nil), items...),
+	}
+	s.discoverQueueOnce.Do(func() {
+		s.discoverQueue = make(chan discoverCacheTask, 8)
+		go s.runDiscoverCacheQueue()
+	})
+	select {
+	case s.discoverQueue <- task:
+	default:
+		// A slow source should not build an unbounded background queue.
+	}
+}
+
+func (s *Server) runDiscoverCacheQueue() {
+	for task := range s.discoverQueue {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		for _, comic := range copyItems {
+		for _, comic := range task.items {
 			if strings.TrimSpace(comic.ID) == "" {
 				continue
 			}
-			if err := s.putDiscoverDetail(ctx, info.ID, info.Name, kind, model.ComicDetail{Comic: comic}); err != nil {
-				s.logger.Printf("api: cache discover browse %s/%s: %v", info.ID, comic.ID, err)
+			if err := s.putDiscoverDetail(ctx, task.sourceID, task.sourceName, task.kind, model.ComicDetail{Comic: comic}); err != nil {
+				s.logger.Printf("api: cache discover browse %s/%s: %v", task.sourceID, comic.ID, err)
+			}
+			if ctx.Err() != nil {
+				break
 			}
 		}
-	}()
+		cancel()
+	}
 }
 
 // putDiscoverDetail stores discover metadata and lets image-capable sources
@@ -2411,6 +2445,12 @@ func (s *Server) putDiscoverDetail(ctx context.Context, sourceID, sourceName, ki
 				account, accountErr := s.registry.Account(ctx, sourceID)
 				if accountErr == nil {
 					materialize = func(ctx context.Context, comic model.Comic) ([]byte, string, error) {
+						select {
+						case pluginCoverFetchSlots <- struct{}{}:
+							defer func() { <-pluginCoverFetchSlots }()
+						case <-ctx.Done():
+							return nil, "", ctx.Err()
+						}
 						return imageSource.CoverImage(ctx, account, comic)
 					}
 				}
@@ -2478,6 +2518,9 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	if items == nil {
 		items = []model.Subscription{}
 	}
+	for index := range items {
+		items[index] = s.subscriptionWithCovers(r.Context(), items[index])
+	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	stats, err := s.store.DownloadJobStats(r.Context())
 	if err != nil {
@@ -2501,6 +2544,9 @@ func (s *Server) handleListArchivedSubscriptions(w http.ResponseWriter, r *http.
 	if items == nil {
 		items = []model.Subscription{}
 	}
+	for index := range items {
+		items[index] = s.subscriptionWithCovers(r.Context(), items[index])
+	}
 	stats, err := s.store.DownloadJobStats(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -2520,6 +2566,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		Title               string  `json:"title"`
 		Cover               string  `json:"cover"`
 		Author              string  `json:"author"`
+		SeriesDir           string  `json:"seriesDir"`
 		AutoDownload        *bool   `json:"autoDownload"`
 		Enabled             *bool   `json:"enabled"`
 		CronExpr            string  `json:"cronExpr"`
@@ -2572,11 +2619,12 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 	title := source.FirstNonEmpty(payload.Title, payload.ComicID)
+	seriesDir := subscriptionSeriesDirName(payload.SeriesDir, title, convertToSimplified)
 	subscription := model.Subscription{
 		SourceID:            payload.SourceID,
 		ComicID:             payload.ComicID,
 		Title:               title,
-		SeriesDir:           downloader.SeriesDirectoryName(title, convertToSimplified),
+		SeriesDir:           seriesDir,
 		Cover:               payload.Cover,
 		Author:              payload.Author,
 		Enabled:             payload.Enabled == nil || *payload.Enabled,
@@ -2596,7 +2644,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
-	response := map[string]any{"item": saved}
+	response := map[string]any{"item": s.subscriptionWithCovers(r.Context(), saved)}
 	if payload.AllChapters {
 		queued, skipped, queueErr := s.scheduler.QueueAll(r.Context(), saved)
 		if queueErr != nil {
@@ -2626,6 +2674,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		AutoDownload        *bool   `json:"autoDownload"`
 		CronExpr            *string `json:"cronExpr"`
 		DownloadDir         *string `json:"downloadDir"`
+		SeriesDir           *string `json:"seriesDir"`
 		ConvertToSimplified *bool   `json:"convertToSimplified"`
 		ChapterMarker       *bool   `json:"chapterMarker"`
 		CoverBlur           *bool   `json:"coverBlur"`
@@ -2667,7 +2716,9 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
-		seriesDir = downloader.SeriesDirectoryName(existing.Title, convertToSimplified)
+	}
+	if payload.SeriesDir != nil {
+		seriesDir = subscriptionSeriesDirName(*payload.SeriesDir, existing.Title, convertToSimplified)
 	}
 	if payload.ChapterMarker != nil {
 		chapterMarker = *payload.ChapterMarker
@@ -2683,6 +2734,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	updated, _ := s.store.Subscription(r.Context(), id)
+	updated = s.subscriptionWithCovers(r.Context(), updated)
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -2781,6 +2833,26 @@ func (s *Server) handleArchiveSubscription(w http.ResponseWriter, r *http.Reques
 	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleRestoreSubscription 把归档集里的订阅移回订阅清单，并重新启用。
+func (s *Server) handleRestoreSubscription(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	if _, err := s.store.Subscription(r.Context(), id); err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	if err := s.store.RestoreSubscription(r.Context(), id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	restored, _ := s.store.Subscription(r.Context(), id)
+	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, restored)
 }
 
 func (s *Server) cleanDownloadDir(raw string) (string, error) {
@@ -2975,6 +3047,23 @@ func (s *Server) handleCreateDownloadDirectory(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusCreated, map[string]any{"path": filepath.Clean(path), "name": name})
 }
 
+// handleSeriesDirectoryName 返回订阅作品目录实际使用的文件夹名（含繁转简与
+// 非法字符替换）。订阅编辑窗口用它预览下载位置后面补全的目录，保证展示名与
+// 实际落盘目录一致。
+func (s *Server) handleSeriesDirectoryName(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Title               string `json:"title"`
+		ConvertToSimplified bool   `json:"convertToSimplified"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": downloader.SeriesDirectoryName(payload.Title, payload.ConvertToSimplified),
+	})
+}
+
 func directoryExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
@@ -3161,11 +3250,110 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(items[index].FilePath) == "" {
 			continue
 		}
+		items[index].LocalCover = s.localCoverForJob(items[index])
 		if info, statErr := os.Stat(items[index].FilePath); statErr == nil && !info.IsDir() {
 			items[index].Size = info.Size()
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func subscriptionSeriesDirName(value, title string, convertToSimplified bool) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return downloader.SeriesDirectoryName(title, convertToSimplified)
+	}
+	return downloader.SafeName(value)
+}
+
+func (s *Server) localCoverForJob(job model.DownloadJob) string {
+	if strings.TrimSpace(job.FilePath) == "" {
+		return ""
+	}
+	root, err := s.cleanDownloadDir(job.DownloadDir)
+	if err != nil {
+		return ""
+	}
+	folder, err := filepath.Abs(filepath.Dir(job.FilePath))
+	if err != nil {
+		return ""
+	}
+	return s.localCoverForDir(root, folder)
+}
+
+func (s *Server) localCoverForSubscription(subscription model.Subscription) string {
+	root, err := s.cleanDownloadDir(subscription.DownloadDir)
+	if err != nil {
+		return ""
+	}
+	series := strings.TrimSpace(subscription.SeriesDir)
+	if series == "" {
+		series = downloader.SeriesDirectoryName(subscription.Title, subscription.ConvertToSimplified)
+	}
+	return s.localCoverForDir(root, filepath.Join(root, downloader.SafeName(series)))
+}
+
+func (s *Server) localCoverForDir(root, folder string) string {
+	root, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return ""
+	}
+	folder, err = filepath.Abs(filepath.Clean(folder))
+	if err != nil {
+		return ""
+	}
+	covers, err := filepath.Glob(filepath.Join(folder, "cover.*"))
+	if err != nil || len(covers) == 0 {
+		return ""
+	}
+	sort.Strings(covers)
+	for _, candidate := range covers {
+		info, statErr := os.Stat(candidate)
+		if statErr != nil || info.IsDir() {
+			continue
+		}
+		relative, relErr := filepath.Rel(root, candidate)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		return localPath(root, filepath.ToSlash(relative))
+	}
+	return ""
+}
+
+func (s *Server) subscriptionWithCovers(ctx context.Context, subscription model.Subscription) model.Subscription {
+	subscription.LocalCover = s.localCoverForSubscription(subscription)
+	if subscription.LocalCover == "" && s.discover != nil {
+		subscription.CachedCover = s.discover.CachedCoverURL(subscription.SourceID, subscription.ComicID)
+	}
+	return subscription
+}
+
+func (s *Server) localCoverFallbacks(ctx context.Context) map[string]string {
+	fallbacks := map[string]string{}
+	remember := func(sourceID, comicID, cover string) {
+		sourceID = strings.TrimSpace(sourceID)
+		comicID = strings.TrimSpace(comicID)
+		cover = strings.TrimSpace(cover)
+		if sourceID == "" || comicID == "" || cover == "" {
+			return
+		}
+		key := sourceID + "\x00" + comicID
+		if fallbacks[key] == "" {
+			fallbacks[key] = cover
+		}
+	}
+	if subscriptions, err := s.store.ListAllSubscriptions(ctx); err == nil {
+		for _, subscription := range subscriptions {
+			remember(subscription.SourceID, subscription.ComicID, subscription.Cover)
+		}
+	}
+	if jobs, err := s.store.ListDownloadJobs(ctx, 600); err == nil {
+		for _, job := range jobs {
+			remember(job.SourceID, job.ComicID, job.ComicCover)
+		}
+	}
+	return fallbacks
 }
 
 func (s *Server) handleDownloadSubscription(w http.ResponseWriter, r *http.Request) {
@@ -3198,6 +3386,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		ComicTitle          string          `json:"comicTitle"`
 		ComicCover          string          `json:"comicCover"`
 		ComicAuthor         string          `json:"comicAuthor"`
+		SeriesDir           string          `json:"seriesDir"`
 		DownloadDir         string          `json:"downloadDir"`
 		ConvertToSimplified *bool           `json:"convertToSimplified"`
 		ChapterMarker       *bool           `json:"chapterMarker"`
@@ -3233,6 +3422,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	chapterMarker := payload.ChapterMarker != nil && *payload.ChapterMarker
 	coverBlur := payload.CoverBlur != nil && *payload.CoverBlur
+	seriesDir := subscriptionSeriesDirName(payload.SeriesDir, title, convertToSimplified)
 	created := make([]model.DownloadJob, 0, len(chapters))
 	queuedCount := 0
 	skippedCount := 0
@@ -3243,7 +3433,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		saved, err := s.store.CreateDownloadJob(r.Context(), model.DownloadJob{
 			SourceID:            payload.SourceID,
 			ComicID:             payload.ComicID,
-			ComicTitle:          downloader.SeriesDirectoryName(title, convertToSimplified),
+			ComicTitle:          seriesDir,
 			ComicCover:          payload.ComicCover,
 			ComicAuthor:         strings.TrimSpace(payload.ComicAuthor),
 			ChapterID:           chapter.ID,
@@ -3270,7 +3460,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			ComicID:             payload.ComicID,
 			Title:               title,
 			Author:              strings.TrimSpace(payload.ComicAuthor),
-			SeriesDir:           downloader.SeriesDirectoryName(title, convertToSimplified),
+			SeriesDir:           seriesDir,
 			Cover:               payload.ComicCover,
 			DownloadDir:         downloadDir,
 			Enabled:             true,
@@ -3399,6 +3589,8 @@ type localItemEntry struct {
 	Language    string           `json:"language,omitempty"`
 	PublishedAt string           `json:"publishedAt,omitempty"`
 	Cover       string           `json:"cover,omitempty"`
+	CachedCover string           `json:"cachedCover,omitempty"`
+	SourceCover string           `json:"sourceCover,omitempty"`
 	Files       []localFileEntry `json:"files"`
 	TotalFiles  int              `json:"totalFiles"`
 	Size        int64            `json:"size"`
@@ -3443,6 +3635,7 @@ func localPath(root, rel string) string {
 // produced by a recorded download job.
 func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 	roots := s.localRoots(r.Context())
+	fallbacks := s.localCoverFallbacks(r.Context())
 	items := make([]localItemEntry, 0, 16)
 	for _, root := range roots {
 		entries, err := os.ReadDir(root)
@@ -3460,6 +3653,14 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 			item.Path = localPath(root, entry.Name())
 			if item.Cover != "" {
 				item.Cover = localPath(root, item.Cover)
+			}
+			sourceID := strings.TrimSpace(item.SourceID)
+			comicID := strings.TrimSpace(item.ComicID)
+			if sourceID != "" && comicID != "" {
+				if s.discover != nil {
+					item.CachedCover = s.discover.CachedCoverURL(sourceID, comicID)
+				}
+				item.SourceCover = fallbacks[sourceID+"\x00"+comicID]
 			}
 			for i := range item.Files {
 				item.Files[i].Path = localPath(root, item.Files[i].Path)
@@ -3598,6 +3799,14 @@ func applyComicMeta(path string, item *localItemEntry) {
 	item.Tags = normalizeMetadataTags(strings.FieldsFunc(info.Genre, func(r rune) bool {
 		return r == ',' || r == '，' || r == ';' || r == '；'
 	}))
+	// ComicInfo has no dedicated book/comic field, so the single-format downloader
+	// encodes the work kind through the genre list it always appends.
+	for _, tag := range item.Tags {
+		if tag == "书籍" {
+			item.Kind = "book"
+			break
+		}
+	}
 	if legacyStatus.Status != "" {
 		item.Status = legacyStatus.Status
 	}
@@ -3622,6 +3831,13 @@ func applyComicMeta(path string, item *localItemEntry) {
 		}
 		if value, ok := strings.CutPrefix(part, "comicId="); ok {
 			item.ComicID = value
+		}
+		if value, ok := strings.CutPrefix(part, "status="); ok {
+			if decoded, err := url.QueryUnescape(value); err == nil {
+				item.Status = decoded
+			} else {
+				item.Status = value
+			}
 		}
 	}
 }

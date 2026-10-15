@@ -787,6 +787,16 @@ func (s *Store) ArchiveSubscription(ctx context.Context, id int64, reason string
 	return err
 }
 
+// RestoreSubscription 把归档订阅移回订阅清单：清除归档与停用标记，并重新启用，
+// 让调度器把它当作正常订阅继续检查更新。
+func (s *Store) RestoreSubscription(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE subscriptions SET archived_at = NULL, archive_reason = '', enabled = 1, disabled_at = NULL,
+			last_checked_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`, id)
+	return err
+}
+
 func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE subscriptions SET last_chapter_id = ?, last_chapter_title = ?, last_chapter_order = ?,

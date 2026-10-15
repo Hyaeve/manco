@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,6 +185,51 @@ func TestRuntimeOperationTranslatesSourceListPerRuntime(t *testing.T) {
 				t.Fatalf("runtimeOperation(%q, %q) = %q, want %q", test.runtimeType, test.operation, got, test.want)
 			}
 		})
+	}
+}
+
+func TestHostJVMOptionsAreBoundedAndOverridable(t *testing.T) {
+	t.Setenv("MANCO_KOTOTORO_HOST_OPTS", "")
+	t.Setenv("MANCO_MIHON_HOST_OPTS", "")
+
+	kototoro := hostJVMOptions("MANCO_KOTOTORO")
+	if !strings.Contains(kototoro, "-Xmx384m") {
+		t.Fatalf("Kototoro JVM options are not bounded: %q", kototoro)
+	}
+	mihon := hostJVMOptions("MANCO_MIHON")
+	if !strings.Contains(mihon, "-Xmx512m") {
+		t.Fatalf("Mihon JVM options are not bounded: %q", mihon)
+	}
+
+	t.Setenv("MANCO_KOTOTORO_HOST_OPTS", "-Xmx128m")
+	if got := hostJVMOptions("MANCO_KOTOTORO"); got != "-Xmx128m" {
+		t.Fatalf("Kototoro override = %q, want -Xmx128m", got)
+	}
+}
+
+func TestTrimListResultDropsChaptersOnlyFromListPayloads(t *testing.T) {
+	result := map[string]any{
+		"content": []any{
+			map[string]any{
+				"title":    "示例作品",
+				"chapters": []any{map[string]any{"title": "第1话"}},
+			},
+		},
+	}
+	trimmed := trimListResult(result)
+	items, ok := trimmed["content"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("trimmed content = %#v", trimmed["content"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("trimmed item = %#v", items[0])
+	}
+	if _, exists := item["chapters"]; exists {
+		t.Fatalf("chapters were retained: %#v", item)
+	}
+	if got := item["title"]; got != "示例作品" {
+		t.Fatalf("title = %#v", got)
 	}
 }
 

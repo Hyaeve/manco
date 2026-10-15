@@ -52,6 +52,7 @@ const downloadOpen = ref(false)
 const subForm = ref({
   cronExpr: '',
   downloadDir: lastSubscriptionDownloadDir(),
+  seriesDir: '',
   convertToSimplified: true,
   chapterMarker: false,
   coverBlur: false,
@@ -59,6 +60,7 @@ const subForm = ref({
 })
 const downloadForm = ref({
   downloadDir: lastSubscriptionDownloadDir(),
+  seriesDir: '',
   convertToSimplified: true,
   chapterMarker: false,
 })
@@ -251,6 +253,7 @@ function openSubscribe() {
   subForm.value = {
     cronExpr: subForm.value.cronExpr || defaultCron(),
     downloadDir: subForm.value.downloadDir || lastSubscriptionDownloadDir(),
+    seriesDir: '',
     convertToSimplified: true,
     chapterMarker: false,
     coverBlur: false,
@@ -290,6 +293,7 @@ async function confirmSubscribe() {
       allChapters: subForm.value.allChapters,
       cronExpr: subForm.value.cronExpr.trim(),
       downloadDir: subForm.value.downloadDir.trim(),
+      seriesDir: subForm.value.seriesDir.trim(),
       convertToSimplified: Boolean(subForm.value.convertToSimplified),
       chapterMarker: Boolean(subForm.value.chapterMarker),
       coverBlur: Boolean(subForm.value.coverBlur),
@@ -315,9 +319,13 @@ async function confirmSubscribe() {
 function openDownloadModal() {
   if (!selected.value.size) return
   downloadForm.value = {
-    downloadDir: subForm.value.downloadDir || lastSubscriptionDownloadDir(),
-    convertToSimplified: true,
-    chapterMarker: false,
+    downloadDir:
+      existingSubscription.value?.downloadDir ||
+      subForm.value.downloadDir ||
+      lastSubscriptionDownloadDir(),
+    seriesDir: existingSubscription.value?.seriesDir || '',
+    convertToSimplified: existingSubscription.value?.convertToSimplified ?? true,
+    chapterMarker: existingSubscription.value?.chapterMarker ?? false,
   }
   downloadOpen.value = true
 }
@@ -341,6 +349,7 @@ async function downloadSelected() {
       autoDownload: autoDownload.value,
       chapters: picked,
       downloadDir: downloadForm.value.downloadDir.trim(),
+      seriesDir: downloadForm.value.seriesDir.trim(),
       convertToSimplified: Boolean(downloadForm.value.convertToSimplified),
       chapterMarker: Boolean(downloadForm.value.chapterMarker),
     })
@@ -471,7 +480,7 @@ async function downloadSelected() {
     </section>
   </div>
 
-  <div v-if="subscribeOpen" class="modal-backdrop" @click.self="subscribeOpen = false">
+  <div v-if="subscribeOpen" class="modal-backdrop detail-modal-backdrop" @click.self="subscribeOpen = false">
     <div class="modal modal-lg subscription-modal">
       <div class="modal-head">
         <div>
@@ -492,7 +501,9 @@ async function downloadSelected() {
           <span>下载位置</span>
           <DirectoryPicker
             v-model="subForm.downloadDir"
+            v-model:suffix-value="subForm.seriesDir"
             :suffix="comic?.title"
+            :convert-to-simplified="subForm.convertToSimplified"
             :allow-default="false"
             placeholder="选择下载位置"
             @change="rememberSubscriptionDownloadDir"
@@ -532,7 +543,7 @@ async function downloadSelected() {
     </div>
   </div>
 
-  <div v-if="downloadOpen" class="modal-backdrop" @click.self="downloadOpen = false">
+  <div v-if="downloadOpen" class="modal-backdrop detail-modal-backdrop" @click.self="downloadOpen = false">
     <div class="modal modal-lg subscription-modal download-task-modal">
       <div class="modal-head">
         <div>
@@ -548,7 +559,9 @@ async function downloadSelected() {
           <span>下载位置</span>
           <DirectoryPicker
             v-model="downloadForm.downloadDir"
+            v-model:suffix-value="downloadForm.seriesDir"
             :suffix="comic?.title"
+            :convert-to-simplified="downloadForm.convertToSimplified"
             :allow-default="false"
             placeholder="选择下载位置"
             @change="rememberSubscriptionDownloadDir"

@@ -42,6 +42,7 @@ let timer = 0
 const form = ref({
   cronExpr: '',
   downloadDir: '',
+  seriesDir: '',
   convertToSimplified: true,
   chapterMarker: false,
   coverBlur: false,
@@ -113,6 +114,7 @@ function openEditor(item) {
   form.value = {
     cronExpr: item.cronExpr || '',
     downloadDir: item.downloadDir || '',
+    seriesDir: item.seriesDir || '',
     convertToSimplified: Boolean(item.convertToSimplified),
     chapterMarker: Boolean(item.chapterMarker),
     coverBlur: Boolean(item.coverBlur),
@@ -146,6 +148,7 @@ async function saveEditor() {
     const updated = await api.updateSubscription(editing.value.id, {
       cronExpr: form.value.cronExpr.trim(),
       downloadDir: form.value.downloadDir.trim(),
+      seriesDir: form.value.seriesDir.trim(),
       convertToSimplified: Boolean(form.value.convertToSimplified),
       chapterMarker: Boolean(form.value.chapterMarker),
       coverBlur: Boolean(form.value.coverBlur),
@@ -218,6 +221,8 @@ async function remove(item) {
 }
 
 function cover(item) {
+  if (item.localCover) return api.localFileUrl(item.localCover)
+  if (item.cachedCover) return item.cachedCover
   return api.imageUrl(item.cover, item.sourceId)
 }
 
@@ -394,7 +399,7 @@ async function downloadAll(item) {
           :class="{ blurred: item.coverBlur }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
         >
-          <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+          <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" />
           <BookOpen v-else :size="24" />
         </ContentLink>
         <div class="subscription-meta">
@@ -478,7 +483,9 @@ async function downloadAll(item) {
           <span>下载位置</span>
           <DirectoryPicker
             v-model="form.downloadDir"
+            v-model:suffix-value="form.seriesDir"
             :suffix="editing?.title"
+            :convert-to-simplified="form.convertToSimplified"
             :allow-default="false"
             placeholder="选择下载位置"
           />

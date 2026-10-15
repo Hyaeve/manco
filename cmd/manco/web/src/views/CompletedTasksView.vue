@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, ChevronDown, ChevronRight, CircleCheck, Loader2, RefreshCw, Search, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, ChevronDown, ChevronRight, CircleCheck, Loader2, RefreshCw, Search, Trash2, X } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
@@ -42,10 +42,16 @@ const groups = computed(() => {
         key,
         title: item.comicTitle || '未命名作品',
         author: item.comicAuthor || '未知作者',
+        localCover: '',
+        sourceCover: item.comicCover || '',
+        sourceId: item.sourceId || '',
+        localCoverFailed: false,
         items: [],
       }
       map.set(key, group)
     }
+    if (!group.localCover && item.localCover) group.localCover = item.localCover
+    if (!group.sourceCover && item.comicCover) group.sourceCover = item.comicCover
     group.items.push(item)
   }
   return [...map.values()].map((group) => {
@@ -112,6 +118,19 @@ function formatTime(item) {
   const raw = item.finishedAt || item.updatedAt
   if (!raw) return '—'
   return new Date(raw).toLocaleString()
+}
+
+function groupCover(group) {
+  if (group.localCover && !group.localCoverFailed) return api.localFileUrl(group.localCover)
+  return api.imageUrl(group.sourceCover, group.sourceId)
+}
+
+function handleGroupCoverError(group) {
+  if (group.localCover && !group.localCoverFailed) {
+    group.localCoverFailed = true
+    return
+  }
+  group.sourceCover = ''
 }
 
 async function remove(item) {
@@ -189,6 +208,16 @@ async function remove(item) {
           :aria-expanded="isGroupExpanded(group.key)"
           @click="toggleGroup(group.key)"
         >
+          <span class="completed-task-cover">
+            <img
+              v-if="groupCover(group)"
+              :src="groupCover(group)"
+              :alt="group.title"
+              loading="lazy"
+              @error="handleGroupCoverError(group)"
+            />
+            <BookOpen v-else :size="22" />
+          </span>
           <span class="completed-task-title">
             <strong>{{ group.title }}</strong>
             <small>{{ group.author }}</small>
