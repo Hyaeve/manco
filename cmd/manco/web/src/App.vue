@@ -3,7 +3,6 @@ import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Activity,
-  Archive,
   Bell,
   CircleCheck,
   UserRound,
@@ -87,9 +86,7 @@ const navItems = [
   { name: 'dashboard', label: '总览', to: '/', icon: LayoutDashboard },
   { name: 'discover', label: '探索发现', to: '/discover', icon: Compass },
   { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
-  { name: 'archive', label: '归档集', to: '/archive', icon: Archive },
   { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },
-  { name: 'completed', label: '已完成', to: '/completed', icon: CircleCheck },
   { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
   { name: 'sources', label: '资源仓库', to: '/sources', icon: Server },
 ]
@@ -97,6 +94,13 @@ const logsItem = { name: 'logs', label: '运行日志', to: '/logs', icon: Scrol
 const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }
 
 const showShell = computed(() => route.name !== 'login')
+
+// 归档集归在订阅清单栏目下，已完成归在任务列表栏目下。
+function navActive(name) {
+  if (name === 'subscriptions') return route.name === 'subscriptions' || route.name === 'archive'
+  if (name === 'downloads') return route.name === 'downloads' || route.name === 'completed'
+  return route.name === name
+}
 
 function applyTheme() {
   const resolved = theme.value === 'system' ? (media.matches ? 'dark' : 'light') : theme.value
@@ -260,8 +264,8 @@ function activityIcon(level) {
             v-for="item in navItems"
             :key="item.name"
             type="button"
-            :aria-current="route.name === item.name ? 'page' : undefined"
-            :class="{ active: route.name === item.name }"
+            :aria-current="navActive(item.name) ? 'page' : undefined"
+            :class="{ active: navActive(item.name) }"
             @click="router.push(item.to)"
           >
             <component :is="item.icon" :size="21" />

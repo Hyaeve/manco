@@ -44,6 +44,7 @@ const viewMode = ref(localStorage.getItem(VIEW_STORAGE_KEY) === 'list' ? 'list' 
 const sourceStripRef = ref(null)
 const stripCanLeft = ref(false)
 const stripCanRight = ref(false)
+const requestStates = new Map()
 
 const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
 const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
@@ -135,6 +136,7 @@ function panelFor(source) {
       sourceHasMore: true,
       items: [],
       loading: false,
+      searching: false,
       loaded: false,
       error: '',
       filters: sourceFilters(source),
@@ -159,6 +161,8 @@ const hasNextPage = computed(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateStripBounds)
+  for (const state of requestStates.values()) state.controller.abort()
+  requestStates.clear()
 })
 
 async function loadSources() {
@@ -269,22 +273,50 @@ async function selectSource(id) {
   scrollPageTop()
 }
 
-function fetchPage(source, panel, page) {
+function beginPanelRequest(source, panel) {
+  const previous = requestStates.get(source.id)
+  previous?.controller.abort()
+  const state = {
+    seq: (previous?.seq || 0) + 1,
+    controller: new AbortController(),
+  }
+  requestStates.set(source.id, state)
+  panel.loading = true
+  panel.searching = panel.mode === 'search' && Boolean(panel.query.trim())
+  return state
+}
+
+function isCurrentPanelRequest(source, state) {
+  return requestStates.get(source.id)?.seq === state.seq
+}
+
+function finishPanelRequest(source, panel, state) {
+  if (!isCurrentPanelRequest(source, state)) return false
+  requestStates.delete(source.id)
+  panel.loading = false
+  panel.searching = false
+  return true
+}
+
+function fetchPage(source, panel, page, signal) {
   return panel.mode === 'search' && panel.query.trim()
-    ? api.search(source.id, panel.query.trim(), page)
-    : api.browse(source.id, panel.filters, page)
+    ? api.search(source.id, panel.query.trim(), page, signal)
+    : api.browse(source.id, panel.filters, page, signal)
 }
 
 async function ensure(source, panel, targetPage) {
-  if (!source || !panel || panel.loading) return
-  await ensureSourceFilters(source)
+  if (!source || !panel) return
   const wanted = Math.max(1, targetPage)
   const need = wanted * pageSize.value
-  panel.loading = true
+  const request = beginPanelRequest(source, panel)
   panel.error = ''
+  let completed = false
   try {
+    await ensureSourceFilters(source)
+    if (!isCurrentPanelRequest(source, request)) return
     while (panel.items.length < need) {
-      const result = await fetchPage(source, panel, panel.sourcePage)
+      const result = await fetchPage(source, panel, panel.sourcePage, request.controller.signal)
+      if (!isCurrentPanelRequest(source, request)) return
       const items = result.items || []
       panel.items = panel.items.concat(items)
       panel.sourcePage += 1
@@ -296,14 +328,16 @@ async function ensure(source, panel, targetPage) {
       if (!panel.sourceHasMore) break
     }
   } catch (err) {
+    if (!isCurrentPanelRequest(source, request) || err?.name === 'AbortError') return
     if (!panel.items.length) panel.error = err.message
     panel.sourceHasMore = false
     notify(`${source.name} 加载失败：${err.message}`, true)
   } finally {
-    panel.loading = false
-    panel.loaded = true
-    markDiscoverPanelsLoaded()
+    completed = finishPanelRequest(source, panel, request)
   }
+  if (!completed) return
+  panel.loaded = true
+  markDiscoverPanelsLoaded()
   const maxPage = Math.max(1, Math.ceil(panel.items.length / pageSize.value))
   panel.page = panel.sourceHasMore ? wanted : Math.min(wanted, maxPage)
 }
@@ -442,11 +476,11 @@ function latestLabel(item) {
             v-model="activePanel.query"
             class="discover-search-input"
             type="search"
-            :disabled="!activeSource.canSearch || activePanel.loading"
+            :disabled="!activeSource.canSearch"
             placeholder="搜索作品"
             @keyup.enter="submitSearch"
           />
-          <Loader2 v-if="activePanel.loading" :size="15" class="spin" />
+          <Loader2 v-if="activePanel.searching" :size="15" class="spin" />
           <button v-else-if="activePanel.query" class="icon-btn" type="button" aria-label="清除搜索" @click="clearSourceSearch">
             <X :size="14" />
           </button>

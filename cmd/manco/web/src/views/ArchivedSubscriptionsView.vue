@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Archive, BookOpen, Loader2, RefreshCw } from 'lucide-vue-next'
+import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw } from 'lucide-vue-next'
 import { api } from '../api'
 import SourceIcon from '../components/SourceIcon.vue'
 import { notify } from '../stores/notices'
@@ -87,7 +87,9 @@ function jobStats(item) {
   <div class="page-panel archive-page">
     <div class="toolbar archive-toolbar">
       <div class="inline">
-        <Archive :size="18" />
+        <RouterLink class="btn ghost icon" to="/subscriptions" aria-label="返回订阅清单">
+          <ArrowLeft :size="17" />
+        </RouterLink>
         <strong>归档集</strong>
         <span class="badge">{{ items.length }}</span>
       </div>

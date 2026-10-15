@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -33,7 +33,8 @@ const TASK_ROW_STEP = TASK_ROW_HEIGHT + TASK_ROW_GAP
 const TASK_VIRTUAL_OVERSCAN = 4
 const virtualViewport = ref(null)
 const virtualScrollTop = ref(0)
-const virtualViewportHeight = ref(560)
+const virtualViewportHeight = ref(720)
+let scrollContainer = null
 
 const filters = [
   { value: 'all', label: '全部' },
@@ -107,6 +108,10 @@ const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting'
 watch(
   () => route.query.filter,
   (value) => {
+    if (value === 'completed') {
+      router.replace({ name: 'completed', query: route.query.q ? { q: route.query.q } : {} })
+      return
+    }
     const next = typeof value === 'string' && filterValues.has(value) ? value : 'all'
     if (filter.value !== next) filter.value = next
   },
@@ -197,15 +202,33 @@ function clearSelection() {
   lastIndex = -1
 }
 
-function onVirtualScroll(event) {
-  const viewport = event.currentTarget
-  virtualScrollTop.value = viewport.scrollTop
-  virtualViewportHeight.value = viewport.clientHeight || virtualViewportHeight.value
+// 虚拟列表跟随页面滚动：用页面滚动位置换算相对列表顶部的偏移。
+function measureVirtual() {
+  const viewport = virtualViewport.value
+  if (!viewport) return
+  const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0
+  const top = viewport.getBoundingClientRect().top + scrollTop - (scrollContainer ? scrollContainer.getBoundingClientRect().top : 0)
+  virtualScrollTop.value = Math.max(0, scrollTop - top)
+  const height = scrollContainer ? scrollContainer.clientHeight : window.innerHeight
+  virtualViewportHeight.value = Math.max(320, height || 720)
+}
+
+function onPageScroll() {
+  measureVirtual()
+}
+
+function onPageResize() {
+  measureVirtual()
 }
 
 function resetVirtualScroll() {
+  if (scrollContainer && virtualViewport.value) {
+    const top = virtualViewport.value.getBoundingClientRect().top + scrollContainer.scrollTop - scrollContainer.getBoundingClientRect().top
+    scrollContainer.scrollTop = Math.max(0, top - 12)
+  } else if (scrollContainer) {
+    scrollContainer.scrollTop = 0
+  }
   virtualScrollTop.value = 0
-  if (virtualViewport.value) virtualViewport.value.scrollTop = 0
 }
 
 watch([filter, keyword], resetVirtualScroll)
@@ -216,6 +239,11 @@ function onKeydown(event) {
 
 onMounted(async () => {
   await load()
+  scrollContainer = virtualViewport.value?.closest('.content-scroll') || null
+  scrollContainer?.addEventListener('scroll', onPageScroll, { passive: true })
+  window.addEventListener('resize', onPageResize)
+  await nextTick()
+  measureVirtual()
   window.addEventListener('keydown', onKeydown)
   timer = window.setInterval(() => {
     if (hasActive.value) load(true)
@@ -224,6 +252,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  scrollContainer?.removeEventListener('scroll', onPageScroll)
+  window.removeEventListener('resize', onPageResize)
   window.removeEventListener('keydown', onKeydown)
 })
 
@@ -375,6 +405,9 @@ async function remove(item, removeFile) {
         {{ item.label }}
         <span class="segmented-count">{{ counts[item.value] }}</span>
       </button>
+      <RouterLink class="completed-tab" to="/completed">
+        已完成
+      </RouterLink>
     </div>
     <span class="spacer" />
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
@@ -425,7 +458,6 @@ async function remove(item, removeFile) {
       <div
         ref="virtualViewport"
         class="download-virtual-viewport"
-        @scroll.passive="onVirtualScroll"
       >
         <div class="download-virtual-inner" :style="{ height: `${virtualInnerHeight}px` }">
           <article

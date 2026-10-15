@@ -352,6 +352,10 @@ async function downloadAll(item) {
       <RefreshCw :size="15" :class="{ spin: loading }" />
       刷新
     </button>
+    <RouterLink class="btn secondary small archive-entry" to="/archive">
+      <Archive :size="15" />
+      归档集
+    </RouterLink>
   </div>
 
   <div v-if="loading && !items.length" class="empty">

@@ -3102,11 +3102,33 @@
   box-shadow: none;
 }
 .local-library-card .local-library-cover {
+  position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
   overflow: hidden;
   border-radius: 10px;
   background: var(--surface-muted);
+}
+.local-library-card .local-library-chapter-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(23, 25, 28, 0.72);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(5px);
+  pointer-events: none;
 }
 .local-library-card .local-library-cover img {
   display: block;
@@ -3147,13 +3169,11 @@
   white-space: nowrap;
 }
 .local-library-card .local-library-meta > span:first-child {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.local-library-card .local-library-meta > span:last-child {
-  flex: 0 0 auto;
 }
 .local-library-card.selected {
   border-color: transparent;
@@ -3252,6 +3272,16 @@
   color: var(--text-muted);
   cursor: default;
   opacity: 0.45;
+}
+.segmented a.completed-tab {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.segmented a.completed-tab:hover {
+  color: var(--text);
+  background: var(--surface-muted);
 }
 .completed-task-window {
   margin-top: 12px;
@@ -3767,21 +3797,26 @@ svg.source-editor-icon {
 }
 .icon-library-url {
   display: flex;
-  flex: 1 1 420px;
+  flex: 1 1 320px;
   min-width: 260px;
   gap: 8px;
 }
 .icon-library-url .input {
   flex: 1;
   min-width: 0;
+  max-width: 320px;
 }
 .icon-library-url .btn {
   flex: 0 0 auto;
   white-space: nowrap;
 }
+.icon-upload-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .icon-library-search {
   display: flex;
-  flex: 0 1 240px;
+  flex: 1 1 240px;
   min-width: 180px;
   align-items: center;
   gap: 7px;
@@ -4069,10 +4104,7 @@ svg.source-editor-icon {
 
 .download-virtual-viewport {
   min-height: 0;
-  max-height: min(68vh, 720px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 4px;
+  padding-right: 2px;
 }
 
 .download-virtual-inner {

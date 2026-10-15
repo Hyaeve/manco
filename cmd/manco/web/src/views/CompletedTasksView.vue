@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { ChevronDown, ChevronRight, CircleCheck, FileArchive, Loader2, RefreshCw, Search, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, ChevronDown, ChevronRight, CircleCheck, Loader2, RefreshCw, Search, Trash2, X } from 'lucide-vue-next'
 import { api } from '../api'
 import { askConfirm } from '../stores/confirm'
 
@@ -140,7 +140,9 @@ async function remove(item) {
 
     <div class="toolbar completed-toolbar">
       <div class="inline">
-        <FileArchive :size="18" />
+        <RouterLink class="btn ghost icon" to="/downloads" aria-label="返回任务列表">
+          <ArrowLeft :size="17" />
+        </RouterLink>
         <strong>已完成</strong>
         <span class="badge success">{{ completedItems.length }}</span>
       </div>

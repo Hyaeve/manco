@@ -19,7 +19,7 @@ import BackArrowIcon from '../components/BackArrowIcon.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { notify } from '../stores/notices'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
-import { dirBasename, splitAuthors } from '../utils/metadata'
+import { splitAuthors } from '../utils/metadata'
 
 const route = useRoute()
 const router = useRouter()
@@ -99,12 +99,6 @@ const downloadForm = ref({
 
 const existingSubscription = ref(null)
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
-// 作品名称左上角的小字：下载目录的父目录名，例如 /A/B 显示 B（作品文件夹会自动补在其下）。
-const downloadDirName = computed(() => {
-  const raw = String(existingSubscription.value?.downloadDir || subForm.value.downloadDir || '').trim()
-  return dirBasename(raw)
-})
-
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
 const chapters = computed(() => detail.value?.chapters || [])
@@ -421,7 +415,6 @@ async function downloadSelected() {
         </div>
       </div>
       <div class="detail-info">
-        <div v-if="downloadDirName" class="detail-dir-label">{{ downloadDirName }}</div>
         <div class="detail-info-head">
           <h2>{{ comic.title }}</h2>
           <div class="detail-actions">

@@ -296,6 +296,10 @@ function chapterName(file) {
   return String(file.name || '').replace(/\.[^.]+$/, '')
 }
 
+function chapterCount(item) {
+  return Number(item.files?.length || item.totalFiles || 0)
+}
+
 
 function extractTint(url) {
   try {
@@ -625,6 +629,7 @@ function downloadReaderFile() {
       >
         <span v-if="isSelected(item)" class="local-selection-check"><Check :size="16" /></span>
         <span class="local-library-cover">
+          <span class="local-library-chapter-badge">{{ chapterCount(item) }}</span>
           <img v-if="item.cover" :src="coverUrl(item)" :alt="item.title" loading="lazy" />
           <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
         </span>
@@ -632,7 +637,6 @@ function downloadReaderFile() {
           <strong class="local-library-title">{{ item.title }}</strong>
           <span class="local-library-meta">
             <span>{{ item.author || '未知作者' }}</span>
-            <span>{{ item.files?.length || item.totalFiles || 0 }}章</span>
           </span>
         </span>
       </button>

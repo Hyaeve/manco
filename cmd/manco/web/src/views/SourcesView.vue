@@ -1684,16 +1684,9 @@ function onDragEnd() {
           <h2>本地图标库</h2>
           <p class="muted small">图标保存在容器 /data/icon 目录</p>
         </div>
-        <div class="inline">
-          <button class="btn secondary small" type="button" :disabled="iconUploading" @click="iconUploadInput?.click()">
-            <Loader2 v-if="iconUploading" :size="14" class="spin" />
-            <Upload v-else :size="14" />
-            上传图标
-          </button>
-          <button class="btn ghost icon" type="button" aria-label="关闭" @click="iconLibraryOpen = false">
-            <X :size="18" />
-          </button>
-        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="iconLibraryOpen = false">
+          <X :size="18" />
+        </button>
       </div>
       <input
         ref="iconUploadInput"
@@ -1705,6 +1698,11 @@ function onDragEnd() {
       <div class="modal-body">
         <div class="icon-library-tools">
           <div class="icon-library-url">
+            <button class="btn secondary small icon-upload-button" type="button" :disabled="iconUploading" @click="iconUploadInput?.click()">
+              <Loader2 v-if="iconUploading" :size="14" class="spin" />
+              <Upload v-else :size="14" />
+              上传图标
+            </button>
             <input
               v-model="iconUrlInput"
               class="input"

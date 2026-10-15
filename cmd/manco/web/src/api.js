@@ -84,22 +84,22 @@ export const api = {
     request(`/api/sources/${encodeURIComponent(id)}/plugin-preferences`),
   updatePluginPreference: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/plugin-preferences`, { method: 'PUT', body: JSON.stringify(payload) }),
-  search: (id, query, page = 1) =>
-    request(`/api/sources/${encodeURIComponent(id)}/search?q=${encodeURIComponent(query)}&page=${page}`),
+  search: (id, query, page = 1, signal) =>
+    request(`/api/sources/${encodeURIComponent(id)}/search?q=${encodeURIComponent(query)}&page=${page}`, { signal }),
   globalSearch: (query, kind = '', page = 1) => {
     const params = new URLSearchParams({ q: query, page: String(page) })
     if (kind) params.set('kind', kind)
     return request(`/api/search?${params.toString()}`)
   },
   sourceFilters: (id) => request(`/api/sources/${encodeURIComponent(id)}/filters`),
-  browse: (id, filters = {}, page = 1) => {
+  browse: (id, filters = {}, page = 1, signal) => {
     const params = new URLSearchParams({ page: String(page) })
     for (const [key, value] of Object.entries(filters)) {
       if (value !== undefined && value !== null && String(value) !== '') {
         params.set(key, String(value))
       }
     }
-    return request(`/api/sources/${encodeURIComponent(id)}/browse?${params.toString()}`)
+    return request(`/api/sources/${encodeURIComponent(id)}/browse?${params.toString()}`, { signal })
   },
   comic: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}`),
