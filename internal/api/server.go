@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.5"
+	appVersion    = "v0.4.6"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2131,7 +2131,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		value := strings.TrimSpace(values[0])
-		if value == "" || (key != "demographic" && key != "rating" && !strings.HasPrefix(key, "tag:")) {
+		if value == "" || isBrowseControlParam(key) {
 			continue
 		}
 		if options.Extra == nil {
@@ -2174,6 +2174,15 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
+}
+
+func isBrowseControlParam(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "page", "category", "sort", "state", "region", "order", "kind", "q":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {

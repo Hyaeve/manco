@@ -5,16 +5,21 @@ import (
 	"context"
 	"crypto/aes"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	_ "golang.org/x/image/webp"
 
+	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 )
 
@@ -136,6 +141,155 @@ func TestNormalizeBrowseValues(t *testing.T) {
 	}
 }
 
+func TestInfoIncludesKototoroFilterGroups(t *testing.T) {
+	groups := map[string]model.FilterGroup{}
+	for _, group := range New(nil).Info().Filters {
+		groups[group.Key] = group
+	}
+	expected := []struct {
+		key    string
+		label  string
+		labels []string
+	}{
+		{key: "weekly", label: "每周必看", labels: []string{"最新一期"}},
+		{key: "category", label: "分类", labels: []string{"同人", "短篇", "Cosplay", "禁漫汉化组"}},
+		{key: "theme", label: "主题A漫", labels: []string{"無修正", "NTR", "禁漫漢化組"}},
+		{key: "role", label: "角色扮演", labels: []string{"御姐", "兔女郎"}},
+		{key: "play", label: "特殊PLAY", labels: []string{"束縛", "騎大車"}},
+		{key: "other", label: "其他", labels: []string{"CG", "站長推薦"}},
+		{key: "sort", label: "排序", labels: []string{"最新", "最多观看"}},
+	}
+	for _, want := range expected {
+		group, ok := groups[want.key]
+		if !ok {
+			t.Fatalf("missing filter group %q", want.key)
+		}
+		if group.Label != want.label {
+			t.Fatalf("group %s label = %q, want %q", want.key, group.Label, want.label)
+		}
+		labels := map[string]bool{}
+		for _, option := range group.Options {
+			labels[option.Label] = true
+		}
+		for _, label := range want.labels {
+			if !labels[label] {
+				t.Fatalf("group %s missing option %q: %#v", want.key, label, group.Options)
+			}
+		}
+	}
+}
+
+func TestBrowseUsesKototoroFilterRoutes(t *testing.T) {
+	tests := []struct {
+		name      string
+		options   model.BrowseOptions
+		page      int
+		wantPath  string
+		wantQuery map[string]string
+		weekly    bool
+	}{
+		{
+			name:     "category",
+			options:  model.BrowseOptions{Category: "doujin", Sort: "mv"},
+			page:     2,
+			wantPath: "/categories/filter",
+			wantQuery: map[string]string{
+				"c": "doujin", "o": "mv", "page": "2",
+			},
+		},
+		{
+			name:     "weekly",
+			options:  model.BrowseOptions{Sort: "mv", Extra: map[string]string{"weekly": "321"}},
+			page:     3,
+			wantPath: "/week/filter",
+			wantQuery: map[string]string{
+				"id": "321", "type": "1", "page": "2",
+			},
+			weekly: true,
+		},
+		{
+			name: "search tags",
+			options: model.BrowseOptions{
+				Sort:  "tf",
+				Extra: map[string]string{"theme": "s:純愛", "role": "s:御姐"},
+			},
+			page:     2,
+			wantPath: "/search",
+			wantQuery: map[string]string{
+				"search_query": "純愛 御姐", "o": "tf", "page": "2",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotPath string
+			var gotQuery url.Values
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotQuery = r.URL.Query()
+				payload := map[string]any{"total": 0, "content": []any{}}
+				if test.weekly {
+					payload = map[string]any{"total": 0, "list": []any{}}
+				}
+				body, err := jmEncryptedResponse(r, payload)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(body)
+			}))
+			defer server.Close()
+
+			item := New(server.Client())
+			if _, err := item.Browse(
+				context.Background(),
+				source.Account{HomeURL: server.URL},
+				test.options,
+				test.page,
+			); err != nil {
+				t.Fatalf("Browse: %v", err)
+			}
+			if gotPath != test.wantPath {
+				t.Fatalf("path = %q, want %q", gotPath, test.wantPath)
+			}
+			for key, want := range test.wantQuery {
+				if got := gotQuery.Get(key); got != want {
+					t.Fatalf("query %s = %q, want %q (all: %s)", key, got, want, gotQuery.Encode())
+				}
+			}
+		})
+	}
+}
+
+func TestLatestWeekIDUsesNewestNumericPeriod(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, err := jmEncryptedResponse(r, map[string]any{
+			"categories": []any{
+				map[string]any{"id": "9", "time": "旧期"},
+				map[string]any{"id": "11", "time": "新期"},
+			},
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	item := New(server.Client())
+	got, err := item.latestWeekID(context.Background(), source.Account{HomeURL: server.URL})
+	if err != nil {
+		t.Fatalf("latestWeekID: %v", err)
+	}
+	if gotPath != "/week" || got != "11" {
+		t.Fatalf("latestWeekID path/id = %q/%q, want /week/11", gotPath, got)
+	}
+}
+
 func TestLiveJMAPI(t *testing.T) {
 	if os.Getenv("MANCO_LIVE_JM") == "" {
 		t.Skip("set MANCO_LIVE_JM=1 to run the live 18comic API test")
@@ -149,6 +303,26 @@ func TestLiveJMAPI(t *testing.T) {
 	}
 	if len(result.Items) == 0 {
 		t.Fatal("Search returned no items")
+	}
+	weekly, err := item.Browse(ctx, source.Account{}, model.BrowseOptions{
+		Sort:  "mv_w",
+		Extra: map[string]string{"weekly": "latest"},
+	}, 1)
+	if err != nil {
+		t.Fatalf("Browse weekly: %v", err)
+	}
+	if len(weekly.Items) == 0 {
+		t.Fatal("Weekly browse returned no items")
+	}
+	tagged, err := item.Browse(ctx, source.Account{}, model.BrowseOptions{
+		Sort:  "mr",
+		Extra: map[string]string{"theme": "純愛", "role": "御姐"},
+	}, 1)
+	if err != nil {
+		t.Fatalf("Browse tagged: %v", err)
+	}
+	if len(tagged.Items) == 0 {
+		t.Fatal("Tagged browse returned no items")
 	}
 	comic := result.Items[0]
 	if comic.Cover == "" {
@@ -203,11 +377,36 @@ func TestLiveJMAPI(t *testing.T) {
 	}
 }
 
+func jmEncryptedResponse(r *http.Request, payload any) ([]byte, error) {
+	timestampText := strings.SplitN(r.Header.Get("Tokenparam"), ",", 2)[0]
+	timestamp, err := strconv.ParseInt(timestampText, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	plain, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := encryptAPIDataRaw(timestamp, plain, appDataSecret)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"code": http.StatusOK, "data": encoded})
+}
+
 func encryptAPIDataForTest(t *testing.T, timestamp int64, plain []byte, secret string) string {
 	t.Helper()
+	encoded, err := encryptAPIDataRaw(timestamp, plain, secret)
+	if err != nil {
+		t.Fatalf("encryptAPIDataRaw: %v", err)
+	}
+	return encoded
+}
+
+func encryptAPIDataRaw(timestamp int64, plain []byte, secret string) (string, error) {
 	block, err := aes.NewCipher([]byte(md5Hex(strconv.FormatInt(timestamp, 10) + secret)))
 	if err != nil {
-		t.Fatalf("aes.NewCipher: %v", err)
+		return "", err
 	}
 	padding := aes.BlockSize - len(plain)%aes.BlockSize
 	padded := append([]byte(nil), plain...)
@@ -217,5 +416,5 @@ func encryptAPIDataForTest(t *testing.T, timestamp int64, plain []byte, secret s
 	for offset := 0; offset < len(padded); offset += aes.BlockSize {
 		block.Encrypt(padded[offset:offset+aes.BlockSize], padded[offset:offset+aes.BlockSize])
 	}
-	return base64.StdEncoding.EncodeToString(padded)
+	return base64.StdEncoding.EncodeToString(padded), nil
 }

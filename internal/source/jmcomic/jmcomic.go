@@ -75,7 +75,34 @@ var jmCategoryOptions = []model.FilterOption{
 	{Value: "meiman", Label: "美漫"},
 	{Value: "doujin_cosplay", Label: "Cosplay"},
 	{Value: "3D", Label: "3D"},
+	{Value: "禁漫漢化組", Label: "禁漫汉化组"},
 }
+
+var jmWeeklyOptions = []model.FilterOption{
+	{Value: "", Label: "全部"},
+	{Value: "latest", Label: "最新一期"},
+}
+
+var jmThemeOptions = jmTagFilterOptions([]string{
+	"無修正", "劇情向", "青年漫", "校服", "純愛", "人妻", "教師", "百合",
+	"Yaoi", "性轉", "NTR", "女裝", "癡女", "全彩", "女性向", "完結",
+	"禁漫漢化組",
+})
+
+var jmRoleOptions = jmTagFilterOptions([]string{
+	"御姐", "熟女", "巨乳", "貧乳", "女性支配", "女僕", "護士", "泳裝",
+	"眼鏡", "連褲襪", "其他制服", "兔女郎",
+})
+
+var jmPlayOptions = jmTagFilterOptions([]string{
+	"群交", "足交", "束縛", "肛交", "阿黑顏", "藥物", "扶他", "調教",
+	"野外露出", "催眠", "自慰", "觸手", "獸交", "亞人", "怪物女孩",
+	"皮物", "ryona", "騎大車",
+})
+
+var jmOtherOptions = jmTagFilterOptions([]string{
+	"CG", "重口", "獵奇", "非H", "血腥暴力", "站長推薦",
+})
 
 var jmSortOptions = []model.FilterOption{
 	{Value: "mr", Label: "最新"},
@@ -104,13 +131,22 @@ func (s *Source) Info() model.SourceInfo {
 		Icon:        "/source-icons/jmcomic.png",
 		Sites:       append([]string(nil), defaultSites...),
 		Filters: []model.FilterGroup{
+			{Key: "weekly", Label: "每周必看", Default: "", Options: jmWeeklyOptions},
 			{Key: "category", Label: "分类", Default: "0", Options: jmCategoryOptions},
+			{Key: "theme", Label: "主题A漫", Default: "", Options: jmThemeOptions},
+			{Key: "role", Label: "角色扮演", Default: "", Options: jmRoleOptions},
+			{Key: "play", Label: "特殊PLAY", Default: "", Options: jmPlayOptions},
+			{Key: "other", Label: "其他", Default: "", Options: jmOtherOptions},
 			{Key: "sort", Label: "排序", Default: "mr", Options: jmSortOptions},
 		},
 	}
 }
 
 func (s *Source) Search(ctx context.Context, account source.Account, query string, page int) (model.SearchResult, error) {
+	return s.searchWithSort(ctx, account, query, "mr", page)
+}
+
+func (s *Source) searchWithSort(ctx context.Context, account source.Account, query, order string, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -118,11 +154,12 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 	if query == "" {
 		return model.SearchResult{}, errors.New("搜索关键词不能为空")
 	}
+	order = normalizeSort(order)
 	payload, _, err := s.apiJSON(ctx, account, "/search", url.Values{
 		"main_tag":     {"0"},
 		"search_query": {query},
 		"page":         {strconv.Itoa(page)},
-		"o":            {"mr"},
+		"o":            {order},
 		"t":            {""},
 	}, appTokenSecret)
 	if err != nil {
@@ -152,8 +189,14 @@ func (s *Source) Browse(ctx context.Context, account source.Account, options mod
 	if page < 1 {
 		page = 1
 	}
-	category := normalizeCategory(options.Category)
 	order := normalizeSort(options.Sort)
+	if query := jmSearchTagQuery(options.Extra); query != "" {
+		return s.searchWithSort(ctx, account, query, order, page)
+	}
+	if weekly := normalizeWeekly(options.Extra["weekly"]); weekly != "" {
+		return s.browseWeekly(ctx, account, weekly, order, page)
+	}
+	category := normalizeCategory(options.Category)
 	payload, _, err := s.apiJSON(ctx, account, "/categories/filter", url.Values{
 		"page":  {strconv.Itoa(page)},
 		"order": {""},
@@ -168,6 +211,97 @@ func (s *Source) Browse(ctx context.Context, account source.Account, options mod
 		return model.SearchResult{}, err
 	}
 	return parseSearchResult(envelope, page)
+}
+
+func (s *Source) browseWeekly(ctx context.Context, account source.Account, weekID, order string, page int) (model.SearchResult, error) {
+	if weekID == "" || weekID == "latest" {
+		latest, err := s.latestWeekID(ctx, account)
+		if err != nil {
+			return model.SearchResult{}, err
+		}
+		weekID = latest
+	}
+	weekType := "0"
+	if order == "mv" {
+		weekType = "1"
+	}
+	payload, _, err := s.apiJSON(ctx, account, "/week/filter", url.Values{
+		"id":   {weekID},
+		"type": {weekType},
+		"page": {strconv.Itoa(page - 1)},
+	}, appTokenSecret)
+	if err != nil {
+		return model.SearchResult{}, err
+	}
+	var envelope apiWeekPage
+	if err := decodeJSON(payload, &envelope); err != nil {
+		return model.SearchResult{}, err
+	}
+	return parseSearchItems(envelope.List, intValue(envelope.Total), page), nil
+}
+
+func (s *Source) latestWeekID(ctx context.Context, account source.Account) (string, error) {
+	payload, _, err := s.apiJSON(ctx, account, "/week", nil, appTokenSecret)
+	if err != nil {
+		return "", err
+	}
+	var envelope apiWeekEnvelope
+	if err := decodeJSON(payload, &envelope); err != nil {
+		return "", err
+	}
+	latestID := ""
+	latestNumber := 0
+	for _, item := range envelope.Categories {
+		id := strings.TrimSpace(textValue(item.ID))
+		if id == "" || strings.TrimSpace(textValue(item.Time)) == "" {
+			continue
+		}
+		if latestID == "" {
+			latestID = id
+		}
+		numeric, parseErr := strconv.Atoi(id)
+		if parseErr == nil && numeric > latestNumber {
+			latestNumber = numeric
+			latestID = id
+		}
+	}
+	if latestID == "" {
+		return "", errors.New("禁漫每周必看没有可用期数")
+	}
+	return latestID, nil
+}
+
+func jmTagFilterOptions(labels []string) []model.FilterOption {
+	options := make([]model.FilterOption, 0, len(labels)+1)
+	options = append(options, model.FilterOption{Value: "", Label: "全部"})
+	for _, label := range labels {
+		options = append(options, model.FilterOption{Value: "s:" + label, Label: label})
+	}
+	return options
+}
+
+func jmSearchTagQuery(extra map[string]string) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	for _, key := range []string{"theme", "role", "play", "other"} {
+		if value := strings.TrimSpace(extra[key]); value != "" {
+			parts = append(parts, strings.TrimPrefix(value, "s:"))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func normalizeWeekly(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "all":
+		return ""
+	case "current", "new", "latest":
+		return "latest"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 func (s *Source) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
@@ -349,6 +483,20 @@ type apiSearchPage struct {
 	RedirectAID any             `json:"redirect_aid"`
 }
 
+type apiWeekPage struct {
+	Total any             `json:"total"`
+	List  []apiSearchItem `json:"list"`
+}
+
+type apiWeekEnvelope struct {
+	Categories []apiWeekCategory `json:"categories"`
+}
+
+type apiWeekCategory struct {
+	ID   any    `json:"id"`
+	Time string `json:"time"`
+}
+
 type apiSearchItem struct {
 	ID          any         `json:"id"`
 	Name        string      `json:"name"`
@@ -394,8 +542,12 @@ type apiSeries struct {
 }
 
 func parseSearchResult(envelope apiSearchPage, page int) (model.SearchResult, error) {
-	items := make([]model.Comic, 0, len(envelope.Content))
-	for _, entry := range envelope.Content {
+	return parseSearchItems(envelope.Content, intValue(envelope.Total), page), nil
+}
+
+func parseSearchItems(entries []apiSearchItem, total int, page int) model.SearchResult {
+	items := make([]model.Comic, 0, len(entries))
+	for _, entry := range entries {
 		comicID := normalizeComicID(textValue(entry.ID))
 		if comicID == "" {
 			continue
@@ -421,7 +573,6 @@ func parseSearchResult(envelope apiSearchPage, page int) (model.SearchResult, er
 			UpdatedAt: updatedAt,
 		})
 	}
-	total := intValue(envelope.Total)
 	if total <= 0 {
 		total = len(items)
 	}
@@ -437,7 +588,7 @@ func parseSearchResult(envelope apiSearchPage, page int) (model.SearchResult, er
 		Pages:   pages,
 		Total:   total,
 		HasMore: hasMore,
-	}, nil
+	}
 }
 
 func (s *Source) apiJSON(ctx context.Context, account source.Account, path string, params url.Values, secret string) ([]byte, string, error) {
