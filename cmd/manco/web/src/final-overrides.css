@@ -1805,8 +1805,20 @@
 }
 
 .detail-info-head h2 {
-  font-size: 28px;
-  line-height: 1.25;
+  font-size: 34px;
+  line-height: 1.2;
+}
+
+/* 作品名称左上角的浅色小字：该作品下载目录的父目录名。 */
+.detail-dir-label {
+  margin: 0 0 3px;
+  color: color-mix(in srgb, var(--text-muted) 62%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .detail-meta-line {
@@ -1818,13 +1830,16 @@
 .author-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
+  gap: 4px;
+  padding: 2px 8px;
   border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
   border-radius: 999px;
   background: var(--primary-soft);
   color: var(--primary-strong);
+  font-size: 12px;
+  font-weight: 550;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .detail-info .description {
@@ -2195,17 +2210,19 @@
   background: color-mix(in srgb, #9fd99b 36%, var(--surface));
 }
 .detail-actions .btn.subscribe-btn {
-  background: color-mix(in srgb, #f7e9ad 11%, var(--surface));
-  border-color: color-mix(in srgb, #dfcf83 20%, var(--border));
-  color: color-mix(in srgb, #756a2d 76%, var(--text-muted));
+  background: color-mix(in srgb, #f6e59f 40%, var(--surface));
+  border-color: color-mix(in srgb, #dcc467 52%, var(--border));
+  color: color-mix(in srgb, #6d6020 88%, var(--text));
 }
 .detail-actions .btn.subscribe-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, #f4e39a 20%, var(--surface));
+  background: color-mix(in srgb, #eed676 68%, var(--surface));
+  border-color: color-mix(in srgb, #cfb447 66%, var(--border));
+  color: color-mix(in srgb, #594e10 94%, var(--text));
 }
 .detail-actions .btn.subscribe-btn.is-subscribed {
-  color: color-mix(in srgb, #68724a 72%, var(--text-muted));
-  background: color-mix(in srgb, #dce8bd 30%, var(--surface));
-  border-color: color-mix(in srgb, #aebd79 38%, var(--border));
+  color: color-mix(in srgb, #4c6130 90%, var(--text));
+  background: color-mix(in srgb, #dce8bd 50%, var(--surface));
+  border-color: color-mix(in srgb, #9db463 56%, var(--border));
 }
 
 /* 章节排序：纯图标按钮（全选按钮保持图标+文字一体横排） */
@@ -2668,17 +2685,38 @@
   background: color-mix(in srgb, #9fd99b 36%, var(--surface));
 }
 .subscribe-btn {
-  background: color-mix(in srgb, #f7e9ad 11%, var(--surface));
-  color: color-mix(in srgb, #756a2d 76%, var(--text-muted));
-  border: 1px solid color-mix(in srgb, #dfcf83 20%, var(--border));
+  background: color-mix(in srgb, #f6e59f 40%, var(--surface));
+  color: color-mix(in srgb, #6d6020 88%, var(--text));
+  border: 1px solid color-mix(in srgb, #dcc467 52%, var(--border));
 }
 .subscribe-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, #f4e39a 20%, var(--surface));
+  background: color-mix(in srgb, #eed676 68%, var(--surface));
+  border-color: color-mix(in srgb, #cfb447 66%, var(--border));
+  color: color-mix(in srgb, #594e10 94%, var(--text));
 }
 .subscribe-btn.is-subscribed {
-  color: color-mix(in srgb, #68724a 72%, var(--text-muted));
-  background: color-mix(in srgb, #dce8bd 30%, var(--surface));
-  border-color: color-mix(in srgb, #aebd79 38%, var(--border));
+  color: color-mix(in srgb, #4c6130 90%, var(--text));
+  background: color-mix(in srgb, #dce8bd 50%, var(--surface));
+  border-color: color-mix(in srgb, #9db463 56%, var(--border));
+}
+/* 深色主题下必须压暗底色，否则浅黄底 + 浅色文字几乎读不出来 */
+[data-theme='dark'] .subscribe-btn,
+[data-theme='dark'] .detail-actions .btn.subscribe-btn {
+  background: color-mix(in srgb, #f6e59f 16%, var(--surface));
+  border-color: color-mix(in srgb, #dcc467 30%, var(--border));
+  color: color-mix(in srgb, #f2e2ac 76%, var(--text));
+}
+[data-theme='dark'] .subscribe-btn:hover:not(:disabled),
+[data-theme='dark'] .detail-actions .btn.subscribe-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #f6e59f 28%, var(--surface));
+  border-color: color-mix(in srgb, #dcc467 44%, var(--border));
+  color: color-mix(in srgb, #f8efcc 90%, var(--text));
+}
+[data-theme='dark'] .subscribe-btn.is-subscribed,
+[data-theme='dark'] .detail-actions .btn.subscribe-btn.is-subscribed {
+  background: color-mix(in srgb, #dce8bd 20%, var(--surface));
+  border-color: color-mix(in srgb, #9db463 34%, var(--border));
+  color: color-mix(in srgb, #dcecb8 78%, var(--text));
 }
 .select-all-btn {
   display: inline-flex;
@@ -2687,7 +2725,7 @@
   gap: 5px;
 }
 .detail-cover-back svg {
-  stroke-width: 1.6;
+  stroke-width: 1.4;
 }
 
 /* 探索发现：来源条横向滚动 + 筛选收窄 + 视图按钮靠右 */
@@ -3169,7 +3207,7 @@
 }
 .detail-cover-back {
   top: 0;
-  left: 0;
+  left: -9px;
   padding: 5px 7px;
   border-radius: 8px;
   color: color-mix(in srgb, var(--text-muted) 82%, var(--text));
@@ -3184,9 +3222,27 @@
 .detail-cover-back svg {
   width: 25px;
   height: 25px;
-  transform: scaleX(1.08);
-  transform-origin: center;
-  stroke-width: 1.7;
+}
+/* 任务列表的状态栏：已完成固定放在最后一个，与前四个状态留一点间隔 */
+.segmented .completed-tab {
+  position: relative;
+  margin-left: 9px;
+}
+.segmented .completed-tab::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: -6px;
+  width: 1px;
+  border-radius: 1px;
+  background: color-mix(in srgb, var(--border) 88%, transparent);
+}
+.segmented .completed-tab:disabled {
+  background: transparent;
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.45;
 }
 .completed-task-window {
   margin-top: 12px;
@@ -3692,6 +3748,61 @@ svg.source-editor-icon {
   white-space: nowrap;
 }
 
+/* v0.1.29：图标库支持输入网址下载图标 + 关键词搜索。 */
+.icon-library-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.icon-library-url {
+  display: flex;
+  flex: 1 1 420px;
+  min-width: 260px;
+  gap: 8px;
+}
+.icon-library-url .input {
+  flex: 1;
+  min-width: 0;
+}
+.icon-library-url .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.icon-library-search {
+  display: flex;
+  flex: 0 1 240px;
+  min-width: 180px;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+.icon-library-search .input {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.icon-library-search .input:focus {
+  outline: none;
+}
+.icon-library-search .icon-btn {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
 /* v0.1.20：探索发现网格封面下方标题与更新信息两行收紧，并清除无效的右侧角标留白。 */
 .source-comic-card .comic-body {
   gap: 1px;
@@ -3816,4 +3927,96 @@ svg.source-editor-icon {
 .source-editor-modal .source-editor-pair .textarea {
   width: 100%;
   min-width: 0;
+}
+
+/* v0.1.29：订阅归档集窗口。 */
+.archive-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.archive-modal {
+  width: min(960px, 100%);
+  max-height: calc(100dvh - 64px);
+}
+.archive-modal .modal-body {
+  overflow-y: auto;
+}
+.archive-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.archive-card {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.archive-cover {
+  display: grid;
+  width: 96px;
+  height: 128px;
+  overflow: hidden;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+}
+.archive-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.archive-cover:hover img {
+  filter: brightness(1.06);
+}
+.archive-meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.archive-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archive-sub {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archive-stats {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 10px;
+}
+
+/* 归档集进入详情页：已下载章节正常显示，未下载章节标灰。 */
+.chapter-tile.is-downloaded {
+  border-color: color-mix(in srgb, #78b674 40%, var(--border));
+  background: color-mix(in srgb, #b9e6b4 16%, var(--surface));
+}
+.chapter-tile.is-missing {
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-muted) 62%, var(--surface));
+  color: color-mix(in srgb, var(--text-muted) 70%, transparent);
+}
+.chapter-tile.is-missing .badge {
+  opacity: 0.55;
+}
+.chapter-tile.is-missing.selected,
+.chapter-tile.is-downloaded.selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--text);
 }

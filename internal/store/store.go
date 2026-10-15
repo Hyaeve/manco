@@ -674,6 +674,24 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 
 const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at FROM subscriptions`
 
+// ListArchivedSubscriptions 返回归档集里的订阅：按归档时间倒序，最近归档的排在最前。
+func (s *Store) ListArchivedSubscriptions(ctx context.Context) ([]model.Subscription, error) {
+	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subscriptions []model.Subscription
+	for rows.Next() {
+		sub, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, sub)
+	}
+	return subscriptions, rows.Err()
+}
+
 func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription, error) {
 	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` ORDER BY created_at ASC, id ASC`)
 	if err != nil {

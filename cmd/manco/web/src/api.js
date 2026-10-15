@@ -65,6 +65,8 @@ export const api = {
     form.append('file', file)
     return request('/api/icons', { method: 'POST', body: form })
   },
+  downloadIcon: (url, id = '') =>
+    request('/api/icons/download', { method: 'POST', body: JSON.stringify({ url, id }) }),
   updateSourceIcon: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}/icon`, { method: 'POST', body: JSON.stringify(payload) }),
   saveAccount: (id, payload) =>
@@ -101,8 +103,11 @@ export const api = {
   },
   comic: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}`),
+  comicDownloads: (id, comicId) =>
+    request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/downloads`),
 
   subscriptions: () => request('/api/subscriptions'),
+  archivedSubscriptions: () => request('/api/subscriptions/archived'),
   createSubscription: (payload) => request('/api/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
   updateSubscription: (id, payload) =>
     request(`/api/subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),

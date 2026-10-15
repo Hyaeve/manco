@@ -37,6 +37,9 @@ const busy = ref(0)
 const openMenu = ref(0)
 const editorOpen = ref(false)
 const editing = ref(null)
+const archiveOpen = ref(false)
+const archivedItems = ref([])
+const archiveLoading = ref(false)
 let timer = 0
 
 const form = ref({
@@ -85,10 +88,11 @@ function closeMenus(event) {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const [subscriptions, downloads, sourcePayload] = await Promise.all([
+    const [subscriptions, downloads, sourcePayload, archived] = await Promise.all([
       api.subscriptions(),
       api.downloads(500),
       Object.keys(sources.value).length ? Promise.resolve({ items: [] }) : api.sources().catch(() => ({ items: [] })),
+      api.archivedSubscriptions().catch(() => ({ items: [] })),
     ])
     for (const source of sourcePayload.items || []) {
       sources.value = { ...sources.value, [source.id]: source }
@@ -96,6 +100,7 @@ async function load(silent = false) {
     items.value = subscriptions.items || []
     jobs.value = downloads.items || []
     jobStatsData.value = subscriptions.jobStats || {}
+    archivedItems.value = archived.items || []
   } catch (err) {
     if (!silent) notify(`订阅清单加载失败：${err.message}`, 'error')
   } finally {
@@ -194,6 +199,28 @@ async function archive(item) {
   } finally {
     busy.value = 0
   }
+}
+
+// 归档集：独立窗口展示已归档的订阅卡片，点封面进作品详情并显示哪些章节下过。
+async function openArchive() {
+  archiveOpen.value = true
+  archiveLoading.value = true
+  try {
+    const payload = await api.archivedSubscriptions()
+    archivedItems.value = payload.items || []
+  } catch (err) {
+    notify(`归档集加载失败：${err.message}`, 'error')
+  } finally {
+    archiveLoading.value = false
+  }
+}
+
+function formatArchivedAt(item) {
+  const raw = item?.archivedAt
+  if (!raw) return '未知时间'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return '未知时间'
+  return date.toLocaleString()
 }
 
 async function remove(item) {
@@ -349,6 +376,11 @@ async function downloadAll(item) {
       <RefreshCw :size="15" :class="{ spin: loading }" />
       刷新
     </button>
+    <button class="btn secondary small archive-entry" type="button" @click="openArchive">
+      <Archive :size="15" />
+      归档集
+      <span v-if="archivedItems.length" class="segmented-count">{{ archivedItems.length }}</span>
+    </button>
   </div>
 
   <div v-if="loading && !items.length" class="empty">
@@ -498,6 +530,64 @@ async function downloadAll(item) {
           <Save v-else :size="15" />
           保存
         </button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="archiveOpen" class="modal-backdrop" @click.self="archiveOpen = false">
+    <div class="modal modal-lg archive-modal">
+      <div class="modal-head">
+        <div>
+          <h2>归档集</h2>
+          <p class="muted small">已归档的订阅，点击封面查看作品详情与下载记录</p>
+        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭" @click="archiveOpen = false">
+          <X :size="18" />
+        </button>
+      </div>
+      <div class="modal-body">
+        <div v-if="archiveLoading && !archivedItems.length" class="empty">
+          <Loader2 :size="22" class="spin" />
+          <span>加载归档集</span>
+        </div>
+        <div v-else-if="!archivedItems.length" class="empty">
+          <Archive :size="24" />
+          <p>归档集为空。订阅卡片执行“归档”后会出现在这里。</p>
+        </div>
+        <div v-else class="archive-grid">
+          <article v-for="item in archivedItems" :key="item.id" class="archive-card">
+            <RouterLink
+              class="archive-cover"
+              :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId }, query: { archive: '1' } }"
+              :title="item.title"
+            >
+              <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+              <BookOpen v-else :size="22" />
+            </RouterLink>
+            <div class="archive-meta">
+              <RouterLink
+                class="archive-title"
+                :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId }, query: { archive: '1' } }"
+                :title="item.title"
+              >
+                {{ item.title }}
+              </RouterLink>
+              <span class="archive-sub">{{ item.author || '未知作者' }}</span>
+              <span class="archive-sub">
+                {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}
+              </span>
+              <span class="archive-sub">归档：{{ formatArchivedAt(item) }}</span>
+            </div>
+            <div class="archive-stats">
+              <RouterLink class="subscription-stat success" :to="downloadTaskLink(item, 'completed')">
+                成功 {{ jobStats(item).success }}
+              </RouterLink>
+              <RouterLink class="subscription-stat failed" :to="downloadTaskLink(item, 'failed')">
+                失败 {{ jobStats(item).failed }}
+              </RouterLink>
+            </div>
+          </article>
+        </div>
       </div>
     </div>
   </div>

@@ -2,7 +2,6 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
-  ArrowLeft,
   ArrowUp,
   BookOpen,
   Check,
@@ -21,9 +20,10 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import BackArrowIcon from '../components/BackArrowIcon.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
-import { splitAuthors } from '../utils/metadata'
+import { dirBasename, splitAuthors } from '../utils/metadata'
 
 const items = ref([])
 const loading = ref(true)
@@ -66,8 +66,7 @@ function rootOf(item) {
 }
 
 function rootLabel(root) {
-  const parts = String(root || '').split('/').filter(Boolean)
-  return parts[parts.length - 1] || root || '下载目录'
+  return dirBasename(root) || root || '下载目录'
 }
 
 const libraryRoots = computed(() => {
@@ -438,7 +437,7 @@ function downloadReaderFile() {
   <div v-if="active" class="local-detail-view" :style="heroStyle">
     <div class="detail-hero local-detail-hero">
       <button class="detail-cover-back" type="button" aria-label="返回本地库" @click="closeDetail">
-        <ArrowLeft :size="24" :stroke-width="1.7" />
+        <BackArrowIcon />
       </button>
       <div class="detail-cover-wrap">
         <div class="detail-cover">
@@ -447,16 +446,14 @@ function downloadReaderFile() {
         </div>
       </div>
       <div class="detail-info">
+        <div v-if="active" class="detail-dir-label">{{ rootLabel(rootOf(active)) }}</div>
         <div class="detail-info-head">
           <h2>{{ active.title }}</h2>
         </div>
         <div class="meta detail-meta-line">
-          <span class="badge" :class="active.kind === 'book' ? 'primary' : ''">
-            {{ active.kind === 'book' ? '书籍' : '漫画' }}
-          </span>
           <template v-if="activeAuthors.length">
             <span v-for="name in activeAuthors" :key="name" class="author-pill">
-              <UserRound :size="14" />
+              <UserRound :size="12" :stroke-width="1.9" />
               {{ name }}
             </span>
           </template>

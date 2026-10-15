@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.1.28"
+	appVersion    = "v0.1.29"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -257,6 +257,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
 	mux.HandleFunc("GET /api/icons", s.requireAuth(s.handleListIcons))
 	mux.HandleFunc("POST /api/icons", s.requireAuth(s.handleUploadIcon))
+	mux.HandleFunc("POST /api/icons/download", s.requireAuth(s.handleDownloadIcon))
 	mux.HandleFunc("GET /api/icons/{id}", s.requireAuth(s.handleSourceIcon))
 	mux.HandleFunc("POST /api/sources/{id}/icon", s.requireAuth(s.handleUpdateSourceIcon))
 	mux.HandleFunc("GET /api/source-repo", s.requireAuth(s.handleSourceRepo))
@@ -286,8 +287,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}", s.requireAuth(s.handleComic))
 	mux.HandleFunc("GET /api/discover/cover", s.requireAuth(s.handleDiscoverCover))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/chapters", s.requireAuth(s.handleChapters))
+	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/downloads", s.requireAuth(s.handleComicDownloads))
 
 	mux.HandleFunc("GET /api/subscriptions", s.requireAuth(s.handleListSubscriptions))
+	mux.HandleFunc("GET /api/subscriptions/archived", s.requireAuth(s.handleListArchivedSubscriptions))
 	mux.HandleFunc("POST /api/subscriptions", s.requireAuth(s.handleCreateSubscription))
 	mux.HandleFunc("PATCH /api/subscriptions/{id}", s.requireAuth(s.handleUpdateSubscription))
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.requireAuth(s.handleDeleteSubscription))
@@ -608,6 +611,71 @@ func sanitizeIconID(value string) string {
 		}
 	}
 	return builder.String()
+}
+
+// iconIDFromURL 用图标地址的域名推断图标库里的名称，例如 https://bica.mom/favicon.jpeg -> bica-mom。
+func iconIDFromURL(parsed *url.URL) string {
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	host = strings.TrimPrefix(host, "www.")
+	id := sanitizeIconID(strings.ReplaceAll(host, ".", "-"))
+	if id == "" {
+		return sanitizeIconID(parsed.Path)
+	}
+	return id
+}
+
+// handleDownloadIcon 从用户输入的网址下载图标，写入本地图标库 /data/icon。
+func (s *Server) handleDownloadIcon(w http.ResponseWriter, r *http.Request) {
+	if s.icons == nil {
+		writeError(w, http.StatusServiceUnavailable, "图标库不可用")
+		return
+	}
+	var payload struct {
+		URL string `json:"url"`
+		ID  string `json:"id"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rawURL := strings.TrimSpace(payload.URL)
+	if rawURL == "" {
+		writeError(w, http.StatusBadRequest, "请输入图标地址")
+		return
+	}
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "https://" + rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		writeError(w, http.StatusBadRequest, "图标地址无效")
+		return
+	}
+	id := sanitizeIconID(payload.ID)
+	if id == "" {
+		id = iconIDFromURL(parsed)
+	}
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "无法从地址推断图标名称")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	// 允许用同一地址重新下载覆盖已有图标，Fetch 默认会命中缓存直接返回。
+	_ = s.icons.Delete(id)
+	entry, err := s.icons.Fetch(ctx, id, rawURL)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "图标下载失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"item": map[string]any{
+			"id":   entry.ID,
+			"name": entry.ID,
+			"url":  s.icons.URL(entry.ID),
+		},
+	})
 }
 
 // handleUpdateSourceIcon fetches, selects or resets the icon of one source.
@@ -2160,6 +2228,35 @@ func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": chapters})
 }
 
+// handleComicDownloads 列出某作品已经下载完成的章节 ID，供归档集查看“哪些章节下过”。
+func (s *Server) handleComicDownloads(w http.ResponseWriter, r *http.Request) {
+	item, _, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	sourceID := item.Info().ID
+	comicID := r.PathValue("comicId")
+	jobs, err := s.store.CompletedDownloadJobsByComic(r.Context(), sourceID, comicID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	chapterIDs := make([]string, 0, len(jobs))
+	seen := make(map[string]struct{}, len(jobs))
+	for _, job := range jobs {
+		id := strings.TrimSpace(job.ChapterID)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		chapterIDs = append(chapterIDs, id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chapterIds": chapterIDs, "total": len(chapterIDs)})
+}
+
 func convertDiscoverResult(result model.SearchResult, convert bool) model.SearchResult {
 	if !convert {
 		return result
@@ -2292,6 +2389,28 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 		items = []model.Subscription{}
 	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
+	stats, err := s.store.DownloadJobStats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jobStats := make(map[string]model.DownloadJobStats, len(stats))
+	for key, value := range stats {
+		jobStats[key] = value
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "jobStats": jobStats})
+}
+
+// handleListArchivedSubscriptions 返回归档集里的订阅卡片，供订阅清单的“归档集”窗口展示。
+func (s *Server) handleListArchivedSubscriptions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListArchivedSubscriptions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if items == nil {
+		items = []model.Subscription{}
+	}
 	stats, err := s.store.DownloadJobStats(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

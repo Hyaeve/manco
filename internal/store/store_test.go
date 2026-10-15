@@ -281,6 +281,53 @@ func TestUpdateSubscriptionReactivationResetsCheckCycle(t *testing.T) {
 	}
 }
 
+func TestListArchivedSubscriptionsSeparatesArchivedFromActive(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	active, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID: "stub",
+		ComicID:  "1",
+		Title:    "在订作品",
+		Enabled:  true,
+		CronExpr: "0 10 * * 5",
+	})
+	if err != nil {
+		t.Fatalf("create active subscription: %v", err)
+	}
+	archived, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID: "stub",
+		ComicID:  "2",
+		Title:    "归档作品",
+		Enabled:  true,
+		CronExpr: "0 10 * * 5",
+	})
+	if err != nil {
+		t.Fatalf("create archived subscription: %v", err)
+	}
+	if err := repository.ArchiveSubscription(ctx, archived.ID, "manual"); err != nil {
+		t.Fatalf("archive subscription: %v", err)
+	}
+
+	visible, err := repository.ListSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list subscriptions: %v", err)
+	}
+	if len(visible) != 1 || visible[0].ID != active.ID {
+		t.Fatalf("订阅清单应只保留在订订阅，got %+v", visible)
+	}
+
+	list, err := repository.ListArchivedSubscriptions(ctx)
+	if err != nil {
+		t.Fatalf("list archived subscriptions: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != archived.ID {
+		t.Fatalf("归档集应只包含已归档订阅，got %+v", list)
+	}
+	if list[0].ArchivedAt == nil {
+		t.Fatal("归档订阅应带上 archivedAt")
+	}
+}
+
 func TestCompletedDownloadJobsByComic(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

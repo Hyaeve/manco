@@ -58,9 +58,6 @@ async function loadRoots() {
     parent.value = ''
     children.value = []
     breadcrumbs.value = []
-		// Always open on the mount list. The previous value may point to a
-		// volume that is no longer mounted, so it must never block selecting a
-		// different available directory.
   } catch (err) {
     error.value = err.message
   } finally {
@@ -93,6 +90,26 @@ async function openPicker() {
   showCreate.value = false
   folderName.value = ''
   await loadRoots()
+  await enterInitialDirectory()
+}
+
+// Open the browser inside the directory that is currently selected. A saved
+// path may point to a volume that is no longer mounted, so a failed lookup
+// falls back to the mount list instead of blocking the user from picking
+// another directory.
+async function enterInitialDirectory() {
+  const start = String(draft.value || '').trim()
+  if (!start) return
+  try {
+    await loadDirectory(start)
+  } catch {
+    current.value = ''
+    parent.value = ''
+    children.value = []
+    breadcrumbs.value = []
+    error.value = ''
+    notify('原下载位置已不可用，请重新选择目录', 'warning')
+  }
 }
 
 function closePicker() {

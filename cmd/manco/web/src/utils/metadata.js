@@ -8,3 +8,12 @@ export function splitAuthors(value) {
     .map((part) => part.trim())
     .filter(Boolean)
 }
+
+// 取路径最后一段目录名：兼容容器内的 POSIX 路径与 Windows 本地路径。
+export function dirBasename(value) {
+  const parts = String(value || '')
+    .split(/[\\/]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : ''
+}

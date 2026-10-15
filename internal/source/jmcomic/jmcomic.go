@@ -1,20 +1,25 @@
 package jmcomic
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 )
@@ -22,38 +27,22 @@ import (
 type Source struct {
 	client       *http.Client
 	directClient *http.Client
+	scrambleMu   sync.Mutex
+	scrambleIDs  map[string]int
 }
-
-var jmCategoryOptions = []model.FilterOption{
-	{Value: "", Label: "全部"},
-	{Value: "doujin", Label: "同人"},
-	{Value: "single", Label: "单本"},
-	{Value: "short", Label: "短篇"},
-	{Value: "another", Label: "其他类"},
-	{Value: "hanman", Label: "韩漫"},
-	{Value: "meiman", Label: "美漫"},
-	{Value: "another_cosplay", Label: "Cosplay"},
-	{Value: "3D", Label: "3D"},
-	{Value: "禁漫漢化組", Label: "禁漫汉化组"},
-}
-
-var jmSortOptions = []model.FilterOption{
-	{Value: "mr", Label: "最新"},
-	{Value: "mv", Label: "最多观看"},
-	{Value: "tf", Label: "最多喜欢"},
-	{Value: "mp", Label: "最多图片"},
-}
-
-func New(client *http.Client) *Source { return &Source{client: client} }
 
 const (
-	sourceID      = "jmcomic"
-	defaultSite   = "https://www.cdnhjk.net"
-	defaultOrigin = "https://cdn-msp.jmapinodeudzn.net"
+	sourceID               = "jmcomic"
+	defaultSite            = "https://www.cdnhjk.net"
+	appVersion             = "2.1.7"
+	appTokenSecret         = "185Hcomic3PAPP7R"
+	appDataSecret          = "185Hcomic3PAPP7R"
+	appScrambleTokenSecret = "18comicAPPContent"
+	appUserAgent           = "Mozilla/5.0 (Linux; Android 9; V1938CT Build/PQ3A.190705.11211812; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/91.0.4472.114 Safari/537.36"
+	pageSize               = 80
+	defaultScrambleID      = 220980
 )
 
-// defaultSites lists the public 18comic mirrors used as fallbacks when a
-// configured site is unreachable. The order is the preferred rotation order.
 var defaultSites = []string{
 	"https://www.cdnhjk.net",
 	"https://www.cdngwc.cc",
@@ -62,26 +51,52 @@ var defaultSites = []string{
 	"https://www.cdnutc.me",
 }
 
-// defaultUserAgent is used when a source account has no custom UA override.
-const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+var imageDomains = []string{
+	"https://cdn-msp.jmapiproxy1.cc",
+	"https://cdn-msp.jmapiproxy2.cc",
+	"https://cdn-msp2.jmapiproxy2.cc",
+	"https://cdn-msp3.jmapiproxy2.cc",
+	"https://cdn-msp.jmapinodeudzn.net",
+	"https://cdn-msp3.jmapinodeudzn.net",
+}
 
 var (
-	albumPattern           = regexp.MustCompile(`/album/(\d+)`)
-	photoPattern           = regexp.MustCompile(`/photo/(\d+)`)
-	pageArrayPattern       = regexp.MustCompile(`var\s+page_arr\s*=\s*(\[[^\]]*\])`)
-	scramblePattern        = regexp.MustCompile(`var\s+scramble_id\s*=\s*(\d+)`)
-	albumIDPattern         = regexp.MustCompile(`var\s+(?:album_id|aid)\s*=\s*(\d+)`)
-	domainPattern          = regexp.MustCompile(`var\s+data_original_domain\s*=\s*["']([^"']+)["']`)
-	imageHostPattern       = regexp.MustCompile(`(?:https?:)?//([a-z0-9.-]+\.(?:18comic|jmapiproxy[0-9]*|jmapinodeudzn|cdngwc|cdnhjk|cdnutc)\.(?:vip|org|cc|site|club|net|me|info))`)
-	backgroundImagePattern = regexp.MustCompile(`url\([\'"]?([^\'")]+)[\'"]?\)`)
+	scramblePattern = regexp.MustCompile(`var\s+scramble_id\s*=\s*(\d+)`)
+	comicIDPattern  = regexp.MustCompile(`/(?:album|photo)/(\d+)`)
 )
+
+var jmCategoryOptions = []model.FilterOption{
+	{Value: "0", Label: "全部"},
+	{Value: "doujin", Label: "同人"},
+	{Value: "single", Label: "单本"},
+	{Value: "short", Label: "短篇"},
+	{Value: "another", Label: "其他类"},
+	{Value: "hanman", Label: "韩漫"},
+	{Value: "meiman", Label: "美漫"},
+	{Value: "doujin_cosplay", Label: "Cosplay"},
+	{Value: "3D", Label: "3D"},
+}
+
+var jmSortOptions = []model.FilterOption{
+	{Value: "mr", Label: "最新"},
+	{Value: "mv", Label: "最多观看"},
+	{Value: "mv_t", Label: "今日热门"},
+	{Value: "mv_w", Label: "本周热门"},
+	{Value: "mv_m", Label: "本月热门"},
+	{Value: "tf", Label: "最多喜欢"},
+	{Value: "mp", Label: "最多图片"},
+}
+
+func New(client *http.Client) *Source {
+	return &Source{client: client, scrambleIDs: map[string]int{}}
+}
 
 func (s *Source) Info() model.SourceInfo {
 	return model.SourceInfo{
 		ID:          sourceID,
 		Name:        "禁漫天堂",
 		Kind:        source.KindComic,
-		Description: "18comic album source",
+		Description: "18comic mobile API source",
 		Homepage:    defaultSite + "/",
 		NeedsLogin:  false,
 		CanSearch:   true,
@@ -89,7 +104,7 @@ func (s *Source) Info() model.SourceInfo {
 		Icon:        "/source-icons/jmcomic.png",
 		Sites:       append([]string(nil), defaultSites...),
 		Filters: []model.FilterGroup{
-			{Key: "category", Label: "分类", Options: jmCategoryOptions},
+			{Key: "category", Label: "分类", Default: "0", Options: jmCategoryOptions},
 			{Key: "sort", Label: "排序", Default: "mr", Options: jmSortOptions},
 		},
 	}
@@ -99,38 +114,60 @@ func (s *Source) Search(ctx context.Context, account source.Account, query strin
 	if page < 1 {
 		page = 1
 	}
-	values := url.Values{
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return model.SearchResult{}, errors.New("搜索关键词不能为空")
+	}
+	payload, _, err := s.apiJSON(ctx, account, "/search", url.Values{
+		"main_tag":     {"0"},
 		"search_query": {query},
 		"page":         {strconv.Itoa(page)},
-	}
-	html, base, err := s.getMatching(ctx, account, []string{"/search", "/search/photos"}, values, hasAlbumLinks)
+		"o":            {"mr"},
+		"t":            {""},
+	}, appTokenSecret)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
-	return parseSearch(html, base, page)
+	var envelope apiSearchPage
+	if err := decodeJSON(payload, &envelope); err != nil {
+		return model.SearchResult{}, err
+	}
+	if redirectID := normalizeComicID(textValue(envelope.RedirectAID)); redirectID != "" {
+		comic, detailErr := s.Detail(ctx, account, redirectID)
+		if detailErr != nil {
+			return model.SearchResult{}, detailErr
+		}
+		return model.SearchResult{
+			Items:   []model.Comic{comic},
+			Page:    page,
+			Pages:   1,
+			Total:   1,
+			HasMore: false,
+		}, nil
+	}
+	return parseSearchResult(envelope, page)
 }
 
 func (s *Source) Browse(ctx context.Context, account source.Account, options model.BrowseOptions, page int) (model.SearchResult, error) {
 	if page < 1 {
 		page = 1
 	}
-	values := url.Values{
+	category := normalizeCategory(options.Category)
+	order := normalizeSort(options.Sort)
+	payload, _, err := s.apiJSON(ctx, account, "/categories/filter", url.Values{
 		"page":  {strconv.Itoa(page)},
-		"order": {source.FirstNonEmpty(strings.TrimSpace(options.Sort), "mr")},
-	}
-	category := strings.TrimSpace(options.Category)
-	if category != "" && category != "0" {
-		values.Set("category", category)
-	}
-	paths := []string{"/albums.html", "/albums"}
-	if page > 1 {
-		paths = append(paths, "/albums-index-page-"+strconv.Itoa(page)+".html")
-	}
-	html, base, err := s.getMatching(ctx, account, paths, values, hasAlbumLinks)
+		"order": {""},
+		"c":     {category},
+		"o":     {order},
+	}, appTokenSecret)
 	if err != nil {
 		return model.SearchResult{}, err
 	}
-	return parseSearch(html, base, page)
+	var envelope apiSearchPage
+	if err := decodeJSON(payload, &envelope); err != nil {
+		return model.SearchResult{}, err
+	}
+	return parseSearchResult(envelope, page)
 }
 
 func (s *Source) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
@@ -138,29 +175,35 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 	if comicID == "" {
 		return model.Comic{}, errors.New("无效的禁漫作品 ID")
 	}
-	html, base, err := s.getMatching(ctx, account, []string{"/album/" + comicID}, nil, hasAlbumLinks)
+	payload, _, err := s.apiJSON(ctx, account, "/album", url.Values{"id": {comicID}}, appTokenSecret)
 	if err != nil {
 		return model.Comic{}, err
 	}
-	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
+	var album apiAlbumDetail
+	if err := decodeJSON(payload, &album); err != nil {
 		return model.Comic{}, err
 	}
-	comic := model.Comic{
-		SourceID: sourceID,
-		ID:       comicID,
-		Title:    source.FirstNonEmpty(attr(document, "meta[property='og:title']", "content"), strings.TrimSpace(document.Find("h1").First().Text())),
-		Cover:    source.Absolutize(base, attr(document, "meta[property='og:image']", "content")),
-		Tags:     splitList(listFrom(document, ".tags .tag, .tag-list a, a.tag")),
-		Status:   strings.TrimSpace(document.Find(".label, .status").First().Text()),
+	if strings.TrimSpace(album.Name) == "" {
+		return model.Comic{}, fmt.Errorf("禁漫作品 %s 不存在或没有返回数据", comicID)
 	}
-	if comic.Title == "" {
-		comic.Title = "禁漫 " + comicID
+	tags := append([]string{}, stringList(album.Tags)...)
+	tags = appendUnique(tags, stringList(album.Works)...)
+	tags = appendUnique(tags, stringList(album.Actors)...)
+	chapterCount := len(album.Series)
+	if chapterCount == 0 {
+		chapterCount = 1
 	}
-	comic.Author = listFrom(document, ".author a, .author, a[href*='/author/']")
-	comic.Description = strings.TrimSpace(document.Find(".intro, .description, #intro, .col-md-9 p").First().Text())
-	comic.ChapterCount = document.Find("a[href*='/photo/']").Length()
-	return comic, nil
+	return model.Comic{
+		SourceID:     sourceID,
+		ID:           source.FirstNonEmpty(textValue(album.ID), comicID),
+		Title:        strings.TrimSpace(album.Name),
+		Cover:        coverURL(comicID),
+		Author:       strings.Join(stringList(album.Author), " / "),
+		Description:  textValue(album.Description),
+		Tags:         tags,
+		ChapterCount: chapterCount,
+		UpdatedAt:    unixText(album.AddTime),
+	}, nil
 }
 
 func (s *Source) Chapters(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
@@ -168,45 +211,47 @@ func (s *Source) Chapters(ctx context.Context, account source.Account, comicID s
 	if comicID == "" {
 		return nil, errors.New("无效的禁漫作品 ID")
 	}
-	html, base, err := s.getMatching(ctx, account, []string{"/album/" + comicID}, nil, hasAlbumLinks)
+	payload, base, err := s.apiJSON(ctx, account, "/album", url.Values{"id": {comicID}}, appTokenSecret)
 	if err != nil {
 		return nil, err
 	}
-	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
+	var album apiAlbumDetail
+	if err := decodeJSON(payload, &album); err != nil {
 		return nil, err
 	}
-	chapters := make([]model.Chapter, 0, 64)
-	seen := map[string]bool{}
-	document.Find("a[href*='/photo/']").Each(func(_ int, selection *goquery.Selection) {
-		href, ok := selection.Attr("href")
-		if !ok {
-			return
+	if len(album.Series) == 0 {
+		title := source.FirstNonEmpty(strings.TrimSpace(album.Name), "禁漫 "+comicID)
+		pageCount := intValue(album.TotalPhotos)
+		return []model.Chapter{{
+			ID:        comicID,
+			ComicID:   comicID,
+			Title:     title,
+			Order:     1,
+			PageCount: pageCount,
+			URL:       source.BuildURL(base, "/album/"+comicID, nil),
+		}}, nil
+	}
+	chapters := make([]model.Chapter, 0, len(album.Series))
+	for index, item := range album.Series {
+		chapterID := normalizeComicID(textValue(item.ID))
+		if chapterID == "" {
+			continue
 		}
-		matches := photoPattern.FindStringSubmatch(href)
-		if len(matches) < 2 || seen[matches[1]] {
-			return
+		order := float64(intValue(item.Sort))
+		if order <= 0 {
+			order = float64(index + 1)
 		}
-		seen[matches[1]] = true
-		title := source.FirstNonEmpty(
-			strings.TrimSpace(selection.Find("span").Last().Text()),
-			strings.TrimSpace(selection.Text()),
-			"第 "+matches[1]+" 话",
-		)
-		order := float64(len(chapters) + 1)
-		if parsed, parseErr := strconv.ParseFloat(strings.TrimSpace(selection.Find("span").Last().Text()), 64); parseErr == nil && parsed > 0 {
-			order = parsed
+		title := strings.TrimSpace(item.Name)
+		if title == "" {
+			title = "第 " + strconv.Itoa(index+1) + " 话"
 		}
 		chapters = append(chapters, model.Chapter{
-			ID:      matches[1],
+			ID:      chapterID,
 			ComicID: comicID,
 			Title:   title,
 			Order:   order,
-			URL:     source.Absolutize(base, href),
+			URL:     source.BuildURL(base, "/photo/"+chapterID, nil),
 		})
-	})
-	if len(chapters) == 0 {
-		return []model.Chapter{}, nil
 	}
 	sort.SliceStable(chapters, func(i, j int) bool {
 		if chapters[i].Order == chapters[j].Order {
@@ -229,54 +274,288 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 	if comicID == "" {
 		comicID = photoID
 	}
-	html, base, err := s.getMatching(ctx, account, []string{"/photo/" + photoID}, nil, func(page string) bool {
-		_, ok := pageArray(page)
-		return ok
-	})
+	payload, base, err := s.apiJSON(ctx, account, "/chapter", url.Values{"id": {photoID}}, appTokenSecret)
 	if err != nil {
 		return nil, err
 	}
-	names, ok := pageArray(html)
-	if !ok {
-		return nil, errors.New("禁漫页面未返回图片列表，可能需要配置源 Cookie 或更换镜像域名")
+	var detail apiChapterDetail
+	if err := decodeJSON(payload, &detail); err != nil {
+		return nil, err
 	}
-	albumID := intValue(firstMatch(albumIDPattern, html))
+	names := append([]string(nil), detail.Images...)
+	albumID := intValue(detail.SeriesID)
+	if len(names) == 0 {
+		// Some older/single albums expose the list only on /album. Keep that
+		// fallback so a valid album is still downloadable after an API change.
+		albumPayload, _, albumErr := s.apiJSON(ctx, account, "/album", url.Values{"id": {source.FirstNonEmpty(comicID, photoID)}}, appTokenSecret)
+		if albumErr == nil {
+			var album apiAlbumDetail
+			if decodeJSON(albumPayload, &album) == nil {
+				names = append(names, album.Images...)
+				if albumID == 0 {
+					albumID = intValue(album.ID)
+				}
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil, errors.New("禁漫章节没有可下载的图片")
+	}
 	if albumID == 0 {
 		albumID = intValue(comicID)
 	}
-	scrambleID := intValue(firstMatch(scramblePattern, html))
-	parts := 0
-	if len(names) > 0 {
-		parts = scrambleParts(scrambleID, albumID, names[0])
+	if albumID == 0 {
+		albumID = intValue(photoID)
 	}
-	domains := imageDomains(html)
-	referer := source.BuildURL(base, "/photo/"+photoID, nil)
+	scrambleID := s.scrambleID(ctx, account, photoID, strconv.Itoa(albumID))
+	parts := scrambleParts(scrambleID, albumID, strings.TrimSpace(names[0]))
+	referer := source.BuildURL(base, "/", nil)
+	headers := map[string]string{
+		"X-Requested-With": "com.JMComic3.app",
+		"Accept-Language":  "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+	}
 	pages := make([]model.Page, 0, len(names))
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		urls := make([]string, 0, len(domains))
-		for _, domain := range domains {
-			urls = append(urls, fmt.Sprintf("%s/media/photos/%s/%s", strings.TrimRight(domain, "/"), photoID, name))
+		addresses := make([]string, 0, len(imageDomains))
+		for _, domain := range imageDomains {
+			addresses = append(addresses, fmt.Sprintf("%s/media/photos/%s/%s", strings.TrimRight(domain, "/"), photoID, name))
 		}
-		if len(urls) == 0 {
+		if len(addresses) == 0 {
 			continue
 		}
 		pages = append(pages, model.Page{
-			URL:             urls[0],
-			Alternatives:    urls[1:],
+			URL:             addresses[0],
+			Alternatives:    addresses[1:],
 			Referer:         referer,
+			Headers:         headers,
 			FileName:        name,
 			DescrambleParts: parts,
-			AssetID:         photoID,
+			AssetID:         strconv.Itoa(albumID),
 		})
 	}
 	if len(pages) == 0 {
 		return nil, errors.New("禁漫章节没有可下载的图片")
 	}
 	return pages, nil
+}
+
+type apiSearchPage struct {
+	Total       any             `json:"total"`
+	Content     []apiSearchItem `json:"content"`
+	RedirectAID any             `json:"redirect_aid"`
+}
+
+type apiSearchItem struct {
+	ID          any         `json:"id"`
+	Name        string      `json:"name"`
+	Author      string      `json:"author"`
+	Description any         `json:"description"`
+	AddDate     string      `json:"adddate"`
+	UpdateAt    any         `json:"update_at"`
+	Category    apiCategory `json:"category"`
+	SubCategory apiCategory `json:"category_sub"`
+}
+
+type apiCategory struct {
+	ID    any    `json:"id"`
+	Title string `json:"title"`
+}
+
+type apiAlbumDetail struct {
+	ID          any         `json:"id"`
+	Name        string      `json:"name"`
+	Author      []any       `json:"author"`
+	Description any         `json:"description"`
+	Tags        []any       `json:"tags"`
+	Works       []any       `json:"works"`
+	Actors      []any       `json:"actors"`
+	Images      []string    `json:"images"`
+	TotalPhotos any         `json:"total_photos"`
+	AddTime     any         `json:"addtime"`
+	Series      []apiSeries `json:"series"`
+}
+
+type apiChapterDetail struct {
+	ID       any         `json:"id"`
+	Name     string      `json:"name"`
+	Images   []string    `json:"images"`
+	SeriesID any         `json:"series_id"`
+	Series   []apiSeries `json:"series"`
+}
+
+type apiSeries struct {
+	ID   any    `json:"id"`
+	Name string `json:"name"`
+	Sort any    `json:"sort"`
+}
+
+func parseSearchResult(envelope apiSearchPage, page int) (model.SearchResult, error) {
+	items := make([]model.Comic, 0, len(envelope.Content))
+	for _, entry := range envelope.Content {
+		comicID := normalizeComicID(textValue(entry.ID))
+		if comicID == "" {
+			continue
+		}
+		tags := make([]string, 0, 2)
+		if title := strings.TrimSpace(entry.Category.Title); title != "" {
+			tags = append(tags, title)
+		}
+		if title := strings.TrimSpace(entry.SubCategory.Title); title != "" && !containsText(tags, title) {
+			tags = append(tags, title)
+		}
+		updatedAt := strings.TrimSpace(entry.AddDate)
+		if updatedAt == "" {
+			updatedAt = unixText(entry.UpdateAt)
+		}
+		items = append(items, model.Comic{
+			SourceID:  sourceID,
+			ID:        comicID,
+			Title:     source.FirstNonEmpty(strings.TrimSpace(entry.Name), "禁漫 "+comicID),
+			Cover:     coverURL(comicID),
+			Author:    normalizeAuthor(entry.Author),
+			Tags:      tags,
+			UpdatedAt: updatedAt,
+		})
+	}
+	total := intValue(envelope.Total)
+	if total <= 0 {
+		total = len(items)
+	}
+	pages := 0
+	hasMore := len(items) >= pageSize
+	if total > 0 {
+		pages = (total + pageSize - 1) / pageSize
+		hasMore = page < pages
+	}
+	return model.SearchResult{
+		Items:   items,
+		Page:    page,
+		Pages:   pages,
+		Total:   total,
+		HasMore: hasMore,
+	}, nil
+}
+
+func (s *Source) apiJSON(ctx context.Context, account source.Account, path string, params url.Values, secret string) ([]byte, string, error) {
+	client := source.SourceClient(s.client, &s.directClient, account)
+	var lastErr error
+	for _, base := range s.bases(account) {
+		payload, err := s.apiJSONBase(ctx, client, account, base, path, params, secret)
+		if err == nil {
+			return payload, base, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("禁漫镜像均不可用")
+	}
+	return nil, "", fmt.Errorf("禁漫接口请求失败: %w", lastErr)
+}
+
+func (s *Source) apiJSONBase(ctx context.Context, client *http.Client, account source.Account, base, path string, params url.Values, secret string) ([]byte, error) {
+	address := source.BuildURL(base, path, params)
+	timestamp := time.Now().Unix()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return nil, err
+	}
+	setAppHeaders(request, account, base, timestamp, secret)
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s HTTP %d: %s", path, response.StatusCode, snippet(body))
+	}
+	var envelope struct {
+		Code  int             `json:"code"`
+		Data  json.RawMessage `json:"data"`
+		Error string          `json:"errorMsg"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("%s 返回非 JSON: %w (%s)", path, err, snippet(body))
+	}
+	if envelope.Code != http.StatusOK {
+		return nil, fmt.Errorf("%s code=%d: %s", path, envelope.Code, strings.TrimSpace(envelope.Error))
+	}
+	var encoded string
+	if err := json.Unmarshal(envelope.Data, &encoded); err != nil {
+		return nil, fmt.Errorf("%s 数据字段格式无效: %w", path, err)
+	}
+	plain, err := decryptAPIData(timestamp, encoded, secret)
+	if err != nil {
+		return nil, fmt.Errorf("%s 解密失败: %w", path, err)
+	}
+	return plain, nil
+}
+
+func (s *Source) scrambleID(ctx context.Context, account source.Account, photoID, albumID string) int {
+	cacheKey := strings.TrimSpace(albumID)
+	if cacheKey == "" || cacheKey == "0" {
+		cacheKey = strings.TrimSpace(photoID)
+	}
+	s.scrambleMu.Lock()
+	defer s.scrambleMu.Unlock()
+	if s.scrambleIDs == nil {
+		s.scrambleIDs = map[string]int{}
+	}
+	if cached, ok := s.scrambleIDs[cacheKey]; ok {
+		return cached
+	}
+	client := source.SourceClient(s.client, &s.directClient, account)
+	for _, base := range s.bases(account) {
+		raw, err := s.rawScrambleRequest(ctx, client, account, base, photoID)
+		if err != nil {
+			continue
+		}
+		if match := scramblePattern.FindStringSubmatch(raw); len(match) >= 2 {
+			if parsed, parseErr := strconv.Atoi(match[1]); parseErr == nil && parsed > 0 {
+				s.scrambleIDs[cacheKey] = parsed
+				return parsed
+			}
+		}
+	}
+	s.scrambleIDs[cacheKey] = defaultScrambleID
+	return defaultScrambleID
+}
+
+func (s *Source) rawScrambleRequest(ctx context.Context, client *http.Client, account source.Account, base, photoID string) (string, error) {
+	address := source.BuildURL(base, "/chapter_view_template", url.Values{
+		"id":            {photoID},
+		"mode":          {"vertical"},
+		"page":          {"0"},
+		"app_img_shunt": {"1"},
+		"express":       {"off"},
+		"v":             {strconv.FormatInt(time.Now().Unix(), 10)},
+	})
+	timestamp := time.Now().Unix()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return "", err
+	}
+	setAppHeaders(request, account, base, timestamp, appScrambleTokenSecret)
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("scramble HTTP %d", response.StatusCode)
+	}
+	return string(body), nil
 }
 
 func (s *Source) bases(account source.Account) []string {
@@ -297,268 +576,202 @@ func (s *Source) bases(account source.Account) []string {
 	return order
 }
 
-func (s *Source) get(ctx context.Context, account source.Account, path string, values url.Values) (string, string, error) {
-	return source.FetchTextFallback(ctx, source.SourceClient(s.client, &s.directClient, account), s.bases(account), path, values, func(base string) map[string]string {
-		headers := map[string]string{
-			"Referer":                   base + "/",
-			"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
-			"Upgrade-Insecure-Requests": "1",
-		}
-		return jmHeaders(account, base, headers)
-	})
+func setAppHeaders(request *http.Request, account source.Account, base string, timestamp int64, secret string) {
+	userAgent := strings.TrimSpace(account.UserAgent)
+	if userAgent == "" {
+		userAgent = appUserAgent
+	}
+	timestampText := strconv.FormatInt(timestamp, 10)
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Token", md5Hex(timestampText+secret))
+	request.Header.Set("Tokenparam", timestampText+","+appVersion)
+	request.Header.Set("Referer", strings.TrimRight(base, "/")+"/")
+	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+	if strings.TrimSpace(account.Cookie) != "" {
+		request.Header.Set("Cookie", account.Cookie)
+	}
 }
 
-// getMatching walks every mirror and candidate path until one returns a page
-// that satisfies ok. 18comic mirrors frequently rotate to parked or
-// challenge pages that answer HTTP 200 with no album markup, so plain status
-// checks would silently return empty results from a dead mirror.
-func (s *Source) getMatching(ctx context.Context, account source.Account, paths []string, values url.Values, ok func(string) bool) (string, string, error) {
-	client := source.SourceClient(s.client, &s.directClient, account)
-	var lastErr error
-	for _, base := range s.bases(account) {
-		for _, path := range paths {
-			address := source.BuildURL(base, path, values)
-			headers := map[string]string{
-				"Referer":                   base + "/",
-				"Accept-Language":           "zh-CN,zh;q=0.9,en;q=0.6",
-				"Upgrade-Insecure-Requests": "1",
-			}
-			headers = jmHeaders(account, base, headers)
-			html, err := source.FetchText(ctx, client, address, headers)
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			if ok != nil && !ok(html) {
-				lastErr = fmt.Errorf("%s 未返回有效内容", base+path)
-				continue
-			}
-			return html, base, nil
-		}
-	}
-	if lastErr == nil {
-		lastErr = errors.New("禁漫镜像均不可用")
-	}
-	return "", "", lastErr
-}
-
-// hasAlbumLinks reports whether a page really lists albums.
-func hasAlbumLinks(html string) bool {
-	return albumPattern.MatchString(html)
-}
-
-// jmHeaders merges the account User-Agent and Cookie into the request headers.
-// 18comic mirrors increasingly reject blank or library-default agents, so a
-// custom UA can be configured per source account.
-func jmHeaders(account source.Account, base string, headers map[string]string) map[string]string {
-	ua := strings.TrimSpace(account.UserAgent)
-	if ua == "" {
-		ua = defaultUserAgent
-	}
-	headers["User-Agent"] = ua
-	for key, value := range source.HeaderCookie(account.Cookie) {
-		headers[key] = value
-	}
-	return headers
-}
-
-func parseSearch(html, base string, page int) (model.SearchResult, error) {
-	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+func decryptAPIData(timestamp int64, encoded, secret string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 	if err != nil {
-		return model.SearchResult{}, err
+		return nil, fmt.Errorf("base64: %w", err)
 	}
-	items := parseAlbumCards(document, base)
-	if len(items) == 0 {
-		items = parseSearchFallback(document, base)
+	if len(raw) == 0 || len(raw)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("invalid encrypted block length %d", len(raw))
 	}
-	hasMore := document.Find("a[rel='next'], .pagination .next, a[href*='page="+strconv.Itoa(page+1)+"']").Length() > 0
-	return model.SearchResult{Items: items, Page: page, Pages: 0, Total: len(items), HasMore: hasMore}, nil
-}
-
-// albumCardSelectors matches the containers 18comic uses for album tiles.
-// Multiple mirrors render slightly different markup, so several class names
-// are accepted. The anchor itself is the final fallback.
-var albumCardSelectors = []string{
-	".video-item", ".video-card", ".card", ".thumb", ".hentai-item",
-	".img_span", "li", "article", "div",
-}
-
-// parseAlbumCards walks every album anchor, promotes it to the enclosing
-// tile, and reads title and cover from that tile. Older parsing only inspected
-// the anchor itself, so lazy-loaded covers (data-original on a sibling image)
-// and titles living in the tile header were missed and the card degraded to
-// "禁漫 <id>" with no artwork.
-func parseAlbumCards(document *goquery.Document, base string) []model.Comic {
-	items := make([]model.Comic, 0, 30)
-	seen := map[string]bool{}
-	document.Find("a[href*='/album/'], a[href*='/albums/']").Each(func(_ int, anchor *goquery.Selection) {
-		href, ok := anchor.Attr("href")
-		if !ok {
-			return
-		}
-		matches := albumPattern.FindStringSubmatch(href)
-		if len(matches) < 2 || seen[matches[1]] {
-			return
-		}
-		seen[matches[1]] = true
-		card := albumCard(anchor)
-		title := source.FirstNonEmpty(
-			strings.TrimSpace(anchor.AttrOr("title", "")),
-			cardTitle(card),
-			normalizeText(anchor.Text()),
-		)
-		cover := source.Absolutize(base, imageFrom(card))
-		if isPlaceholderTitle(title, matches[1]) {
-			title = "禁漫 " + matches[1]
-		}
-		items = append(items, model.Comic{
-			SourceID: sourceID,
-			ID:       matches[1],
-			Title:    title,
-			Cover:    cover,
-		})
-	})
-	return items
-}
-
-func isPlaceholderTitle(title, albumID string) bool {
-	trimmed := strings.TrimSpace(title)
-	if trimmed == "" || trimmed == albumID {
-		return true
+	key := md5Hex(strconv.FormatInt(timestamp, 10) + secret)
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		return nil, err
 	}
-	return strings.EqualFold(trimmed, "禁漫 "+albumID)
+	plain := make([]byte, len(raw))
+	for offset := 0; offset < len(raw); offset += aes.BlockSize {
+		block.Decrypt(plain[offset:offset+aes.BlockSize], raw[offset:offset+aes.BlockSize])
+	}
+	plain, err = unpadPKCS7(plain)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(plain) {
+		return nil, errors.New("解密结果不是有效 JSON")
+	}
+	return plain, nil
 }
 
-// albumCard returns the innermost tile-like ancestor of an album anchor.
-func albumCard(anchor *goquery.Selection) *goquery.Selection {
-	for _, selector := range albumCardSelectors {
-		if ancestor := anchor.Closest(selector); ancestor.Length() > 0 {
-			return ancestor
+func unpadPKCS7(value []byte) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, errors.New("empty padded value")
+	}
+	padding := int(value[len(value)-1])
+	if padding < 1 || padding > aes.BlockSize || padding > len(value) {
+		return nil, errors.New("invalid PKCS7 padding")
+	}
+	for _, item := range value[len(value)-padding:] {
+		if int(item) != padding {
+			return nil, errors.New("invalid PKCS7 padding")
 		}
 	}
-	return anchor
+	return value[:len(value)-padding], nil
 }
 
-// cardTitle extracts the first meaningful title string from an album tile.
-func cardTitle(card *goquery.Selection) string {
-	selectors := []string{
-		".video-title", ".title", ".name", ".card-title",
-		"[data-title]", ".comic-name", ".comix_title",
-		"h3", "h2", "h1", "p",
+func decodeJSON(payload []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
-	for _, selector := range selectors {
-		var found string
-		card.Find(selector).EachWithBreak(func(_ int, node *goquery.Selection) bool {
-			if value := strings.TrimSpace(node.AttrOr("content", "")); value != "" {
-				found = value
-				return false
-			}
-			if value := normalizeText(node.Text()); value != "" {
-				found = value
-				return false
-			}
+	return nil
+}
+
+func md5Hex(value string) string {
+	sum := md5.Sum([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func textValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return typed.String()
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func intValue(value any) int {
+	text := textValue(value)
+	if text == "" {
+		return 0
+	}
+	if parsed, err := strconv.Atoi(text); err == nil {
+		return parsed
+	}
+	if parsed, err := strconv.ParseFloat(text, 64); err == nil {
+		return int(parsed)
+	}
+	return 0
+}
+
+func stringList(values []any) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(textValue(value))
+		if text == "" || strings.EqualFold(text, "N/A") {
+			continue
+		}
+		result = append(result, text)
+	}
+	return result
+}
+
+func appendUnique(values []string, extra ...string) []string {
+	for _, value := range extra {
+		value = strings.TrimSpace(value)
+		if value == "" || containsText(values, value) {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
+}
+
+func containsText(values []string, value string) bool {
+	for _, item := range values {
+		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(value)) {
 			return true
-		})
-		if found != "" {
-			return found
 		}
 	}
-	if value := strings.TrimSpace(card.AttrOr("data-title", "")); value != "" {
+	return false
+}
+
+func normalizeAuthor(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "N/A") {
+		return ""
+	}
+	return value
+}
+
+func normalizeCategory(value string) string {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "0", "all":
+		return "0"
+	case "another_cosplay":
+		return "doujin_cosplay"
+	default:
 		return value
 	}
-	return normalizeText(card.Text())
 }
 
-func normalizeText(value string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+func normalizeSort(value string) string {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "latest":
+		return "mr"
+	case "hot", "week", "weekly":
+		return "mv_w"
+	case "today", "daily":
+		return "mv_t"
+	default:
+		return value
+	}
 }
 
-func parseSearchFallback(document *goquery.Document, base string) []model.Comic {
-	items := make([]model.Comic, 0, 30)
-	seen := map[string]bool{}
-	document.Find("a").Each(func(_ int, selection *goquery.Selection) {
-		href, ok := selection.Attr("href")
-		if !ok {
-			return
-		}
-		matches := albumPattern.FindStringSubmatch(href)
-		if len(matches) < 2 || seen[matches[1]] {
-			return
-		}
-		seen[matches[1]] = true
-		title := source.FirstNonEmpty(strings.TrimSpace(selection.AttrOr("title", "")), normalizeText(selection.Text()))
-		cover := source.Absolutize(base, imageFrom(selection.Closest(".video-item, .video-card, .card, li, article, div").First()))
-		if cover == "" {
-			cover = source.Absolutize(base, imageFrom(selection))
-		}
-		if isPlaceholderTitle(title, matches[1]) {
-			title = "禁漫 " + matches[1]
-		}
-		items = append(items, model.Comic{
-			SourceID: sourceID,
-			ID:       matches[1],
-			Title:    title,
-			Cover:    cover,
-		})
-	})
-	return items
+func coverURL(comicID string) string {
+	comicID = normalizeComicID(comicID)
+	if comicID == "" {
+		return ""
+	}
+	return "https://cdn-msp.jmapiproxy1.cc/media/albums/" + comicID + ".jpg"
 }
 
-func pageArray(html string) ([]string, bool) {
-	matches := pageArrayPattern.FindStringSubmatch(html)
-	if len(matches) < 2 {
-		return nil, false
+func unixText(value any) string {
+	seconds := int64(intValue(value))
+	if seconds <= 0 {
+		return ""
 	}
-	raw := strings.ReplaceAll(matches[1], "'", "\"")
-	var names []string
-	if err := json.Unmarshal([]byte(raw), &names); err != nil {
-		names = names[:0]
-		regex := regexp.MustCompile(`"([^"]+)"`)
-		for _, match := range regex.FindAllStringSubmatch(matches[1], -1) {
-			names = append(names, match[1])
-		}
-	}
-	return names, len(names) > 0
+	return time.Unix(seconds, 0).Format("2006-01-02")
 }
 
-func imageDomains(html string) []string {
-	domains := make([]string, 0, 8)
-	seen := map[string]bool{}
-	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		if strings.HasPrefix(value, "//") {
-			value = "https:" + value
-		}
-		value = strings.TrimRight(value, "/")
-		if !strings.HasPrefix(value, "http") || seen[value] {
-			return
-		}
-		seen[value] = true
-		domains = append(domains, value)
+func snippet(body []byte) string {
+	text := strings.Join(strings.Fields(string(body)), " ")
+	if len(text) > 220 {
+		return text[:220]
 	}
-	for _, match := range domainPattern.FindAllStringSubmatch(html, -1) {
-		add(match[1])
-	}
-	for _, match := range imageHostPattern.FindAllStringSubmatch(html, -1) {
-		add("https://" + match[1])
-	}
-	add(defaultOrigin)
-	for _, candidate := range []string{
-		"https://cdn-msp.18comic.vip",
-		"https://cdn-msp2.18comic.vip",
-		"https://cdn-msp.18comic.org",
-		"https://cdn-msp2.18comic.org",
-		"https://cdn-msp.jmapinodeudzn.net",
-		"https://cdn-msp2.jmapinodeudzn.net",
-		"https://cdn-msp.jmapiproxy2.cc",
-		"https://cdn-msp2.jmapiproxy2.cc",
-	} {
-		add(candidate)
-	}
-	return domains
+	return text
 }
 
 func scrambleParts(scrambleID, albumID int, fileName string) int {
@@ -587,10 +800,7 @@ func normalizeComicID(value string) string {
 	if value == "" {
 		return ""
 	}
-	if matches := photoPattern.FindStringSubmatch(value); len(matches) >= 2 {
-		return matches[1]
-	}
-	if matches := albumPattern.FindStringSubmatch(value); len(matches) >= 2 {
+	if matches := comicIDPattern.FindStringSubmatch(value); len(matches) >= 2 {
 		return matches[1]
 	}
 	value = strings.TrimSuffix(value, ".html")
@@ -603,114 +813,6 @@ func normalizeComicID(value string) string {
 		return ""
 	}
 	return value
-}
-
-func firstMatch(pattern *regexp.Regexp, text string) string {
-	matches := pattern.FindStringSubmatch(text)
-	if len(matches) < 2 {
-		return ""
-	}
-	return matches[1]
-}
-
-func intValue(value string) int {
-	parsed, err := strconv.Atoi(strings.TrimSpace(value))
-	if err != nil {
-		return 0
-	}
-	return parsed
-}
-
-func attr(document *goquery.Document, selector, name string) string {
-	value, _ := document.Find(selector).First().Attr(name)
-	return strings.TrimSpace(value)
-}
-
-func imageFrom(selection *goquery.Selection) string {
-	if selection == nil || selection.Length() == 0 {
-		return ""
-	}
-	image := selection
-	if !selection.Is("img") && !selection.Is("amp-img") {
-		image = selection.Find("img, amp-img").First()
-	}
-	if image.Length() > 0 {
-		if value := imageAttrs(image); value != "" {
-			return value
-		}
-	}
-	if value := backgroundImageFrom(selection); value != "" {
-		return value
-	}
-	return ""
-}
-
-// backgroundImageFrom reads CSS background-image declarations. Some mirrors
-// no longer emit <img> for album tiles and instead style the tile directly.
-func backgroundImageFrom(selection *goquery.Selection) string {
-	candidates := selection
-	if styled := selection.Find("[style*='background-image']").First(); styled.Length() > 0 {
-		candidates = styled
-	}
-	if style := strings.TrimSpace(candidates.AttrOr("style", "")); style != "" {
-		if match := backgroundImagePattern.FindStringSubmatch(style); len(match) >= 2 {
-			return firstURL(match[1])
-		}
-	}
-	return ""
-}
-
-func imageAttrs(image *goquery.Selection) string {
-	for _, name := range []string{
-		"data-original", "data-src", "data-lazy-src", "data-echo", "data-url",
-		"data-srcset", "data-lazy", "src", "srcset",
-	} {
-		if value := firstURL(strings.TrimSpace(image.AttrOr(name, ""))); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-// firstURL returns the first candidate from an attribute that may contain a
-// srcset list ("url 1x, url2 2x"). 18comic lazy-loads grid covers through
-// several of these attributes depending on the mirror.
-func firstURL(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if index := strings.Index(value, ","); index >= 0 {
-		value = strings.TrimSpace(value[:index])
-	}
-	if fields := strings.Fields(value); len(fields) > 0 {
-		value = fields[0]
-	}
-	return strings.TrimSpace(value)
-}
-
-func listFrom(document *goquery.Document, selector string) string {
-	values := make([]string, 0, 8)
-	document.Find(selector).Each(func(_ int, selection *goquery.Selection) {
-		if value := strings.TrimSpace(selection.Text()); value != "" {
-			values = append(values, value)
-		}
-	})
-	return strings.Join(values, " / ")
-}
-
-func splitList(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	parts := strings.Split(value, " / ")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 var _ source.Source = (*Source)(nil)

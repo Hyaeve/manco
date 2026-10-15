@@ -3,7 +3,6 @@ import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
-  ArrowLeft,
   CircleCheck,
   Download,
   Loader2,
@@ -16,10 +15,11 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import BackArrowIcon from '../components/BackArrowIcon.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { notify } from '../stores/notices'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
-import { splitAuthors } from '../utils/metadata'
+import { dirBasename, splitAuthors } from '../utils/metadata'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,6 +37,9 @@ const sortDesc = ref(false)
 const queryInput = ref('')
 const appliedQuery = ref('')
 const heroTint = ref('')
+const downloadedChapters = ref(new Set())
+// 从订阅清单的“归档集”进入时，章节下面要标出哪些章节有过下载记录。
+const archiveMode = computed(() => String(route.query.archive || '') === '1')
 
 // 简洁线条的章节时间排序图标：三条由长到短的横线 + 方向箭头。
 const TimeSortIcon = defineComponent({
@@ -86,7 +89,7 @@ const subForm = ref({
   convertToSimplified: true,
   chapterMarker: false,
   coverBlur: false,
-  allChapters: false,
+  allChapters: true,
 })
 const downloadForm = ref({
   downloadDir: lastSubscriptionDownloadDir(),
@@ -96,6 +99,11 @@ const downloadForm = ref({
 
 const existingSubscription = ref(null)
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
+// 作品名称左上角的小字：下载目录的父目录名，例如 /A/B 显示 B（作品文件夹会自动补在其下）。
+const downloadDirName = computed(() => {
+  const raw = String(existingSubscription.value?.downloadDir || subForm.value.downloadDir || '').trim()
+  return dirBasename(raw)
+})
 
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
@@ -113,6 +121,9 @@ const displayChapters = computed(() => {
 const renderedChapters = computed(() => displayChapters.value.slice(0, chapterRenderLimit.value))
 const allSelected = computed(
   () => displayChapters.value.length > 0 && displayChapters.value.every((chapter) => selected.value.has(chapter.id)),
+)
+const downloadedCount = computed(
+  () => chapters.value.filter((chapter) => downloadedChapters.value.has(chapter.id)).length,
 )
 const heroStyle = computed(() => ({
   '--hero-tint': heroTint.value || 'transparent',
@@ -163,6 +174,14 @@ onMounted(async () => {
     }
   } catch {
     isBook.value = false
+  }
+  if (archiveMode.value) {
+    try {
+      const payload = await api.comicDownloads(sourceId, comicId)
+      downloadedChapters.value = new Set(payload.chapterIds || [])
+    } catch {
+      downloadedChapters.value = new Set()
+    }
   }
   if (comic.value?.cover) extractTint(cover())
   pageScroller = document.querySelector('.content-scroll')
@@ -275,7 +294,7 @@ function openSubscribe() {
     convertToSimplified: true,
     chapterMarker: false,
     coverBlur: false,
-    allChapters: false,
+    allChapters: true,
   }
   subscribeOpen.value = true
 }
@@ -393,7 +412,7 @@ async function downloadSelected() {
   <div v-else>
     <div class="detail-hero" :style="heroStyle">
       <button class="detail-cover-back" type="button" aria-label="返回" @click="goBack">
-        <ArrowLeft :size="24" :stroke-width="1.7" />
+        <BackArrowIcon />
       </button>
       <div class="detail-cover-wrap">
         <div class="detail-cover">
@@ -402,6 +421,7 @@ async function downloadSelected() {
         </div>
       </div>
       <div class="detail-info">
+        <div v-if="downloadDirName" class="detail-dir-label">{{ downloadDirName }}</div>
         <div class="detail-info-head">
           <h2>{{ comic.title }}</h2>
           <div class="detail-actions">
@@ -433,7 +453,7 @@ async function downloadSelected() {
               type="button"
               @click="searchAuthor(name)"
             >
-              <UserRound :size="14" />
+              <UserRound :size="12" :stroke-width="1.9" />
               {{ name }}
             </button>
           </template>
@@ -458,7 +478,8 @@ async function downloadSelected() {
         <button class="btn ghost small sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
           <TimeSortIcon :desc="sortDesc" />
         </button>
-        <span class="muted small">共 {{ chapters.length }} 章</span>
+        <span v-if="archiveMode" class="muted small">已下载 {{ downloadedCount }} / 共 {{ chapters.length }} 章</span>
+        <span v-else class="muted small">共 {{ chapters.length }} 章</span>
         <span class="spacer" />
         <form class="chapter-search" @submit.prevent="applyChapterSearch">
           <Search :size="15" />
@@ -475,7 +496,11 @@ async function downloadSelected() {
           v-for="(chapter, index) in renderedChapters"
           :key="chapter.id"
           class="chapter-tile"
-          :class="{ selected: selected.has(chapter.id) }"
+          :class="{
+            selected: selected.has(chapter.id),
+            'is-downloaded': archiveMode && downloadedChapters.has(chapter.id),
+            'is-missing': archiveMode && !downloadedChapters.has(chapter.id),
+          }"
           type="button"
           @click="handleChapterClick($event, chapter, index)"
         >

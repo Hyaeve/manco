@@ -4,6 +4,7 @@ import {
   Boxes,
   Check,
   ChevronDown,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
@@ -64,8 +65,11 @@ const extensionCandidates = ref([])
 const candidateFilter = ref('all')
 const iconLibraryOpen = ref(false)
 const iconLibrary = ref([])
+const iconLibraryQuery = ref('')
+const iconUrlInput = ref('')
 const iconBusy = ref('')
 const iconUploading = ref(false)
+const iconDownloading = ref(false)
 const iconUploadInput = ref(null)
 const candidateLoading = ref(false)
 const candidateLoadedRepos = ref(new Set())
@@ -510,8 +514,20 @@ async function loadIconLibrary() {
 
 function openIconLibrary() {
   iconLibraryOpen.value = true
+  iconLibraryQuery.value = ''
+  iconUrlInput.value = ''
   loadIconLibrary()
 }
+
+// 图标库关键词搜索：按图标名称 / ID 过滤。
+const filteredIconLibrary = computed(() => {
+  const keyword = iconLibraryQuery.value.trim().toLowerCase()
+  if (!keyword) return iconLibrary.value
+  return iconLibrary.value.filter((icon) => {
+    const name = String(icon.name || icon.id || '').toLowerCase()
+    return name.includes(keyword)
+  })
+})
 
 // 上传本地图片到 /data/icon，并直接应用为当前内容源图标。
 async function uploadIconFile(event) {
@@ -533,6 +549,32 @@ async function uploadIconFile(event) {
     notify(`上传图标失败：${err.message}`, 'error')
   } finally {
     iconUploading.value = false
+  }
+}
+
+// 输入网址下载图标到 /data/icon，并直接应用为当前内容源图标。
+async function downloadIconFromUrl() {
+  const raw = iconUrlInput.value.trim()
+  if (!raw) {
+    notify('请输入图标地址', 'warning')
+    return
+  }
+  const item = editorSource.value
+  if (!item) return
+  iconDownloading.value = true
+  try {
+    const downloaded = await api.downloadIcon(raw)
+    await loadIconLibrary()
+    if (downloaded?.item?.id) {
+      const result = await api.updateSourceIcon(item.id, { action: 'select', iconId: downloaded.item.id })
+      item.icon = `${result?.icon || ''}?t=${Date.now()}`
+    }
+    iconUrlInput.value = ''
+    notify(`图标已下载并应用到 ${item.name}`, 'success')
+  } catch (err) {
+    notify(`下载图标失败：${err.message}`, 'error')
+  } finally {
+    iconDownloading.value = false
   }
 }
 
@@ -1661,13 +1703,39 @@ function onDragEnd() {
         @change="uploadIconFile"
       />
       <div class="modal-body">
+        <div class="icon-library-tools">
+          <div class="icon-library-url">
+            <input
+              v-model="iconUrlInput"
+              class="input"
+              placeholder="输入图标网址，例如 https://bica.mom/favicon.jpeg"
+              @keyup.enter="downloadIconFromUrl"
+            />
+            <button class="btn small" type="button" :disabled="iconDownloading" @click="downloadIconFromUrl">
+              <Loader2 v-if="iconDownloading" :size="14" class="spin" />
+              <Download v-else :size="14" />
+              下载图标
+            </button>
+          </div>
+          <label class="icon-library-search">
+            <Search :size="15" />
+            <input v-model="iconLibraryQuery" class="input" placeholder="搜索图标" />
+            <button v-if="iconLibraryQuery" class="icon-btn" type="button" aria-label="清除搜索" @click="iconLibraryQuery = ''">
+              <X :size="14" />
+            </button>
+          </label>
+        </div>
         <div v-if="!iconLibrary.length" class="empty">
           <Images :size="24" />
           <p>图标库为空。可先对内容源执行“重新获取”生成图标，或直接上传本地图片。</p>
         </div>
+        <div v-else-if="!filteredIconLibrary.length" class="empty">
+          <Search :size="22" />
+          <p>没有匹配“{{ iconLibraryQuery }}”的图标。</p>
+        </div>
         <div v-else class="icon-library-grid">
           <button
-            v-for="icon in iconLibrary"
+            v-for="icon in filteredIconLibrary"
             :key="icon.id"
             class="icon-library-item"
             type="button"

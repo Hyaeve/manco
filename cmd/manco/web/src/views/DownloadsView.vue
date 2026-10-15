@@ -397,6 +397,15 @@ async function remove(item, removeFile) {
         {{ item.label }}
         <span class="segmented-count">{{ counts[item.value] }}</span>
       </button>
+      <button
+        class="completed-tab"
+        type="button"
+        :disabled="!counts.completed"
+        @click="focusCompletedWindow"
+      >
+        已完成
+        <span class="segmented-count">{{ counts.completed }}</span>
+      </button>
     </div>
     <span class="spacer" />
     <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
