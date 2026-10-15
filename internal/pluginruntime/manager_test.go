@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -75,6 +77,128 @@ func TestCallWithProxyAddsPerCallPreference(t *testing.T) {
 				t.Fatal("timed out waiting for sidecar request")
 			}
 		})
+	}
+}
+
+func TestRuntimeForFieldsRoutesKnownMihonAndKototoroSources(t *testing.T) {
+	manager := &Manager{
+		plugins: []pluginRecord{
+			{ID: "mihon-copymanga", Type: RuntimeMihon},
+			{ID: "kototoro-parsers", Type: RuntimeKototoro},
+		},
+		runtimeBySource: map[string]string{
+			"CopyManga": RuntimeMihon,
+			"BAOZIMH":   RuntimeKototoro,
+		},
+	}
+	tests := []struct {
+		sourceName string
+		want       string
+	}{
+		{sourceName: "CopyManga", want: RuntimeMihon},
+		{sourceName: "BAOZIMH", want: RuntimeKototoro},
+	}
+	for _, test := range tests {
+		t.Run(test.sourceName, func(t *testing.T) {
+			got, err := manager.runtimeForFieldsLocked(context.Background(), map[string]any{
+				"sourceName": test.sourceName,
+			})
+			if err != nil {
+				t.Fatalf("runtimeForFieldsLocked() error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("runtimeForFieldsLocked() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWriteConfigSeparatesPluginRuntimes(t *testing.T) {
+	root := t.TempDir()
+	manager := &Manager{
+		configDir: filepath.Join(root, "config"),
+		dataDir:   filepath.Join(root, "data"),
+		plugins: []pluginRecord{
+			{ID: "mihon-copymanga", Path: "plugins/mihon-copymanga.apk", Type: RuntimeMihon},
+			{ID: "kototoro-parsers", Path: "plugins/kototoro-parsers.jar", Type: RuntimeKototoro},
+		},
+	}
+	if err := os.MkdirAll(manager.configDir, 0o755); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	if err := manager.writeConfigLocked(); err != nil {
+		t.Fatalf("writeConfigLocked() error = %v", err)
+	}
+	tests := []struct {
+		runtimeType string
+		wantID      string
+	}{
+		{runtimeType: RuntimeMihon, wantID: "mihon-copymanga"},
+		{runtimeType: RuntimeKototoro, wantID: "kototoro-parsers"},
+	}
+	for _, test := range tests {
+		t.Run(test.runtimeType, func(t *testing.T) {
+			raw, err := os.ReadFile(manager.configPath(test.runtimeType))
+			if err != nil {
+				t.Fatalf("read config: %v", err)
+			}
+			var config hostConfig
+			if err := json.Unmarshal(raw, &config); err != nil {
+				t.Fatalf("decode config: %v", err)
+			}
+			if len(config.Plugins) != 1 || config.Plugins[0].ID != test.wantID {
+				t.Fatalf("plugins = %+v, want only %q", config.Plugins, test.wantID)
+			}
+		})
+	}
+}
+
+func TestImagePathUsesRuntimeDirectory(t *testing.T) {
+	manager := &Manager{dataDir: filepath.Join("root", "data")}
+	if got := manager.ImagePath(RuntimeMihon, "cover.jpg"); got != filepath.Join("root", "data", "mihon-host", "images", "cover.jpg") {
+		t.Fatalf("Mihon ImagePath() = %q", got)
+	}
+	if got := manager.ImagePath(RuntimeKototoro, "cover.jpg"); got != filepath.Join("root", "data", "kototoro-host", "images", "cover.jpg") {
+		t.Fatalf("Kototoro ImagePath() = %q", got)
+	}
+}
+
+func TestRuntimeOperationTranslatesSourceListPerRuntime(t *testing.T) {
+	tests := []struct {
+		name        string
+		runtimeType string
+		operation   string
+		want        string
+	}{
+		{name: "Mihon source list", runtimeType: RuntimeMihon, operation: "metadata", want: "sources"},
+		{name: "Kototoro source list", runtimeType: RuntimeKototoro, operation: "metadata", want: "metadata"},
+		{name: "Mihon shared browse", runtimeType: RuntimeMihon, operation: "list", want: "list"},
+		{name: "Mihon shared details", runtimeType: RuntimeMihon, operation: "details", want: "details"},
+		{name: "Mihon shared pages", runtimeType: RuntimeMihon, operation: "pages", want: "pages"},
+		{name: "Mihon shared image", runtimeType: RuntimeMihon, operation: "image", want: "image"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runtimeOperation(test.runtimeType, test.operation); got != test.want {
+				t.Fatalf("runtimeOperation(%q, %q) = %q, want %q", test.runtimeType, test.operation, got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizePreferenceValueSupportsMihonOperationDiscriminator(t *testing.T) {
+	legacy := normalizePreferenceValue(map[string]any{"type": "string", "value": "api.example.com"})
+	if legacy["operation"] != "string" || legacy["value"] != "api.example.com" {
+		t.Fatalf("legacy preference value was not normalized: %v", legacy)
+	}
+	if _, exists := legacy["type"]; exists {
+		t.Fatalf("legacy discriminator remained in normalized value: %v", legacy)
+	}
+
+	current := map[string]any{"operation": "stringSet", "values": []any{"one", "two"}}
+	if got := normalizePreferenceValue(current); got["operation"] != "stringSet" {
+		t.Fatalf("current preference value changed: %v", got)
 	}
 }
 

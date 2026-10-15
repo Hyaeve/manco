@@ -60,7 +60,7 @@ const filtered = computed(() => {
   })
 })
 
-// 本地库目录栏目：按订阅（添加订阅的先后）顺序展示作品父目录。
+// 本地仓库目录栏目：按订阅（添加订阅的先后）顺序展示作品父目录。
 function rootOf(item) {
   return String(item?.path || '').split('|')[0] || ''
 }
@@ -151,7 +151,7 @@ async function load() {
     selectedPaths.value = selectedPaths.value.filter((path) => available.has(path))
     if (!selectedPaths.value.length) selectionMode.value = false
   } catch (err) {
-    notify(`本地库加载失败：${err.message}`, true)
+    notify(`本地仓库加载失败：${err.message}`, true)
   } finally {
     loading.value = false
   }
@@ -440,7 +440,7 @@ function downloadReaderFile() {
 <template>
   <div v-if="active" class="local-detail-view" :style="heroStyle">
     <div class="detail-hero local-detail-hero">
-      <button class="detail-cover-back" type="button" aria-label="返回本地库" @click="closeDetail">
+      <button class="detail-cover-back" type="button" aria-label="返回本地仓库" @click="closeDetail">
         <BackArrowIcon />
       </button>
       <div class="detail-cover-wrap">
@@ -568,7 +568,7 @@ function downloadReaderFile() {
 
   <div v-else>
     <div class="toolbar library-toolbar">
-      <div class="segmented" role="tablist" aria-label="本地库类型">
+      <div class="segmented" role="tablist" aria-label="本地仓库类型">
         <button type="button" :class="{ active: kind === 'all' }" @click="kind = 'all'">
           <Layers3 :size="16" />
           全部
@@ -592,7 +592,7 @@ function downloadReaderFile() {
       </label>
     </div>
 
-    <div v-if="libraryRoots.length" class="local-root-strip" aria-label="本地库目录">
+    <div v-if="libraryRoots.length" class="local-root-strip" aria-label="本地仓库目录">
       <button type="button" :class="{ active: !activeRoot }" @click="activeRoot = ''">全部</button>
       <button
         v-for="root in libraryRoots"
@@ -607,11 +607,11 @@ function downloadReaderFile() {
 
     <div v-if="loading && !items.length" class="empty">
       <Loader2 :size="22" class="spin" />
-      <span>正在读取本地库</span>
+      <span>正在读取本地仓库</span>
     </div>
     <div v-else-if="!items.length" class="card empty">
       <FolderOpen :size="26" />
-      <p>本地库还是空的。下载完成后，漫画 CBZ 与书籍文本会显示在这里。</p>
+      <p>本地仓库还是空的。下载完成后，漫画 CBZ 与书籍文本会显示在这里。</p>
     </div>
     <div v-else-if="!filtered.length" class="card empty">
       <Search :size="26" />
@@ -629,7 +629,9 @@ function downloadReaderFile() {
       >
         <span v-if="isSelected(item)" class="local-selection-check"><Check :size="16" /></span>
         <span class="local-library-cover">
-          <span class="local-library-chapter-badge">{{ chapterCount(item) }}</span>
+          <span class="local-library-chapter-badge" :class="{ single: String(chapterCount(item)).length === 1 }">
+            {{ chapterCount(item) }}
+          </span>
           <img v-if="item.cover" :src="coverUrl(item)" :alt="item.title" loading="lazy" />
           <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
         </span>

@@ -22,7 +22,7 @@ const modules = [
   { value: 'repositories', label: '拓展仓库' },
   { value: 'subscriptions', label: '订阅' },
   { value: 'downloads', label: '下载' },
-  { value: 'local', label: '本地库' },
+  { value: 'local', label: '本地仓库' },
   { value: 'settings', label: '系统设置' },
 ]
 

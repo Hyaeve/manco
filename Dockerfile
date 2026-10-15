@@ -35,7 +35,61 @@ RUN sh /build/host/prepare-sources.sh /build/upstream /build/host/upstream
 WORKDIR /build/host
 RUN gradle --no-daemon installDist
 
-# --- Stage 4: minimal runtime ------------------------------------------------
+# --- Stage 4: build the pinned Suwayomi AndroidCompatibility runtime ----------
+FROM gradle:9.3.1-jdk25 AS mihon-runtime
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN git init suwayomi \
+    && git -C suwayomi -c core.autocrlf=false fetch --depth=1 \
+        https://github.com/Suwayomi/Suwayomi-Server.git \
+        eb2dc0b19a9571b27c02bebc5c883e404b7bd7fb \
+    && git -C suwayomi checkout --quiet --detach FETCH_HEAD
+COPY runtime/mihon-host/suwayomi-ios-runtime.patch /tmp/suwayomi-ios-runtime.patch
+COPY runtime/mihon-host/copy-suwayomi-runtime.init.gradle /tmp/copy-suwayomi-runtime.init.gradle
+RUN git -C suwayomi apply /tmp/suwayomi-ios-runtime.patch \
+    && sed -i 's|Instant.now().epochSecond.toString()|"1790898154"|' suwayomi/server/build.gradle.kts \
+    && test "$(grep -c '1790898154' suwayomi/server/build.gradle.kts)" -eq 1
+ENV ProductBuildType=Preview
+RUN ./suwayomi/gradlew -p suwayomi :server:copyTachiazRuntime --no-daemon \
+        --max-workers=2 --console=plain \
+        "-Dorg.gradle.jvmargs=-Xmx4g" "-Pkotlin.daemon.jvmargs=-Xmx4g" \
+        --init-script /tmp/copy-suwayomi-runtime.init.gradle \
+        -PtachiazRuntimeOutput=/out/compatibility
+
+# --- Stage 5: build the separate Mihon-family JVM host ------------------------
+FROM gradle:9.7.0-jdk21 AS mihon
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN git clone --filter=blob:none https://github.com/Kototoro-app/Kototoro.git upstream \
+    && git -C upstream checkout 68c6b12013f08f9778d9892c5230746289e88018
+COPY runtime/mihon-host/ /build/host/
+COPY --from=mihon-runtime /out/compatibility /build/compatibility
+RUN sh /build/host/prepare-upstream.sh /build/upstream /build/host
+# The runtime producer emits a broad dependency set; the compatibility module
+# verifies an exact pinned subset. Keep only that subset in the final host.
+RUN rm -f /build/upstream/gradle/gradle-daemon-jvm.properties \
+    && mkdir -p /build/compatibility-pinned \
+    && awk -F= '/^[^#]/ { print $1 }' \
+        /build/upstream/mihon-desktop-compat/windows-runtime-pins.properties \
+        | while IFS= read -r jar; do \
+            test -f "/build/compatibility/$jar" \
+                || { echo "Missing pinned Mihon runtime JAR: $jar" >&2; exit 1; }; \
+            cp "/build/compatibility/$jar" /build/compatibility-pinned/; \
+        done
+WORKDIR /build/upstream
+RUN gradle --no-daemon --configure-on-demand \
+        -PwithMihonDesktopCompat=true \
+        -PmihonCompatibilityDirectory=/build/compatibility-pinned \
+        -PmihonCompatibilityJavaVersion=21 \
+        :manco-mihon-host:installDist
+
+# --- Stage 6: minimal runtime -------------------------------------------------
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata openjdk21-jre-headless
 ENV TZ=Asia/Shanghai \
@@ -46,7 +100,10 @@ ENV TZ=Asia/Shanghai \
 WORKDIR /app
 COPY --from=backend /out/manco /usr/local/bin/manco
 COPY --from=kototoro /build/host/build/install/manco-kototoro-host /usr/local/lib/manco/kototoro-host
+COPY --from=mihon /build/upstream/manco-mihon-host/build/install/manco-mihon-host /usr/local/lib/manco/mihon-host
 COPY --from=kototoro /build/upstream/LICENSE /usr/share/licenses/manco/kototoro/LICENSE
+COPY --from=mihon /build/upstream/LICENSE /usr/share/licenses/manco/kototoro/LICENSE.mihon
+COPY --from=mihon /build/upstream/mihon-desktop-compat/README.md /usr/share/licenses/manco/kototoro/MIHON-COMPAT-README.md
 RUN mkdir -p /app/data /app/config
 EXPOSE 15600
 VOLUME ["/app/data", "/app/config"]

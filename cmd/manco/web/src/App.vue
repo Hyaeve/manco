@@ -1,5 +1,5 @@
 <script setup>
-import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Activity,
@@ -87,13 +87,58 @@ const navItems = [
   { name: 'discover', label: '探索发现', to: '/discover', icon: Compass },
   { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
   { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },
-  { name: 'local', label: '本地库', to: '/local', icon: HardDrive },
+  { name: 'local', label: '本地仓库', to: '/local', icon: HardDrive },
   { name: 'sources', label: '资源仓库', to: '/sources', icon: Server },
 ]
 const logsItem = { name: 'logs', label: '运行日志', to: '/logs', icon: ScrollText }
 const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }
 
 const showShell = computed(() => route.name !== 'login')
+
+// 侧栏切换时保持各主页面实例与数据，回到页面不再触发新请求。
+const cachedViews = [
+  'DashboardView',
+  'DiscoverView',
+  'SubscriptionsView',
+  'DownloadsView',
+  'ArchivedSubscriptionsView',
+  'CompletedTasksView',
+  'LocalLibraryView',
+  'SourcesView',
+  'LogsView',
+  'SettingsView',
+]
+
+const scrollPositions = new Map()
+let pendingScrollRestore = 0
+let scrollContainer = null
+let scrollCaptureSuspended = false
+
+function restoreScrollPosition() {
+  const name = route.name
+  if (!name) {
+    scrollCaptureSuspended = false
+    return
+  }
+  if (pendingScrollRestore) cancelAnimationFrame(pendingScrollRestore)
+  pendingScrollRestore = requestAnimationFrame(() => {
+    pendingScrollRestore = 0
+    const container = document.querySelector('.content-scroll')
+    if (container) container.scrollTop = scrollPositions.get(name) || 0
+    requestAnimationFrame(() => {
+      scrollCaptureSuspended = false
+    })
+  })
+}
+
+function captureContentScroll(name = route.name) {
+  const container = document.querySelector('.content-scroll')
+  if (name && container) scrollPositions.set(name, container.scrollTop)
+}
+
+function handleShellScroll() {
+  if (!scrollCaptureSuspended) captureContentScroll()
+}
 
 // 归档集归在订阅清单栏目下，已完成归在任务列表栏目下。
 function navActive(name) {
@@ -114,18 +159,30 @@ watch(theme, (value) => {
 })
 
 watch(
-  () => route.fullPath,
-  () => {
+  () => [route.name, route.fullPath],
+  async ([toName], [fromName]) => {
     menuOpen.value = false
     openMenu.value = ''
     activityOpen.value = false
+    if (fromName !== toName) {
+      await nextTick()
+      restoreScrollPosition()
+    }
   },
 )
+
+const removeScrollCaptureGuard = router.beforeEach((to, from) => {
+  captureContentScroll(from.name)
+  scrollCaptureSuspended = from.name !== to.name
+  return true
+})
 
 onMounted(() => {
   applyTheme()
   media.addEventListener('change', applyTheme)
   if (!auth.ready) auth.load()
+  scrollContainer = document.querySelector('.content-scroll')
+  scrollContainer?.addEventListener('scroll', handleShellScroll, { passive: true })
   window.addEventListener('click', closeMenus)
   window.addEventListener('keydown', handleGlobalKeys)
   window.addEventListener('focus', checkSession)
@@ -136,12 +193,16 @@ onMounted(() => {
 
 onUnmounted(() => {
   media.removeEventListener('change', applyTheme)
+  removeScrollCaptureGuard()
+  scrollContainer?.removeEventListener('scroll', handleShellScroll)
+  scrollContainer = null
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', handleGlobalKeys)
   window.removeEventListener('focus', checkSession)
   window.removeEventListener('manco:unauthorized', handleUnauthorized)
   document.removeEventListener('visibilitychange', checkSessionOnVisible)
   if (sessionCheckTimer) window.clearInterval(sessionCheckTimer)
+  if (pendingScrollRestore) cancelAnimationFrame(pendingScrollRestore)
 })
 
 function closeMenus(event) {
@@ -372,7 +433,11 @@ function activityIcon(level) {
       </header>
       <main class="content-scroll" :class="{ 'logs-page': route.name === 'logs' }">
         <div class="page-content">
-          <RouterView />
+          <RouterView v-slot="{ Component }">
+            <KeepAlive :include="cachedViews">
+              <component :is="Component" />
+            </KeepAlive>
+          </RouterView>
         </div>
       </main>
     </div>

@@ -12,3 +12,6 @@
 *.ico binary
 *.zip binary
 *.cbz binary
+
+# Unified diff patches intentionally contain whitespace-only context lines.
+runtime/mihon-host/*.patch -whitespace

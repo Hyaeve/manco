@@ -475,8 +475,47 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	if !ok {
 		t.Fatal("CBZ is missing embedded ComicInfo.xml")
 	}
-	if !bytes.Contains(embedded, []byte("<Series>测试作品</Series>")) || !bytes.Contains(embedded, []byte("<PageCount>3</PageCount>")) {
-		t.Fatalf("embedded ComicInfo.xml content mismatch: %s", embedded)
+	for _, value := range []string{
+		"<Series>测试作品</Series>",
+		"<PageCount>3</PageCount>",
+		"<Manga>YesAndRightToLeft</Manga>",
+		"<LanguageISO>zh-Hans</LanguageISO>",
+		"<Genre>测试,漫画</Genre>",
+		"<Tags>测试,漫画</Tags>",
+	} {
+		if !bytes.Contains(embedded, []byte(value)) {
+			t.Fatalf("embedded ComicInfo.xml is missing %q: %s", value, embedded)
+		}
+	}
+
+	// Komga reads Mylar series.json for series-level metadata and OPF for the
+	// EPUB-style fields. Both sidecars must stay valid alongside the legacy
+	// standalone ComicInfo.xml.
+	seriesJSON, err := os.ReadFile(filepath.Join(downloadDir, "测试作品", "series.json"))
+	if err != nil {
+		t.Fatalf("read series.json: %v", err)
+	}
+	var series MylarSeries
+	if err := json.Unmarshal(seriesJSON, &series); err != nil {
+		t.Fatalf("parse series.json: %v", err)
+	}
+	if series.Metadata.Name != "测试作品" || series.Metadata.ComicID != "1" {
+		t.Fatalf("unexpected series.json metadata: %+v", series.Metadata)
+	}
+	if series.Metadata.Status != "Continuing" || series.Metadata.ComicImage != "cover.png" {
+		t.Fatalf("series.json status/cover mismatch: %+v", series.Metadata)
+	}
+	if len(series.Metadata.Genres) != 2 || series.Metadata.Genres[0] != "测试" || series.Metadata.Genres[1] != "漫画" {
+		t.Fatalf("series.json genres = %v", series.Metadata.Genres)
+	}
+	opf, err := os.ReadFile(filepath.Join(downloadDir, "测试作品", "metadata.opf"))
+	if err != nil {
+		t.Fatalf("read metadata.opf: %v", err)
+	}
+	for _, value := range []string{`<dc:title>测试作品</dc:title>`, `<dc:creator>测试作者</dc:creator>`, `<dc:description>测试简介</dc:description>`, `page-progression-direction="rtl"`} {
+		if !bytes.Contains(opf, []byte(value)) {
+			t.Fatalf("metadata.opf is missing %q: %s", value, opf)
+		}
 	}
 }
 

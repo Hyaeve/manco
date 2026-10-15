@@ -177,23 +177,26 @@ async function loadSources() {
     const preferred = typeof route.query.source === 'string' ? route.query.source : nav.source || ''
     const found = sources.value.find((source) => source.id === preferred)
     activeId.value = found?.id || sources.value[0]?.id || ''
+    loadingSources.value = false
     if (activeId.value) {
       const panel = panelFor(activeSource.value)
       const restorePage = nav.source === activeId.value && nav.page ? nav.page : panel.page || 1
-      await ensure(activeSource.value, panel, restorePage)
-      if (nav.source === activeId.value && nav.scrollTop) {
-        nextTick(() => {
-          const area = document.querySelector('.content-scroll')
-          if (area) area.scrollTop = Number(nav.scrollTop) || 0
-        })
-      }
+      void ensure(activeSource.value, panel, restorePage).then(() => {
+        if (nav.source === activeId.value && nav.scrollTop) {
+          nextTick(() => {
+            const area = document.querySelector('.content-scroll')
+            if (area) area.scrollTop = Number(nav.scrollTop) || 0
+          })
+        }
+      })
+    } else {
+      markDiscoverPanelsLoaded()
     }
   } catch (err) {
     sourcesError.value = err.message
   } finally {
     loadingSources.value = false
   }
-  markDiscoverPanelsLoaded()
 }
 
 onMounted(() => {
@@ -257,9 +260,9 @@ async function switchKind(kind) {
   if (route.query.kind !== kind || route.query.source !== activeId.value) {
     router.replace({ name: 'discover', query: { kind, source: activeId.value } })
   }
-  if (activeId.value) await ensure(activeSource.value, panelFor(activeSource.value), 1)
   rememberPosition()
   scrollPageTop()
+  if (activeId.value) void ensure(activeSource.value, panelFor(activeSource.value), 1)
 }
 
 async function selectSource(id) {
@@ -269,9 +272,9 @@ async function selectSource(id) {
     router.replace({ name: 'discover', query: { kind: activeKind.value, source: id } })
   }
   const panel = panelFor(activeSource.value)
-  if (!panel.loaded && !panel.loading) await ensure(activeSource.value, panel, 1)
   rememberPosition()
   scrollPageTop()
+  if (!panel.loaded && !panel.loading) void ensure(activeSource.value, panel, 1)
 }
 
 function beginPanelRequest(source, panel) {

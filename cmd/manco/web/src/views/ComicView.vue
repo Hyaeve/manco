@@ -1,5 +1,5 @@
 <script setup>
-import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -15,6 +15,8 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import timeSortAsc from '../assets/icons/time-sort-asc.png'
+import timeSortDesc from '../assets/icons/time-sort-desc.png'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { notify } from '../stores/notices'
@@ -41,42 +43,6 @@ const downloadedChapters = ref(new Set())
 // 从订阅清单的“归档集”进入时，章节下面要标出哪些章节有过下载记录。
 const archiveMode = computed(() => String(route.query.archive || '') === '1')
 
-// 简洁线条的章节时间排序图标：三条由长到短的横线 + 方向箭头。
-const TimeSortIcon = defineComponent({
-  props: { desc: { type: Boolean, default: false } },
-  setup(props) {
-    return () =>
-      h(
-        'svg',
-        {
-          xmlns: 'http://www.w3.org/2000/svg',
-          width: 17,
-          height: 17,
-          viewBox: '0 0 24 24',
-          fill: 'none',
-          stroke: 'currentColor',
-          'stroke-width': 1.6,
-          'stroke-linecap': 'round',
-          'stroke-linejoin': 'round',
-        },
-        props.desc
-          ? [
-              h('path', { d: 'M4 6h13' }),
-              h('path', { d: 'M4 11h9' }),
-              h('path', { d: 'M4 16h5' }),
-              h('path', { d: 'M18 8v9' }),
-              h('path', { d: 'm14.5 13.5 3.5 3.5 3.5-3.5' }),
-            ]
-          : [
-              h('path', { d: 'M4 6h5' }),
-              h('path', { d: 'M4 11h9' }),
-              h('path', { d: 'M4 16h13' }),
-              h('path', { d: 'M18 16V7' }),
-              h('path', { d: 'm14.5 10.5 3.5-3.5 3.5 3.5' }),
-            ],
-      )
-  },
-})
 const chapterRenderLimit = ref(80)
 let pageScroller = null
 let anchorIndex = -1
@@ -469,7 +435,7 @@ async function downloadSelected() {
           <span>全选</span>
         </button>
         <button class="btn ghost small sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
-          <TimeSortIcon :desc="sortDesc" />
+          <img class="chapter-time-sort-icon" :src="sortDesc ? timeSortDesc : timeSortAsc" alt="" />
         </button>
         <span v-if="archiveMode" class="muted small">已下载 {{ downloadedCount }} / 共 {{ chapters.length }} 章</span>
         <span v-else class="muted small">共 {{ chapters.length }} 章</span>

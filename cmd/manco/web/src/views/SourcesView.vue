@@ -1,9 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   Boxes,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Eye,
   EyeOff,
@@ -29,7 +31,6 @@ import { api } from '../api'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import PasswordInput from '../components/PasswordInput.vue'
-import RoundedSelect from '../components/RoundedSelect.vue'
 import SitePicker from '../components/SitePicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 
@@ -63,7 +64,14 @@ const browserCookies = ref('')
 const sourceSelection = ref(new Set())
 const sourceAnchor = ref(-1)
 const extensionCandidates = ref([])
+const candidateCache = ref({})
 const candidateFilter = ref('all')
+const repositoryStripRef = ref(null)
+const typeStripRef = ref(null)
+const stripBounds = reactive({
+  repository: { left: false, right: false },
+  type: { left: false, right: false },
+})
 const iconLibraryOpen = ref(false)
 const iconLibrary = ref([])
 const iconLibraryQuery = ref('')
@@ -99,12 +107,10 @@ const visibleSources = computed(() => {
   if (activeKind.value === 'other') return otherSources.value
   return comicSources.value
 })
-const repositoryOptions = computed(() =>
-  repositories.value.map((repository) => ({
-    value: repository.id,
-    label: `${repository.name} · ${repository.kind || 'json'}`,
-  })),
-)
+const repositoryFilterOptions = computed(() => [
+  { value: 'all', label: '全部仓库' },
+  ...repositories.value.map((repository) => ({ value: repository.id, label: repository.name })),
+])
 const selectedRepository = computed(() => repositories.value.find((item) => item.id === addRepositoryID.value) || null)
 const selectedExtensions = computed(() => {
   const keyword = sourceSearch.value.trim().toLowerCase()
@@ -115,15 +121,6 @@ const selectedExtensions = computed(() => {
     if (!keyword) return true
     return `${item.name} ${item.packageName || ''} ${item.description || ''}`.toLowerCase().includes(keyword)
   })
-})
-
-const candidateCategories = computed(() => {
-  const values = new Set()
-  for (const item of extensionCandidates.value) {
-    const value = String(item.contentType || item.kind || '').trim()
-    if (value) values.add(value)
-  }
-  return ['all', ...Array.from(values).sort()]
 })
 
 function candidateCategoryLabel(value) {
@@ -142,21 +139,39 @@ function candidateCategoryLabel(value) {
     ARTIST_CG: '画师 CG',
     GAME_CG: '游戏 CG',
     VIDEO: '视频',
+    HENTAI_VIDEO: '成人视频',
     OTHER: '其他',
   }[value] || value || '其他'
 }
 
-const candidateFilterOptions = computed(() =>
-  candidateCategories.value.map((value) => ({ value, label: candidateCategoryLabel(value) })),
-)
+const candidateFilterOptions = computed(() => {
+  if (activeKind.value === 'book') {
+    return ['all', 'NOVEL', 'HENTAI_NOVEL'].map((value) => ({ value, label: value === 'all' ? '全部类型' : candidateCategoryLabel(value) }))
+  }
+  if (activeKind.value === 'other') {
+    return ['all', 'VIDEO', 'HENTAI_VIDEO', 'OTHER'].map((value) => ({ value, label: value === 'all' ? '全部类型' : candidateCategoryLabel(value) }))
+  }
+  return ['all', 'MANGA', 'MANHWA', 'HENTAI_MANGA', 'COMICS'].map((value) => ({ value, label: value === 'all' ? '全部类型' : candidateCategoryLabel(value) }))
+})
 
 const candidateCategoryIcon = (value) => value || 'OTHER'
+
+function candidateType(item) {
+  return String(item.contentType || item.kind || '').trim().toUpperCase()
+}
+
+function matchesCandidateType(item, filter) {
+  if (filter === 'all') return true
+  const type = candidateType(item)
+  if (filter === 'MANGA') return ['MANGA', 'MANHUA', 'COMIC'].includes(type)
+  return type === filter
+}
 
 const visibleCandidates = computed(() => {
   const keyword = sourceSearch.value.trim().toLowerCase()
   return extensionCandidates.value.filter((item) => {
     if (activeKind.value !== 'repository' && (item.kind || 'comic') !== activeKind.value) return false
-    if (candidateFilter.value !== 'all' && String(item.contentType || item.kind) !== candidateFilter.value) return false
+    if (!matchesCandidateType(item, candidateFilter.value)) return false
     if (!keyword) return true
     return `${item.name} ${item.sourceName || ''} ${item.description || ''}`.toLowerCase().includes(keyword)
   })
@@ -170,16 +185,24 @@ const allVisibleSourcesSelected = computed(
 
 onMounted(load)
 
-onMounted(() => window.addEventListener('keydown', onSourceKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onSourceKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onSourceKeydown)
+  window.addEventListener('resize', updateAllStripBounds)
+  nextTick(updateAllStripBounds)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onSourceKeydown)
+  window.removeEventListener('resize', updateAllStripBounds)
+})
 
 function onSourceKeydown(event) {
   if (event.key === 'Escape' && sourceSelection.value.size) clearSourceSelection()
 }
 
 watch(addRepositoryID, () => {
-  extensionCandidates.value = []
   candidateFilter.value = 'all'
+  syncExtensionCandidates()
+  if (addSourceOpen.value) loadRepositoryCandidates(selectedRepository.value)
 })
 
 watch(selectedRepository, (repository) => {
@@ -187,6 +210,8 @@ watch(selectedRepository, (repository) => {
 })
 
 watch(activeKind, () => {
+  candidateFilter.value = 'all'
+  syncExtensionCandidates()
   if (addSourceOpen.value) loadRepositoryCandidates(selectedRepository.value)
 })
 
@@ -207,8 +232,8 @@ async function load() {
       maxChapterConcurrency: Number(settingsPayload.maxChapterConcurrency) || 1,
       maxPageConcurrency: Number(settingsPayload.maxPageConcurrency) || 4,
     }
-    if (!addRepositoryID.value || !repositories.value.some((item) => item.id === addRepositoryID.value)) {
-      addRepositoryID.value = repositories.value[0]?.id || ''
+    if (!addRepositoryID.value || (addRepositoryID.value !== 'all' && !repositories.value.some((item) => item.id === addRepositoryID.value))) {
+      addRepositoryID.value = 'all'
     }
     for (const item of sources.value) {
       const account = accounts.value[item.id] || {}
@@ -706,9 +731,9 @@ async function savePluginPreference(node) {
   const screen = payload.preferences?.screen || payload.preferences?.update?.screen || payload.update?.screen || payload.screen || payload.preferences || {}
   const current = pluginPreferenceValue(node)
   let value
-  if (node.kind === 'TOGGLE') value = { type: 'boolean', value: Boolean(current) }
-  else if (node.kind === 'MULTI_CHOICE') value = { type: 'stringSet', values: Array.isArray(current) ? current : [] }
-  else value = { type: 'string', value: String(current ?? '') }
+  if (node.kind === 'TOGGLE') value = { operation: 'boolean', value: Boolean(current) }
+  else if (node.kind === 'MULTI_CHOICE') value = { operation: 'stringSet', values: Array.isArray(current) ? current : [] }
+  else value = { operation: 'string', value: String(current ?? '') }
   pluginPrefLoading.value = true
   try {
     const result = await api.updatePluginPreference(item.id, {
@@ -942,47 +967,121 @@ function openAddSource() {
     return
   }
   sourceSearch.value = ''
-  extensionCandidates.value = []
+  addRepositoryID.value = 'all'
   candidateFilter.value = 'all'
+  syncExtensionCandidates()
   addSourceOpen.value = true
-  loadRepositoryCandidates(selectedRepository.value)
+  loadRepositoryCandidates(null)
 }
 
 async function loadRepositoryCandidates(repository) {
-  if (!repository) return
-  const cachedKey = `${repository.id}:${activeKind.value}`
-  if (candidateLoadedRepos.value.has(cachedKey)) return
-  const extensions = (repository.extensions || []).filter((extension) => canInstallExtension(repository, extension))
-  if (!extensions.length) {
-    extensionCandidates.value = []
-    candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
+  const targets = repository
+    ? [repository]
+    : addRepositoryID.value === 'all'
+      ? repositories.value
+      : [selectedRepository.value].filter(Boolean)
+  if (!targets.length) {
+    syncExtensionCandidates()
     return
   }
   candidateLoading.value = true
-  const collected = []
   const errors = []
-  for (const extension of extensions) {
-    try {
-      const result = await api.importRepositoryExtension(repository.id, extension.id)
-      const candidates = Array.isArray(result.candidates) ? result.candidates : (Array.isArray(result.sources) ? result.sources : [])
-      collected.push(...candidates)
-    } catch (err) {
-      errors.push(`${extension.name || extension.id}：${err.message}`)
+  for (const target of targets) {
+    const cachedKey = `${target.id}:${activeKind.value}`
+    if (candidateLoadedRepos.value.has(cachedKey)) continue
+    const extensions = (target.extensions || []).filter((extension) => canInstallExtension(target, extension))
+    if (!extensions.length) {
+      candidateCache.value = { ...candidateCache.value, [cachedKey]: [] }
+      candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
+      continue
     }
+    const collected = []
+    for (const extension of extensions) {
+      try {
+        const result = await api.importRepositoryExtension(target.id, extension.id)
+        const candidates = Array.isArray(result.candidates) ? result.candidates : (Array.isArray(result.sources) ? result.sources : [])
+        collected.push(...candidates.map((candidate) => ({
+          ...candidate,
+          repositoryId: target.id,
+          repositoryName: target.name,
+        })))
+      } catch (err) {
+        errors.push(`${extension.name || extension.id}：${err.message}`)
+      }
+    }
+    const seen = new Set()
+    candidateCache.value = {
+      ...candidateCache.value,
+      [cachedKey]: collected.filter((candidate) => {
+        if (!candidate?.id || seen.has(candidate.id)) return false
+        seen.add(candidate.id)
+        return true
+      }),
+    }
+    candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
   }
-  const seen = new Set()
-  extensionCandidates.value = collected.filter((candidate) => {
-    if (!candidate?.id || seen.has(candidate.id)) return false
-    seen.add(candidate.id)
-    return true
-  })
-  candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
+  syncExtensionCandidates()
   candidateLoading.value = false
+  nextTick(updateAllStripBounds)
   if (extensionCandidates.value.length) {
     notify(`已加载 ${extensionCandidates.value.length} 个可添加内容源`, 'success')
   } else if (errors.length) {
     notify(`内容源加载失败：${errors[0]}`, 'error')
   }
+}
+
+function syncExtensionCandidates() {
+  const targets = addRepositoryID.value === 'all'
+    ? repositories.value
+    : [selectedRepository.value].filter(Boolean)
+  const seen = new Set()
+  const collected = []
+  for (const target of targets) {
+    const rows = candidateCache.value[`${target.id}:${activeKind.value}`] || []
+    for (const candidate of rows) {
+      if (!candidate?.id || seen.has(candidate.id)) continue
+      seen.add(candidate.id)
+      collected.push(candidate)
+    }
+  }
+  extensionCandidates.value = collected
+}
+
+function stripElement(name) {
+  return name === 'repository' ? repositoryStripRef.value : typeStripRef.value
+}
+
+function updateStripBounds(name) {
+  const element = stripElement(name)
+  if (!element) {
+    stripBounds[name].left = false
+    stripBounds[name].right = false
+    return
+  }
+  stripBounds[name].left = element.scrollLeft > 2
+  stripBounds[name].right = element.scrollLeft + element.clientWidth < element.scrollWidth - 2
+}
+
+function updateAllStripBounds() {
+  updateStripBounds('repository')
+  updateStripBounds('type')
+}
+
+function scrollChipStrip(name, direction) {
+  const element = stripElement(name)
+  if (!element) return
+  element.scrollBy({ left: direction * Math.max(150, element.clientWidth * 0.7), behavior: 'smooth' })
+}
+
+function handleChipStripWheel(name, event) {
+  const element = stripElement(name)
+  if (!element || element.scrollWidth <= element.clientWidth) return
+  const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+  if (delta === 0) return
+  if (delta < 0 && element.scrollLeft <= 0) return
+  if (delta > 0 && element.scrollLeft + element.clientWidth >= element.scrollWidth - 1) return
+  event.preventDefault()
+  element.scrollBy({ left: delta, behavior: 'auto' })
 }
 
 async function loadExtensionCandidates(repository, extension) {
@@ -1283,15 +1382,83 @@ function onDragEnd() {
         </button>
       </div>
       <div class="modal-body">
+        <div class="source-add-filters">
+          <div class="source-chip-strip" @mouseenter="updateStripBounds('repository')">
+            <button
+              class="source-chip-strip-arrow left"
+              type="button"
+              :class="{ visible: stripBounds.repository.left }"
+              aria-label="向前滚动仓库"
+              @click="scrollChipStrip('repository', -1)"
+            >
+              <ChevronLeft :size="15" />
+            </button>
+            <div
+              ref="repositoryStripRef"
+              class="source-chip-strip-track"
+              @scroll="updateStripBounds('repository')"
+              @wheel="handleChipStripWheel('repository', $event)"
+            >
+              <button
+                v-for="option in repositoryFilterOptions"
+                :key="option.value"
+                class="source-chip"
+                type="button"
+                :class="{ active: addRepositoryID === option.value }"
+                @click="addRepositoryID = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+            <button
+              class="source-chip-strip-arrow right"
+              type="button"
+              :class="{ visible: stripBounds.repository.right }"
+              aria-label="向后滚动仓库"
+              @click="scrollChipStrip('repository', 1)"
+            >
+              <ChevronRight :size="15" />
+            </button>
+          </div>
+          <div class="source-chip-strip" @mouseenter="updateStripBounds('type')">
+            <button
+              class="source-chip-strip-arrow left"
+              type="button"
+              :class="{ visible: stripBounds.type.left }"
+              aria-label="向前滚动类型"
+              @click="scrollChipStrip('type', -1)"
+            >
+              <ChevronLeft :size="15" />
+            </button>
+            <div
+              ref="typeStripRef"
+              class="source-chip-strip-track"
+              @scroll="updateStripBounds('type')"
+              @wheel="handleChipStripWheel('type', $event)"
+            >
+              <button
+                v-for="option in candidateFilterOptions"
+                :key="option.value"
+                class="source-chip"
+                type="button"
+                :class="{ active: candidateFilter === option.value }"
+                @click="candidateFilter = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+            <button
+              class="source-chip-strip-arrow right"
+              type="button"
+              :class="{ visible: stripBounds.type.right }"
+              aria-label="向后滚动类型"
+              @click="scrollChipStrip('type', 1)"
+            >
+              <ChevronRight :size="15" />
+            </button>
+          </div>
+        </div>
         <div class="source-add-toolbar">
-          <RoundedSelect v-model="addRepositoryID" label="" :options="repositoryOptions" placeholder="选择仓库" />
-          <RoundedSelect
-            v-if="extensionCandidates.length"
-            v-model="candidateFilter"
-            label=""
-            :options="candidateFilterOptions"
-            placeholder="全部分类"
-          />
           <label class="source-repository-search">
             <Search :size="15" />
             <input v-model="sourceSearch" placeholder="搜索内容源" />

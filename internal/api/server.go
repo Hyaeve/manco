@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.6"
+	appVersion    = "v0.4.7"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -529,6 +529,51 @@ func (s *Server) fetchSourceIcon(ctx context.Context, id string) (iconcache.Entr
 		return iconcache.Entry{}, errors.New("该内容源没有可用的默认图标地址")
 	}
 	return s.icons.Fetch(ctx, id, sourceURL)
+}
+
+// localizeCustomSourceIcon downloads the candidate/source favicon to /data/icon
+// and persists a local URL when the download succeeds. A failed download keeps
+// the original URL so the frontend can still fall back to its type icon.
+func (s *Server) localizeCustomSourceIcon(ctx context.Context, item model.CustomSource) model.CustomSource {
+	if s.icons == nil {
+		return item
+	}
+	id := strings.ToLower(strings.TrimSpace(item.ID))
+	if id == "" {
+		return item
+	}
+	if s.icons.Has(id) {
+		item.Icon = s.icons.URL(id)
+		return item
+	}
+	sourceURL := remoteIconURL(item.Icon)
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(sourceIconSources[id])
+	}
+	if sourceURL == "" {
+		homepage := strings.TrimRight(strings.TrimSpace(item.Homepage), "/")
+		if homepage != "" {
+			sourceURL = homepage + "/favicon.ico"
+		}
+	}
+	if sourceURL == "" {
+		return item
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	if _, err := s.icons.Fetch(fetchCtx, id, sourceURL); err != nil {
+		return item
+	}
+	item.Icon = s.icons.URL(id)
+	return item
+}
+
+func remoteIconURL(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	return parsed.String()
 }
 
 // handleListIcons lists the locally cached icons under /data/icon.
@@ -1304,10 +1349,6 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	runtimeType := pluginRuntimeFor(repo, selected)
-	if runtimeType == pluginruntime.RuntimeMihon {
-		writeError(w, http.StatusBadGateway, "该内容源是 Mihon 系 Android/JVM 插件；当前镜像尚未内置 Mihon 桌面兼容运行时，暂时无法在容器内执行")
-		return
-	}
 	prefix := "kototoro-"
 	if runtimeType == pluginruntime.RuntimeMihon {
 		prefix = "mihon-"
@@ -1695,6 +1736,7 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 			return
 		}
 	}
+	item = s.localizeCustomSourceIcon(r.Context(), item)
 	saved, err := s.store.UpsertCustomSource(r.Context(), item)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -3352,6 +3394,10 @@ type localItemEntry struct {
 	Author      string           `json:"author,omitempty"`
 	Description string           `json:"description,omitempty"`
 	Tags        []string         `json:"tags,omitempty"`
+	Status      string           `json:"status,omitempty"`
+	Publisher   string           `json:"publisher,omitempty"`
+	Language    string           `json:"language,omitempty"`
+	PublishedAt string           `json:"publishedAt,omitempty"`
 	Cover       string           `json:"cover,omitempty"`
 	Files       []localFileEntry `json:"files"`
 	TotalFiles  int              `json:"totalFiles"`
@@ -3454,6 +3500,12 @@ func (s *Server) scanLocalDir(root, name string) localItemEntry {
 		case "comicinfo.xml":
 			applyComicMeta(filepath.Join(folder, file.Name()), &item)
 			continue
+		case "series.json":
+			applySeriesMeta(filepath.Join(folder, file.Name()), &item)
+			continue
+		case "metadata.opf":
+			applyOPFMeta(filepath.Join(folder, file.Name()), &item)
+			continue
 		}
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(file.Name())), ".")
 		kind := ""
@@ -3533,11 +3585,33 @@ func applyComicMeta(path string, item *localItemEntry) {
 	if info.Series != "" {
 		item.Title = info.Series
 	}
-	item.Author = info.Writer
-	item.Description = info.Summary
+	if info.Writer != "" {
+		item.Author = info.Writer
+	}
+	if info.Summary != "" {
+		item.Description = info.Summary
+	}
 	item.Tags = normalizeMetadataTags(strings.FieldsFunc(info.Genre, func(r rune) bool {
 		return r == ',' || r == '，' || r == ';' || r == '；'
 	}))
+	if info.Status != "" {
+		item.Status = info.Status
+	}
+	if info.Publisher != "" {
+		item.Publisher = info.Publisher
+	}
+	if info.LanguageISO != "" {
+		item.Language = info.LanguageISO
+	}
+	if info.Year > 0 {
+		item.PublishedAt = fmt.Sprintf("%04d", info.Year)
+		if info.Month > 0 {
+			item.PublishedAt += fmt.Sprintf("-%02d", info.Month)
+			if info.Day > 0 {
+				item.PublishedAt += fmt.Sprintf("-%02d", info.Day)
+			}
+		}
+	}
 	for _, part := range strings.Fields(info.Notes) {
 		if value, ok := strings.CutPrefix(part, "source="); ok {
 			item.SourceID = value
@@ -3545,6 +3619,152 @@ func applyComicMeta(path string, item *localItemEntry) {
 		if value, ok := strings.CutPrefix(part, "comicId="); ok {
 			item.ComicID = value
 		}
+	}
+}
+
+// applySeriesMeta imports the Mylar series.json shape used by Komga. Values
+// already populated from a more specific format are preserved by callers that
+// need precedence; this function fills the fields the local detail page uses.
+func applySeriesMeta(path string, item *localItemEntry) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var payload struct {
+		Metadata struct {
+			Type                 string          `json:"type"`
+			Publisher            string          `json:"publisher"`
+			Name                 string          `json:"name"`
+			ComicID              json.RawMessage `json:"comicid"`
+			Year                 int             `json:"year"`
+			DescriptionText      string          `json:"description_text"`
+			DescriptionFormatted string          `json:"description_formatted"`
+			Volume               *int            `json:"volume"`
+			AgeRating            string          `json:"age_rating"`
+			ComicImage           string          `json:"comic_image"`
+			TotalIssues          json.RawMessage `json:"total_issues"`
+			Status               string          `json:"status"`
+			Language             string          `json:"language"`
+			ReadingDirection     string          `json:"readingDirection"`
+			Authors              []string        `json:"authors"`
+			Genres               []string        `json:"genres"`
+			Tags                 []string        `json:"tags"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return
+	}
+	meta := payload.Metadata
+	title := strings.TrimSpace(meta.Name)
+	if meta.Volume != nil && *meta.Volume > 1 && meta.Year > 0 {
+		title = fmt.Sprintf("%s (%d)", title, meta.Year)
+	}
+	if title != "" {
+		item.Title = title
+	}
+	item.ComicID = decodeJSONScalar(meta.ComicID)
+	if len(meta.Authors) > 0 {
+		item.Author = strings.Join(normalizeMetadataTags(meta.Authors), ", ")
+	}
+	description := strings.TrimSpace(meta.DescriptionText)
+	if strings.TrimSpace(meta.DescriptionFormatted) != "" {
+		description = stripHTMLMetadata(meta.DescriptionFormatted)
+	}
+	if description != "" {
+		item.Description = description
+	}
+	item.Tags = normalizeMetadataTags(append(append([]string{}, meta.Genres...), meta.Tags...))
+	item.Status = localStatusLabel(meta.Status)
+	item.Publisher = strings.TrimSpace(meta.Publisher)
+	item.Language = strings.TrimSpace(meta.Language)
+	if meta.Year > 0 {
+		item.PublishedAt = fmt.Sprintf("%04d", meta.Year)
+	}
+}
+
+// applyOPFMeta reads EPUB/OPF package metadata without requiring the callers to
+// unzip an EPUB first. The local library files remain the book source of truth;
+// this only enriches the detail page when an OPF sidecar is present.
+func applyOPFMeta(path string, item *localItemEntry) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var payload struct {
+		Metadata struct {
+			Title       string   `xml:"title"`
+			Creators    []string `xml:"creator"`
+			Description string   `xml:"description"`
+			Language    string   `xml:"language"`
+			Date        string   `xml:"date"`
+			Publisher   string   `xml:"publisher"`
+			Identifiers []string `xml:"identifier"`
+		} `xml:"metadata"`
+	}
+	if xml.Unmarshal(raw, &payload) != nil {
+		return
+	}
+	meta := payload.Metadata
+	if title := strings.TrimSpace(meta.Title); title != "" {
+		item.Title = title
+	}
+	if creators := normalizeMetadataTags(meta.Creators); len(creators) > 0 {
+		item.Author = strings.Join(creators, ", ")
+	}
+	if description := strings.TrimSpace(meta.Description); description != "" {
+		item.Description = description
+	}
+	item.Language = strings.TrimSpace(meta.Language)
+	item.Publisher = strings.TrimSpace(meta.Publisher)
+	item.PublishedAt = strings.TrimSpace(meta.Date)
+	for _, identifier := range meta.Identifiers {
+		identifier = strings.TrimSpace(identifier)
+		if identifier == "" {
+			continue
+		}
+		identifier = strings.TrimPrefix(identifier, "urn:")
+		item.ComicID = identifier
+		break
+	}
+}
+
+func decodeJSONScalar(raw json.RawMessage) string {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var scalar any
+	if json.Unmarshal(raw, &scalar) == nil {
+		switch typed := scalar.(type) {
+		case float64:
+			if typed == float64(int64(typed)) {
+				return strconv.FormatInt(int64(typed), 10)
+			}
+			return strconv.FormatFloat(typed, 'f', -1, 64)
+		case string:
+			return strings.TrimSpace(typed)
+		}
+	}
+	return strings.Trim(value, `"`)
+}
+
+func stripHTMLMetadata(value string) string {
+	text := regexp.MustCompile(`<[^>]+>`).ReplaceAllString(value, " ")
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func localStatusLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "ended":
+		return "已完结"
+	case "continuing", "ongoing":
+		return "连载中"
+	default:
+		return strings.TrimSpace(value)
 	}
 }
 

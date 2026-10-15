@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/hyaeve/manco/internal/iconcache"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/sources"
@@ -67,6 +68,56 @@ func TestLazyPluginFiltersCanBeNormalizedAndMarkedDisabled(t *testing.T) {
 	marked := applyDisabledCategories(groups, normalized)
 	if !marked[0].Options[1].Disabled || marked[0].Options[0].Disabled {
 		t.Fatalf("disabled flags = %#v, want only MANHWA disabled", marked[0].Options)
+	}
+}
+
+func TestLocalizeCustomSourceIconStoresWebsiteIconLocally(t *testing.T) {
+	iconServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nsource-icon"))
+	}))
+	defer iconServer.Close()
+
+	cache, err := iconcache.New(t.TempDir(), iconServer.Client())
+	if err != nil {
+		t.Fatalf("iconcache.New: %v", err)
+	}
+	server := &Server{icons: cache}
+	item := model.CustomSource{
+		ID:       "ext-example",
+		Homepage: iconServer.URL,
+		Icon:     iconServer.URL + "/favicon.png",
+	}
+	got := server.localizeCustomSourceIcon(context.Background(), item)
+	if got.Icon != "/api/icons/ext-example" {
+		t.Fatalf("localized icon = %q, want local API URL", got.Icon)
+	}
+	if !cache.Has(item.ID) {
+		t.Fatal("expected icon to be cached locally")
+	}
+}
+
+func TestLocalizeCustomSourceIconKeepsRemoteFallbackWhenDownloadFails(t *testing.T) {
+	iconServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer iconServer.Close()
+
+	cache, err := iconcache.New(t.TempDir(), iconServer.Client())
+	if err != nil {
+		t.Fatalf("iconcache.New: %v", err)
+	}
+	server := &Server{icons: cache}
+	remote := iconServer.URL + "/missing.png"
+	got := server.localizeCustomSourceIcon(context.Background(), model.CustomSource{
+		ID:   "ext-missing",
+		Icon: remote,
+	})
+	if got.Icon != remote {
+		t.Fatalf("fallback icon = %q, want %q", got.Icon, remote)
+	}
+	if cache.Has("ext-missing") {
+		t.Fatal("failed download must not be exposed as a cached icon")
 	}
 }
 

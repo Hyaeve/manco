@@ -40,11 +40,12 @@ var (
 )
 
 type Options struct {
-	ConfigDir string
-	DataDir   string
-	Binary    string
-	Client    *http.Client
-	Logger    *log.Logger
+	ConfigDir   string
+	DataDir     string
+	Binary      string
+	MihonBinary string
+	Client      *http.Client
+	Logger      *log.Logger
 }
 
 type pluginRecord struct {
@@ -79,18 +80,21 @@ type Config struct {
 }
 
 type Manager struct {
-	mu            sync.Mutex
-	configDir     string
-	dataDir       string
-	binary        string
-	client        *http.Client
-	logger        *log.Logger
-	plugins       []pluginRecord
-	process       *hostProcess
-	closed        bool
-	proxyURL      string
-	proxyUsername string
-	proxyPassword string
+	mu              sync.Mutex
+	configDir       string
+	dataDir         string
+	binary          string
+	mihonBinary     string
+	client          *http.Client
+	logger          *log.Logger
+	plugins         []pluginRecord
+	process         *hostProcess
+	mihonProcess    *hostProcess
+	runtimeBySource map[string]string
+	closed          bool
+	proxyURL        string
+	proxyUsername   string
+	proxyPassword   string
 }
 
 func New(options Options) (*Manager, error) {
@@ -116,17 +120,25 @@ func New(options Options) (*Manager, error) {
 		options.Client = &http.Client{Timeout: 90 * time.Second}
 	}
 	manager := &Manager{
-		configDir: configDir,
-		dataDir:   dataDir,
-		binary:    strings.TrimSpace(options.Binary),
-		client:    options.Client,
-		logger:    options.Logger,
+		configDir:       configDir,
+		dataDir:         dataDir,
+		binary:          strings.TrimSpace(options.Binary),
+		mihonBinary:     strings.TrimSpace(options.MihonBinary),
+		client:          options.Client,
+		logger:          options.Logger,
+		runtimeBySource: make(map[string]string),
 	}
 	if manager.binary == "" {
 		manager.binary = strings.TrimSpace(os.Getenv("MANCO_KOTOTORO_HOST"))
 	}
 	if manager.binary == "" {
 		manager.binary = "/usr/local/lib/manco/kototoro-host/bin/manco-kototoro-host"
+	}
+	if manager.mihonBinary == "" {
+		manager.mihonBinary = strings.TrimSpace(os.Getenv("MANCO_MIHON_HOST"))
+	}
+	if manager.mihonBinary == "" {
+		manager.mihonBinary = "/usr/local/lib/manco/mihon-host/bin/manco-mihon-host"
 	}
 	if err := manager.loadConfig(); err != nil {
 		return nil, err
@@ -136,16 +148,31 @@ func New(options Options) (*Manager, error) {
 
 func (m *Manager) Sources(ctx context.Context) ([]Source, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	plugins := append([]pluginRecord(nil), m.plugins...)
-	m.mu.Unlock()
 	if len(plugins) == 0 {
 		return nil, nil
 	}
-	result, err := m.call(ctx, "metadata", nil)
-	if err != nil {
-		return nil, err
+	var result []Source
+	for _, runtimeType := range []string{RuntimeKototoro, RuntimeMihon} {
+		if !m.hasPluginsForRuntimeLocked(runtimeType) {
+			continue
+		}
+		metadata, err := m.callRuntimeLocked(ctx, runtimeType, "metadata", nil)
+		if err != nil {
+			return nil, err
+		}
+		sources, err := decodeSources(metadata)
+		if err != nil {
+			return nil, err
+		}
+		m.rememberSourcesLocked(runtimeType, sources)
+		result = append(result, sources...)
 	}
-	return decodeSources(result)
+	sort.SliceStable(result, func(i, j int) bool {
+		return strings.ToLower(result[i].Title) < strings.ToLower(result[j].Title)
+	})
+	return result, nil
 }
 
 // ConfigureProxy applies the system proxy to the isolated parser host. The
@@ -177,13 +204,16 @@ func (m *Manager) ConfigureProxy(proxyURL, username, password string) error {
 		m.proxyURL, m.proxyUsername, m.proxyPassword = oldURL, oldUsername, oldPassword
 		return err
 	}
-	if m.process != nil {
-		m.process.close()
-		m.process = nil
-		if err := m.startLocked(); err != nil {
-			m.proxyURL, m.proxyUsername, m.proxyPassword = oldURL, oldUsername, oldPassword
-			_ = m.writeConfigLocked()
-			return err
+	for _, runtimeType := range []string{RuntimeKototoro, RuntimeMihon} {
+		if m.processForRuntimeLocked(runtimeType) != nil {
+			if err := m.restartLocked(runtimeType); err != nil {
+				m.proxyURL, m.proxyUsername, m.proxyPassword = oldURL, oldUsername, oldPassword
+				_ = m.writeConfigLocked()
+				for _, rollbackType := range []string{RuntimeKototoro, RuntimeMihon} {
+					_ = m.restartLocked(rollbackType)
+				}
+				return err
+			}
 		}
 	}
 	return nil
@@ -266,17 +296,17 @@ func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runti
 		m.plugins = previousPlugins
 		return nil, err
 	}
-	if err := m.restartLocked(); err != nil {
+	if err := m.restartLocked(runtimeType); err != nil {
 		_ = os.Remove(target)
 		if _, statErr := os.Stat(backup); statErr == nil {
 			_ = os.Rename(backup, target)
 		}
 		m.plugins = previousPlugins
 		_ = m.writeConfigLocked()
-		_ = m.restartLocked()
+		_ = m.restartLocked(runtimeType)
 		return nil, err
 	}
-	sources, err := m.callLocked(ctx, "metadata", nil)
+	metadata, err := m.callRuntimeLocked(ctx, runtimeType, "metadata", nil)
 	if err != nil {
 		_ = os.Remove(target)
 		if _, statErr := os.Stat(backup); statErr == nil {
@@ -284,11 +314,16 @@ func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runti
 		}
 		m.plugins = previousPlugins
 		_ = m.writeConfigLocked()
-		_ = m.restartLocked()
+		_ = m.restartLocked(runtimeType)
 		return nil, err
 	}
+	sources, err := decodeSources(metadata)
+	if err != nil {
+		return nil, err
+	}
+	m.rememberSourcesLocked(runtimeType, sources)
 	_ = os.Remove(backup)
-	return decodeSources(sources)
+	return sources, nil
 }
 
 func (m *Manager) Call(ctx context.Context, operation string, fields map[string]any) (map[string]any, error) {
@@ -309,16 +344,24 @@ func (m *Manager) CallWithProxy(ctx context.Context, operation string, fields ma
 		m.mu.Unlock()
 		return nil, errNoPlugin
 	}
-	if m.process != nil && m.process.isClosed() {
-		m.process = nil
+	runtimeType, err := m.runtimeForFieldsLocked(ctx, fields)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
 	}
-	if m.process == nil {
-		if err := m.startLocked(); err != nil {
+	operation = runtimeOperation(runtimeType, operation)
+	process := m.processForRuntimeLocked(runtimeType)
+	if process != nil && process.isClosed() {
+		m.setProcessForRuntimeLocked(runtimeType, nil)
+		process = nil
+	}
+	if process == nil {
+		if err := m.startLocked(runtimeType); err != nil {
 			m.mu.Unlock()
 			return nil, err
 		}
+		process = m.processForRuntimeLockedMust(runtimeType)
 	}
-	process := m.process
 	m.mu.Unlock()
 
 	// The sidecar multiplexes requests by requestId, so the wait must happen
@@ -438,8 +481,30 @@ func (m *Manager) UpdatePreference(ctx context.Context, sourceName, revision, no
 		"sourceName": sourceName,
 		"revision":   revision,
 		"nodeId":     nodeID,
-		"value":      value,
+		"value":      normalizePreferenceValue(value),
 	})
+}
+
+func normalizePreferenceValue(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value["operation"]; ok {
+		return value
+	}
+	legacy, ok := value["type"].(string)
+	if !ok || strings.TrimSpace(legacy) == "" {
+		return value
+	}
+	normalized := make(map[string]any, len(value))
+	for key, item := range value {
+		if key == "type" {
+			continue
+		}
+		normalized[key] = item
+	}
+	normalized["operation"] = legacy
+	return normalized
 }
 
 func asString(value any) string {
@@ -451,12 +516,16 @@ func asString(value any) string {
 	}
 }
 
-func (m *Manager) ImagePath(relativePath string) string {
+func (m *Manager) ImagePath(runtimeType, relativePath string) string {
 	relativePath = filepath.Clean(strings.TrimSpace(relativePath))
 	if relativePath == "." || relativePath == "" || filepath.IsAbs(relativePath) || strings.HasPrefix(relativePath, "..") {
 		return ""
 	}
-	return filepath.Join(m.dataDir, "kototoro-host", "images", relativePath)
+	hostDirectory := "kototoro-host"
+	if normalizeRuntime(runtimeType) == RuntimeMihon {
+		hostDirectory = "mihon-host"
+	}
+	return filepath.Join(m.dataDir, hostDirectory, "images", relativePath)
 }
 
 func (m *Manager) Close() error {
@@ -469,6 +538,10 @@ func (m *Manager) Close() error {
 	if m.process != nil {
 		m.process.close()
 		m.process = nil
+	}
+	if m.mihonProcess != nil {
+		m.mihonProcess.close()
+		m.mihonProcess = nil
 	}
 	return nil
 }
@@ -483,86 +556,130 @@ func (m *Manager) callLocked(ctx context.Context, operation string, fields map[s
 	if len(m.plugins) == 0 {
 		return nil, errNoPlugin
 	}
-	if m.process != nil && m.process.isClosed() {
-		m.process = nil
+	runtimeType, err := m.runtimeForFieldsLocked(ctx, fields)
+	if err != nil {
+		return nil, err
 	}
-	if m.process == nil {
-		if err := m.startLocked(); err != nil {
+	return m.callRuntimeLocked(ctx, runtimeType, operation, fields)
+}
+
+func (m *Manager) callRuntimeLocked(ctx context.Context, runtimeType, operation string, fields map[string]any) (map[string]any, error) {
+	runtimeType = normalizeRuntime(runtimeType)
+	operation = runtimeOperation(runtimeType, operation)
+	process := m.processForRuntimeLocked(runtimeType)
+	if process != nil && process.isClosed() {
+		m.setProcessForRuntimeLocked(runtimeType, nil)
+		process = nil
+	}
+	if process == nil {
+		if err := m.startLocked(runtimeType); err != nil {
 			return nil, err
 		}
+		process = m.processForRuntimeLockedMust(runtimeType)
 	}
 	call := map[string]any{"operation": operation}
 	for key, value := range fields {
 		call[key] = value
 	}
-	return m.process.request(ctx, call)
+	return process.request(ctx, call)
 }
 
-func (m *Manager) startLocked() error {
+func (m *Manager) startLocked(runtimeType string) error {
 	if err := m.writeConfigLocked(); err != nil {
 		return err
 	}
-	process, err := startHost(m.binary, m.configPath(), m.proxyURL, m.proxyUsername, m.proxyPassword, m.logger)
+	runtimeType = normalizeRuntime(runtimeType)
+	binary := m.binary
+	environmentPrefix := "MANCO_KOTOTORO"
+	label := "Kototoro"
+	if runtimeType == RuntimeMihon {
+		binary = m.mihonBinary
+		environmentPrefix = "MANCO_MIHON"
+		label = "Mihon"
+	}
+	process, err := startHost(binary, m.configPath(runtimeType), label, environmentPrefix, m.proxyURL, m.proxyUsername, m.proxyPassword, m.logger)
 	if err != nil {
 		return err
 	}
-	m.process = process
+	m.setProcessForRuntimeLocked(runtimeType, process)
 	return nil
 }
 
-func (m *Manager) restartLocked() error {
-	if m.process != nil {
-		m.process.close()
-		m.process = nil
+func (m *Manager) restartLocked(runtimeType string) error {
+	runtimeType = normalizeRuntime(runtimeType)
+	if current := m.processForRuntimeLockedMust(runtimeType); current != nil {
+		current.close()
+		m.setProcessForRuntimeLocked(runtimeType, nil)
 	}
-	return m.startLocked()
+	return m.startLocked(runtimeType)
 }
 
-func (m *Manager) configPath() string {
+func (m *Manager) configPath(runtimeType string) string {
+	if normalizeRuntime(runtimeType) == RuntimeMihon {
+		return filepath.Join(m.configDir, "mihon-host.json")
+	}
 	return filepath.Join(m.configDir, "kototoro-host.json")
 }
 
 func (m *Manager) loadConfig() error {
-	raw, err := os.ReadFile(m.configPath())
-	if errors.Is(err, os.ErrNotExist) {
-		m.plugins = nil
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var config hostConfig
-	if err := json.Unmarshal(raw, &config); err != nil {
-		return fmt.Errorf("读取 Kototoro 插件配置: %w", err)
-	}
-	for _, item := range config.Plugins {
-		if pluginIDPattern.MatchString(item.ID) && strings.TrimSpace(item.Path) != "" {
+	m.plugins = nil
+	seen := make(map[string]bool)
+	for _, runtimeType := range []string{RuntimeKototoro, RuntimeMihon} {
+		raw, err := os.ReadFile(m.configPath(runtimeType))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var config hostConfig
+		if err := json.Unmarshal(raw, &config); err != nil {
+			return fmt.Errorf("读取 %s 插件配置: %w", runtimeLabel(runtimeType), err)
+		}
+		for _, item := range config.Plugins {
+			if !pluginIDPattern.MatchString(item.ID) || strings.TrimSpace(item.Path) == "" || seen[item.ID] {
+				continue
+			}
 			item.Type = normalizeRuntime(item.Type)
 			m.plugins = append(m.plugins, item)
+			seen[item.ID] = true
 		}
 	}
 	return nil
 }
 
 func (m *Manager) writeConfigLocked() error {
-	config := hostConfig{
-		Version:             1,
-		Plugins:             append([]pluginRecord(nil), m.plugins...),
-		PreferenceDirectory: filepath.ToSlash(filepath.Join(m.dataDir, "kototoro-host", "preferences")),
-		ImageDirectory:      filepath.ToSlash(filepath.Join(m.dataDir, "kototoro-host", "images")),
+	for _, runtimeType := range []string{RuntimeKototoro, RuntimeMihon} {
+		hostDirectory := "kototoro-host"
+		if runtimeType == RuntimeMihon {
+			hostDirectory = "mihon-host"
+		}
+		config := hostConfig{
+			Version:             1,
+			Plugins:             append([]pluginRecord(nil), m.pluginsForRuntimeLocked(runtimeType)...),
+			PreferenceDirectory: filepath.ToSlash(filepath.Join(m.dataDir, hostDirectory, "preferences")),
+			ImageDirectory:      filepath.ToSlash(filepath.Join(m.dataDir, hostDirectory, "images")),
+		}
+		if err := writeJSONAtomic(m.configPath(runtimeType), config); err != nil {
+			return err
+		}
 	}
-	raw, err := json.MarshalIndent(config, "", "  ")
+	return nil
+}
+
+func writeJSONAtomic(path string, value any) error {
+	raw, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	temporary := m.configPath() + ".part"
+	temporary := path + ".part"
 	if err := os.WriteFile(temporary, raw, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, m.configPath()); err != nil {
+	if err := os.Rename(temporary, path); err != nil {
 		// Windows fails when the destination exists; retry after removing it.
-		if removeErr := os.Remove(m.configPath()); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
-			if retryErr := os.Rename(temporary, m.configPath()); retryErr == nil {
+		if removeErr := os.Remove(path); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+			if retryErr := os.Rename(temporary, path); retryErr == nil {
 				return nil
 			}
 		}
@@ -601,6 +718,112 @@ func normalizeRuntime(value string) string {
 		return RuntimeMihon
 	}
 	return RuntimeKototoro
+}
+
+// runtimeOperation translates Kototoro's source-list operation to the
+// Mihon host protocol while leaving all shared source operations unchanged.
+func runtimeOperation(runtimeType, operation string) string {
+	if normalizeRuntime(runtimeType) == RuntimeMihon && operation == "metadata" {
+		return "sources"
+	}
+	return operation
+}
+
+func runtimeLabel(runtimeType string) string {
+	if normalizeRuntime(runtimeType) == RuntimeMihon {
+		return "Mihon"
+	}
+	return "Kototoro"
+}
+
+func (m *Manager) pluginsForRuntimeLocked(runtimeType string) []pluginRecord {
+	runtimeType = normalizeRuntime(runtimeType)
+	result := make([]pluginRecord, 0, len(m.plugins))
+	for _, item := range m.plugins {
+		if normalizeRuntime(item.Type) == runtimeType {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func (m *Manager) hasPluginsForRuntimeLocked(runtimeType string) bool {
+	return len(m.pluginsForRuntimeLocked(runtimeType)) > 0
+}
+
+func (m *Manager) processForRuntimeLocked(runtimeType string) *hostProcess {
+	if normalizeRuntime(runtimeType) == RuntimeMihon {
+		return m.mihonProcess
+	}
+	return m.process
+}
+
+func (m *Manager) processForRuntimeLockedMust(runtimeType string) *hostProcess {
+	return m.processForRuntimeLocked(runtimeType)
+}
+
+func (m *Manager) setProcessForRuntimeLocked(runtimeType string, process *hostProcess) {
+	if normalizeRuntime(runtimeType) == RuntimeMihon {
+		m.mihonProcess = process
+		return
+	}
+	m.process = process
+}
+
+func (m *Manager) runtimeForFieldsLocked(ctx context.Context, fields map[string]any) (string, error) {
+	sourceName := strings.TrimSpace(asString(fields["sourceName"]))
+	if sourceName == "" {
+		return m.singleRuntimeLocked()
+	}
+	if runtimeType, ok := m.runtimeBySource[sourceName]; ok {
+		return runtimeType, nil
+	}
+	if runtimeType, err := m.singleRuntimeLocked(); err == nil {
+		return runtimeType, nil
+	}
+	for _, runtimeType := range []string{RuntimeKototoro, RuntimeMihon} {
+		if !m.hasPluginsForRuntimeLocked(runtimeType) {
+			continue
+		}
+		metadata, err := m.callRuntimeLocked(ctx, runtimeType, "metadata", nil)
+		if err != nil {
+			continue
+		}
+		sources, err := decodeSources(metadata)
+		if err != nil {
+			continue
+		}
+		m.rememberSourcesLocked(runtimeType, sources)
+		if _, ok := m.runtimeBySource[sourceName]; ok {
+			return runtimeType, nil
+		}
+	}
+	return m.singleRuntimeLocked()
+}
+
+func (m *Manager) singleRuntimeLocked() (string, error) {
+	hasKototoro := m.hasPluginsForRuntimeLocked(RuntimeKototoro)
+	hasMihon := m.hasPluginsForRuntimeLocked(RuntimeMihon)
+	switch {
+	case hasKototoro && hasMihon:
+		return "", fmt.Errorf("无法确定内容源所属插件运行时")
+	case hasMihon:
+		return RuntimeMihon, nil
+	default:
+		return RuntimeKototoro, nil
+	}
+}
+
+func (m *Manager) rememberSourcesLocked(runtimeType string, sources []Source) {
+	if m.runtimeBySource == nil {
+		m.runtimeBySource = make(map[string]string)
+	}
+	runtimeType = normalizeRuntime(runtimeType)
+	for _, item := range sources {
+		if name := strings.TrimSpace(item.Name); name != "" {
+			m.runtimeBySource[name] = runtimeType
+		}
+	}
 }
 
 func safeFileName(value string) string {
@@ -643,15 +866,15 @@ type hostResponse struct {
 	err   error
 }
 
-func startHost(binary, configPath, proxyURL, proxyUsername, proxyPassword string, logger *log.Logger) (*hostProcess, error) {
+func startHost(binary, configPath, label, environmentPrefix, proxyURL, proxyUsername, proxyPassword string, logger *log.Logger) (*hostProcess, error) {
 	if strings.TrimSpace(binary) == "" {
-		return nil, errors.New("没有配置 Kototoro 解析器运行时")
+		return nil, fmt.Errorf("没有配置 %s 解析器运行时", label)
 	}
 	command := exec.Command(binary, "serve", configPath)
 	command.Env = append(os.Environ(),
-		"MANCO_KOTOTORO_PROXY_URL="+proxyURL,
-		"MANCO_KOTOTORO_PROXY_USERNAME="+proxyUsername,
-		"MANCO_KOTOTORO_PROXY_PASSWORD="+proxyPassword,
+		environmentPrefix+"_PROXY_URL="+proxyURL,
+		environmentPrefix+"_PROXY_USERNAME="+proxyUsername,
+		environmentPrefix+"_PROXY_PASSWORD="+proxyPassword,
 	)
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -663,7 +886,7 @@ func startHost(binary, configPath, proxyURL, proxyUsername, proxyPassword string
 	}
 	command.Stderr = os.Stderr
 	if err := command.Start(); err != nil {
-		return nil, fmt.Errorf("启动 Kototoro 解析器运行时: %w", err)
+		return nil, fmt.Errorf("启动 %s 解析器运行时: %w", label, err)
 	}
 	process := &hostProcess{
 		cmd:     command,
@@ -676,7 +899,7 @@ func startHost(binary, configPath, proxyURL, proxyUsername, proxyPassword string
 	go func() {
 		err := command.Wait()
 		if err != nil && !process.isClosed() {
-			process.fail(fmt.Errorf("Kototoro 解析器运行时退出: %w", err))
+			process.fail(fmt.Errorf("%s 解析器运行时退出: %w", label, err))
 		}
 	}()
 	return process, nil

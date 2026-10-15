@@ -658,7 +658,7 @@ func (a *Adapter) readArtifact(result map[string]any) ([]byte, string, error) {
 		return nil, "", errors.New("解析器没有返回图片文件")
 	}
 	relativePath := stringValue(artifact["relativePath"])
-	path := a.manager.ImagePath(relativePath)
+	path := a.manager.ImagePath(a.config.Runtime, relativePath)
 	if path == "" {
 		return nil, "", errors.New("解析器返回了不安全图片路径")
 	}
