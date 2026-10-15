@@ -32,6 +32,14 @@ const router = useRouter()
 let lastIndex = -1
 let timer = 0
 
+const TASK_ROW_HEIGHT = 76
+const TASK_ROW_GAP = 8
+const TASK_ROW_STEP = TASK_ROW_HEIGHT + TASK_ROW_GAP
+const TASK_VIRTUAL_OVERSCAN = 4
+const virtualViewport = ref(null)
+const virtualScrollTop = ref(0)
+const virtualViewportHeight = ref(560)
+
 const filters = [
   { value: 'all', label: '全部' },
   { value: 'active', label: '进行中' },
@@ -79,6 +87,26 @@ const visible = computed(() => {
   if (filter.value === 'queued') return nonCompletedItems.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
   return nonCompletedItems.value.filter((item) => ['failed', 'canceled'].includes(item.status))
 })
+
+const virtualRange = computed(() => {
+  const total = visible.value.length
+  if (!total) return { start: 0, end: 0 }
+  const start = Math.max(0, Math.floor(virtualScrollTop.value / TASK_ROW_STEP) - TASK_VIRTUAL_OVERSCAN)
+  const visibleCount = Math.ceil(virtualViewportHeight.value / TASK_ROW_STEP)
+  const end = Math.min(total, start + visibleCount + TASK_VIRTUAL_OVERSCAN * 2)
+  return { start, end }
+})
+
+const virtualRows = computed(() =>
+  visible.value.slice(virtualRange.value.start, virtualRange.value.end).map((item, offset) => ({
+    item,
+    index: virtualRange.value.start + offset,
+  })),
+)
+
+const virtualInnerHeight = computed(() =>
+  visible.value.length ? visible.value.length * TASK_ROW_STEP - TASK_ROW_GAP : 0,
+)
 
 const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting', 'running', 'paused'].includes(item.status)))
 
@@ -225,6 +253,19 @@ function clearSelection() {
   lastIndex = -1
 }
 
+function onVirtualScroll(event) {
+  const viewport = event.currentTarget
+  virtualScrollTop.value = viewport.scrollTop
+  virtualViewportHeight.value = viewport.clientHeight || virtualViewportHeight.value
+}
+
+function resetVirtualScroll() {
+  virtualScrollTop.value = 0
+  if (virtualViewport.value) virtualViewport.value.scrollTop = 0
+}
+
+watch([filter, keyword], resetVirtualScroll)
+
 function onKeydown(event) {
   if (event.key === 'Escape' && selecting.value) clearSelection()
 }
@@ -260,6 +301,7 @@ function setFilter(value) {
   filter.value = value
   const query = { ...route.query, filter: value }
   router.replace({ name: 'downloads', query })
+  resetVirtualScroll()
 }
 
 function applyKeyword() {
@@ -268,6 +310,7 @@ function applyKeyword() {
   if (keyword.value) query.q = keyword.value
   else delete query.q
   router.replace({ name: 'downloads', query })
+  resetVirtualScroll()
 }
 
 function clearKeyword() {
@@ -315,14 +358,6 @@ function progressPercent(item) {
   const completed = Number(item.completedPages || 0)
   if (total <= 0) return item.status === 'running' ? 6 : 0
   return Math.max(0, Math.min(100, Math.round((completed / total) * 100)))
-}
-
-function progressText(item) {
-  if (item.status === 'completed') return '100%'
-  const total = Number(item.totalPages || 0)
-  const completed = Number(item.completedPages || 0)
-  if (total <= 0) return item.status === 'running' ? '准备中' : '—'
-  return `${completed}/${total}`
 }
 
 async function retry(item) {
@@ -447,61 +482,76 @@ async function remove(item, removeFile) {
     </div>
     <div v-else class="download-table">
       <div class="download-head">
-        <span>作品章节</span>
+        <span>作品</span>
+        <span>章节</span>
         <span>状态</span>
         <span>时间</span>
         <span>操作</span>
       </div>
-      <article
-        v-for="(item, index) in visible"
-        :key="item.id"
-        class="download-row"
-        :class="{ selected: rowSelected(item.id) }"
-        @contextmenu="onContextMenu(item, index, $event)"
-        @click="selecting ? toggleRow(item, index, $event) : null"
+      <div
+        ref="virtualViewport"
+        class="download-virtual-viewport"
+        @scroll.passive="onVirtualScroll"
       >
-        <div class="download-main">
-          <RouterLink
-            class="comic-title"
-            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
-            @click.stop
+        <div class="download-virtual-inner" :style="{ height: `${virtualInnerHeight}px` }">
+          <article
+            v-for="entry in virtualRows"
+            :key="entry.item.id"
+            class="download-row"
+            :class="{ selected: rowSelected(entry.item.id) }"
+            :style="{ transform: `translateY(${entry.index * TASK_ROW_STEP}px)` }"
+            @contextmenu="onContextMenu(entry.item, entry.index, $event)"
+            @click="selecting ? toggleRow(entry.item, entry.index, $event) : null"
           >
-            {{ item.comicTitle }}
-          </RouterLink>
-          <span class="download-chapter" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
+            <RouterLink
+              class="download-work"
+              :to="{ name: 'comic', params: { sourceId: entry.item.sourceId, comicId: entry.item.comicId } }"
+              :title="entry.item.comicTitle"
+              @click.stop
+            >
+              {{ entry.item.comicTitle }}
+            </RouterLink>
+            <span class="download-chapter" :title="entry.item.chapterTitle">{{ entry.item.chapterTitle }}</span>
+            <div class="download-status">
+              <div class="download-status-head">
+                <span class="badge" :class="statusClass(entry.item.status)">{{ statusLabel(entry.item.status) }}</span>
+              </div>
+              <div
+                class="download-progress"
+                :class="`is-${entry.item.status}`"
+                role="progressbar"
+                :aria-valuenow="progressPercent(entry.item)"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <span class="download-progress-fill" :style="{ width: `${progressPercent(entry.item)}%` }" />
+              </div>
+            </div>
+            <div class="download-time">{{ formatTime(entry.item) }}</div>
+            <div class="download-actions">
+              <button
+                v-if="retryable(entry.item.status)"
+                class="icon-btn"
+                type="button"
+                :disabled="busy === entry.item.id"
+                aria-label="重试"
+                @click.stop="retry(entry.item)"
+              >
+                <RotateCcw :size="15" />
+              </button>
+              <button
+                class="icon-btn danger"
+                type="button"
+                :disabled="busy === entry.item.id"
+                aria-label="删除任务记录"
+                @click.stop="remove(entry.item, false)"
+              >
+                <Trash2 :size="15" />
+              </button>
+            </div>
+          </article>
         </div>
-        <div class="download-status">
-          <div class="download-status-head">
-            <span class="badge" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</span>
-            <span class="download-progress-text">{{ progressText(item) }}</span>
-          </div>
-          <div class="download-progress" :class="`is-${item.status}`" role="progressbar" :aria-valuenow="progressPercent(item)" aria-valuemin="0" aria-valuemax="100">
-            <span class="download-progress-fill" :style="{ width: `${progressPercent(item)}%` }" />
-          </div>
-        </div>
-        <div class="download-time">{{ formatTime(item) }}</div>
-        <div class="download-actions">
-          <button
-            v-if="retryable(item.status)"
-            class="icon-btn"
-            type="button"
-            :disabled="busy === item.id"
-            aria-label="重试"
-            @click.stop="retry(item)"
-          >
-            <RotateCcw :size="15" />
-          </button>
-          <button
-            class="icon-btn danger"
-            type="button"
-            :disabled="busy === item.id"
-            aria-label="删除任务记录"
-            @click.stop="remove(item, false)"
-          >
-            <Trash2 :size="15" />
-          </button>
-        </div>
-      </article>
+      </div>
     </div>
 
     <section v-if="completedItems.length" ref="completedWindow" class="completed-task-window">

@@ -257,12 +257,9 @@ function chapterCount(item) {
   return jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId).length
 }
 
-// 订阅卡片标题最多展示 10 个字符（含中文标点与省略号），避免压到右上角来源图标。
+// 标题不在 JS 里按字符数截断，交给卡片宽度和 CSS 省略号处理。
 function cardTitle(item) {
-  const text = String(item?.title || '').trim()
-  if (!text) return '未命名作品'
-  const chars = Array.from(text)
-  return chars.length > 10 ? `${chars.slice(0, 9).join('')}…` : text
+  return String(item?.title || '').trim() || '未命名作品'
 }
 
 function jobStats(item) {

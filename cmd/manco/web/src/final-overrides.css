@@ -2814,12 +2814,6 @@
   justify-content: space-between;
   gap: 8px;
 }
-.download-progress-text {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 .download-progress {
   position: relative;
   width: 100%;
@@ -3506,7 +3500,7 @@
 }
 .subscription-card .subscription-title {
   display: block;
-  max-width: calc(100% - 46px);
+  max-width: calc(100% - 38px - 1em);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4019,4 +4013,94 @@ svg.source-editor-icon {
   border-color: var(--primary);
   background: var(--primary-soft);
   color: var(--text);
+}
+
+/* v0.1.30：任务列表使用固定行高虚拟滚动；作品与章节拆成独立栏目。 */
+.download-head,
+.download-row {
+  grid-template-columns:
+    minmax(220px, 1.5fr)
+    minmax(180px, 1.2fr)
+    minmax(160px, 0.9fr)
+    minmax(150px, 0.8fr)
+    92px;
+}
+
+.download-head {
+  gap: 14px;
+}
+
+.download-virtual-viewport {
+  min-height: 0;
+  max-height: min(68vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.download-virtual-inner {
+  position: relative;
+  width: 100%;
+}
+
+.download-virtual-inner .download-row {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  box-sizing: border-box;
+  height: 76px;
+}
+
+.download-work {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-work:hover {
+  color: var(--primary-strong);
+}
+
+.download-virtual-inner .download-chapter {
+  min-width: 0;
+}
+
+.download-virtual-inner .download-status-head {
+  justify-content: flex-start;
+}
+
+@media (max-width: 1100px) {
+  .download-head,
+  .download-row {
+    grid-template-columns:
+      minmax(170px, 1.3fr)
+      minmax(140px, 1.1fr)
+      150px
+      130px
+      80px;
+  }
+}
+
+@media (max-width: 860px) {
+  .download-head {
+    display: grid;
+  }
+
+  .download-head,
+  .download-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 130px;
+  }
+
+  .download-head span:nth-child(4),
+  .download-head span:nth-child(5),
+  .download-virtual-inner .download-time,
+  .download-virtual-inner .download-actions {
+    display: none;
+  }
 }
