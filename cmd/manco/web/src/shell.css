@@ -336,7 +336,8 @@ body,
 
 .rounded-select-trigger:hover,
 .rounded-select-trigger[aria-expanded='true'] {
-  border-color: var(--primary);
+  border-color: var(--select-highlight-strong);
+  background: var(--select-highlight);
 }
 
 .rounded-select-popup {
@@ -367,8 +368,9 @@ body,
 
 .rounded-select-option.focused,
 .rounded-select-option:hover {
-  background: var(--primary-soft);
-  color: var(--primary-strong);
+  background: var(--select-highlight);
+  color: var(--select-highlight-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--select-highlight-strong) 68%, transparent);
 }
 
 .select-popup-enter-active,

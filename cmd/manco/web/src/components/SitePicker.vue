@@ -105,6 +105,11 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
   padding-right: 70px;
 }
 
+.site-picker-control .input:focus {
+  border-color: var(--select-highlight-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--select-highlight) 76%, transparent);
+}
+
 .site-picker-open,
 .site-picker-toggle {
   position: absolute;
@@ -131,8 +136,8 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
 
 .site-picker-open:hover,
 .site-picker-toggle:hover {
-  color: var(--primary);
-  background: var(--primary-soft);
+  color: var(--select-highlight-text);
+  background: var(--select-highlight);
 }
 
 .site-picker-toggle .expanded {
@@ -170,8 +175,9 @@ onUnmounted(() => document.removeEventListener('pointerdown', outside))
 }
 
 .site-picker-option:hover {
-  color: var(--primary-strong);
-  background: var(--primary-soft);
+  color: var(--select-highlight-text);
+  background: var(--select-highlight);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--select-highlight-strong) 68%, transparent);
 }
 
 .site-picker-option span {

@@ -10,6 +10,9 @@
   --primary: #4f46e5;
   --primary-strong: #4338ca;
   --primary-soft: #eef2ff;
+  --select-highlight: #fff8cc;
+  --select-highlight-strong: #dfd27a;
+  --select-highlight-text: #504a17;
   --success: #15803d;
   --success-soft: #ecfdf5;
   --warning: #b45309;
@@ -33,6 +36,9 @@
   --primary: #7c8cf8;
   --primary-strong: #97a4f8;
   --primary-soft: #232a48;
+  --select-highlight: #3b381f;
+  --select-highlight-strong: #746c30;
+  --select-highlight-text: #f7efb0;
   --success: #4ade80;
   --success-soft: #122a1c;
   --warning: #fbbf24;
@@ -56,6 +62,9 @@
     --primary: #7c8cf8;
     --primary-strong: #97a4f8;
     --primary-soft: #232a48;
+    --select-highlight: #3b381f;
+    --select-highlight-strong: #746c30;
+    --select-highlight-text: #f7efb0;
     --success: #4ade80;
     --success-soft: #122a1c;
     --warning: #fbbf24;
@@ -565,10 +574,26 @@ code {
 }
 
 .input:focus,
-.select:focus,
 .textarea:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.14);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.select:focus,
+select.input:focus {
+  border-color: var(--select-highlight-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--select-highlight) 76%, transparent);
+}
+
+select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+select option:checked,
+select option:hover {
+  background: var(--select-highlight) !important;
+  color: var(--select-highlight-text) !important;
 }
 
 .password-control {

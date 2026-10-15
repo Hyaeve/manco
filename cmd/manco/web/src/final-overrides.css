@@ -2313,8 +2313,8 @@
 
 .chapter-sort-trigger:hover,
 .chapter-sort-trigger[aria-expanded='true'] {
-  border-color: color-mix(in srgb, var(--primary) 42%, var(--border));
-  background: var(--primary-soft);
+  border-color: var(--select-highlight-strong);
+  background: var(--select-highlight);
 }
 
 .chapter-sort-menu {
@@ -2373,8 +2373,8 @@
 
 .chapter-sort-group button:hover,
 .chapter-sort-group button.active {
-  background: var(--primary-soft);
-  color: var(--primary-strong);
+  background: var(--select-highlight);
+  color: var(--select-highlight-text);
 }
 
 .local-chapter-poster {
