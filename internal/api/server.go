@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.10"
+	appVersion    = "v0.5.0"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
