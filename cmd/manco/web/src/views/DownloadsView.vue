@@ -161,6 +161,7 @@ function onContextMenu(item, index, event) {
 }
 
 function toggleRow(item, index, event) {
+  if (event?.shiftKey) event.preventDefault()
   const next = new Set(selected.value)
   if (event?.shiftKey && lastIndex >= 0) {
     const from = Math.min(lastIndex, index)

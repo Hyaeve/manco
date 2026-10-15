@@ -4080,6 +4080,30 @@ svg.source-editor-icon {
   width: 100%;
 }
 
+/* 任务列表：Shift 多选不选中文本，选中态整行高亮，操作按钮留出呼吸感。 */
+.download-row {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.download-row.selected {
+  border-color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 62%, var(--surface));
+  box-shadow:
+    0 0 0 2px var(--primary-soft),
+    inset 0 0 0 1px color-mix(in srgb, var(--primary-strong) 26%, transparent);
+}
+
+.download-row .download-actions {
+  justify-content: flex-end;
+  gap: 12px;
+  padding-right: 12px;
+}
+
+[data-theme='dark'] .download-row.selected {
+  background: color-mix(in srgb, var(--primary-soft) 42%, var(--surface));
+}
+
 .download-virtual-inner .download-row {
   position: absolute;
   top: 0;
