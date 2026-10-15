@@ -47,6 +47,8 @@ func (s *stubSubscriptions) UpdateSubscriptionCheck(_ context.Context, id int64,
 type stubDownloads struct {
 	jobs     []model.DownloadJob
 	notified int
+	retried  []model.Subscription
+	retryN   int
 }
 
 func (d *stubDownloads) CreateDownloadJob(_ context.Context, job model.DownloadJob) (model.DownloadJob, error) {
@@ -59,6 +61,14 @@ func (d *stubDownloads) Notify() { d.notified++ }
 
 func (d *stubDownloads) EnsureSeriesMetadata(_ context.Context, _ model.Subscription) (bool, error) {
 	return false, nil
+}
+
+func (d *stubDownloads) RetryFailedByComic(_ context.Context, sourceID, comicID string) (int, error) {
+	d.retried = append(d.retried, model.Subscription{SourceID: sourceID, ComicID: comicID})
+	if d.retryN > 0 {
+		d.notified++
+	}
+	return d.retryN, nil
 }
 
 type stubChapters struct {
@@ -236,5 +246,30 @@ func TestDisabledSubscriptionIsSkipped(t *testing.T) {
 
 	if len(downloads.jobs) != 0 || len(subscriptions.updates) != 0 {
 		t.Fatalf("disabled subscription produced work: jobs=%d updates=%d", len(downloads.jobs), len(subscriptions.updates))
+	}
+}
+
+func TestRunDueRetriesFailedDownloads(t *testing.T) {
+	subscriptions := &stubSubscriptions{items: []model.Subscription{{
+		ID:        1,
+		SourceID:  "stub",
+		ComicID:   "1",
+		Title:     "测试作品",
+		Enabled:   true,
+		CronExpr:  "* * * * *",
+		CreatedAt: time.Now().Add(-2 * time.Minute),
+	}}}
+	downloads := &stubDownloads{retryN: 2}
+
+	newTestScheduler(testChapters(), subscriptions, downloads).RunDue(context.Background())
+
+	if len(downloads.retried) != 1 {
+		t.Fatalf("RetryFailedByComic calls = %d, want 1", len(downloads.retried))
+	}
+	if downloads.retried[0].SourceID != "stub" || downloads.retried[0].ComicID != "1" {
+		t.Fatalf("unexpected retry target: %#v", downloads.retried[0])
+	}
+	if downloads.notified != 1 {
+		t.Fatalf("Notify calls = %d, want 1", downloads.notified)
 	}
 }

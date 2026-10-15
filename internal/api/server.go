@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.9"
+	appVersion    = "v0.4.10"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -3161,18 +3161,9 @@ func (s *Server) handleCheckSubscription(w http.ResponseWriter, r *http.Request)
 // subscribed work. It is used by the card check button so a single click also
 // recovers previously failed downloads.
 func (s *Server) retryFailedForSubscription(ctx context.Context, subscription model.Subscription) int {
-	jobs, err := s.store.FailedDownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
+	retried, err := s.engine.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID)
 	if err != nil {
-		s.logger.Printf("api: list failed jobs %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
-		return 0
-	}
-	retried := 0
-	for _, job := range jobs {
-		if err := s.engine.Retry(ctx, job.ID); err != nil {
-			s.logger.Printf("api: retry failed job %d: %v", job.ID, err)
-			continue
-		}
-		retried++
+		s.logger.Printf("api: retry failed jobs %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
 	}
 	if retried > 0 {
 		s.logger.Printf("api: retried %d failed download(s) for %s/%s", retried, subscription.SourceID, subscription.Title)

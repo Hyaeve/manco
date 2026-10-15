@@ -69,6 +69,7 @@ const existingSubscription = ref(null)
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
+const lastUpdated = computed(() => String(comic.value?.updatedAt || '').trim())
 const chapters = computed(() => detail.value?.chapters || [])
 const displayChapters = computed(() => {
   const keyword = appliedQuery.value.trim().toLowerCase()
@@ -427,6 +428,7 @@ async function downloadSelected() {
           </template>
           <span v-else>未知作者</span>
           <span v-if="comic.status"> · {{ comic.status }}</span>
+          <span v-if="lastUpdated"> · 最后更新 {{ lastUpdated }}</span>
         </div>
         <div v-if="comic.tags?.length" class="tag-list">
           <span v-for="tag in comic.tags" :key="tag" class="badge tag-pill">

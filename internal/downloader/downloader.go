@@ -164,6 +164,7 @@ type Jobs interface {
 	ResetDownloadJob(ctx context.Context, id int64) error
 	ActivateDueRetries(ctx context.Context, now time.Time) (int64, error)
 	UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error
+	FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error)
 }
 
 func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxChapterConcurrency, maxPageConcurrency int, logger *log.Logger) *Engine {
@@ -253,6 +254,32 @@ func (e *Engine) Retry(ctx context.Context, id int64) error {
 	}
 	e.Notify()
 	return nil
+}
+
+// RetryFailedByComic restarts the automatic retry budget for failed or
+// canceled chapters of one work. The scheduler uses it on cron checks so a
+// later scheduled run can recover failures that exhausted their first budget.
+func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID string) (int, error) {
+	jobs, err := e.store.FailedDownloadJobsByComic(ctx, sourceID, comicID)
+	if err != nil {
+		return 0, err
+	}
+	retried := 0
+	var firstErr error
+	for _, job := range jobs {
+		if err := e.store.ResetDownloadJob(ctx, job.ID); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			e.logger.Printf("downloader: reset failed job %d: %v", job.ID, err)
+			continue
+		}
+		retried++
+	}
+	if retried > 0 {
+		e.Notify()
+	}
+	return retried, firstErr
 }
 
 func (e *Engine) Cancel(id int64) bool {

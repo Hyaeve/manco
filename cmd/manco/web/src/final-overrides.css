@@ -3547,14 +3547,14 @@
   white-space: nowrap;
 }
 .logs-page .log-view {
-  font-size: 14px;
-  line-height: 1.85;
+  font-size: 15px;
+  line-height: 1.9;
 }
 .logs-page .log-entry {
   gap: 14px;
   padding: 13px 14px;
-  font-size: 13.5px;
-  line-height: 1.65;
+  font-size: 14.5px;
+  line-height: 1.7;
 }
 .logs-page .log-time {
   color: #2f6fbd;
@@ -3782,28 +3782,28 @@
   justify-content: center;
   padding: 1px 0;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
 }
 .logs-page .log-raw-marker.is-error,
 .logs-page .log-level.error {
-  color: #fff;
-  background: #d64545;
+  color: #a12626;
+  background: rgba(214, 69, 69, 0.14);
 }
 .logs-page .log-raw-marker.is-warning,
 .logs-page .log-level.warning {
-  color: #7a4b00;
-  background: #ffd88a;
+  color: #805000;
+  background: rgba(255, 216, 138, 0.42);
 }
 .logs-page .log-raw-marker.is-info,
 .logs-page .log-level.info {
-  color: #fff;
-  background: #3d7fd0;
+  color: #24588f;
+  background: rgba(61, 127, 208, 0.14);
 }
 .logs-page .log-raw-marker.is-debug,
 .logs-page .log-level.debug {
-  color: #444;
-  background: #d8d8d8;
+  color: #4b5563;
+  background: rgba(148, 163, 184, 0.2);
 }
 /* 正文保持统一颜色，只用行首徽标区分级别。 */
 .logs-page .log-raw-text {
@@ -3817,7 +3817,18 @@
   color: var(--text);
 }
 [data-theme='dark'] .logs-page .log-level.info {
-  background: #2f6fbd;
+  color: #b7d5ff;
+  background: rgba(82, 145, 220, 0.22);
+}
+[data-theme='dark'] .logs-page .log-raw-marker.is-error,
+[data-theme='dark'] .logs-page .log-level.error {
+  color: #ffb4b4;
+  background: rgba(214, 69, 69, 0.2);
+}
+[data-theme='dark'] .logs-page .log-raw-marker.is-warning,
+[data-theme='dark'] .logs-page .log-level.warning {
+  color: #ffd99b;
+  background: rgba(255, 216, 138, 0.18);
 }
 .logs-page .log-level {
   display: inline-flex;
@@ -3826,13 +3837,13 @@
   min-width: 42px;
   padding: 1px 8px;
   border-radius: 5px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 700;
 }
 [data-theme='dark'] .logs-page .log-raw-marker.is-debug,
 [data-theme='dark'] .logs-page .log-level.debug {
-  color: #ddd;
-  background: #4a4a4a;
+  color: #d7dce5;
+  background: rgba(148, 163, 184, 0.22);
 }
 
 /* v0.1.19：内容源编辑窗口加宽字段、图标库与类型图标回退。 */
@@ -4025,7 +4036,7 @@ svg.source-editor-icon {
 /* v0.1.25：全站滚动条默认浅灰，悬浮时显示淡黄色；本地库详情沿用探索发现标签样式。 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.46) transparent;
+  scrollbar-color: rgba(203, 213, 225, 0.62) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -4036,11 +4047,11 @@ svg.source-editor-icon {
 *::-webkit-scrollbar-thumb {
   border: 0;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.5);
+  background: rgba(203, 213, 225, 0.7);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--primary) 44%, #d1d5db);
+  background: color-mix(in srgb, var(--primary) 24%, #e5e7eb);
 }
 
 .local-detail-view .tag-pill {

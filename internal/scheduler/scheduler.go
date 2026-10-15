@@ -18,6 +18,7 @@ import (
 type Downloads interface {
 	CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error)
 	EnsureSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error)
+	RetryFailedByComic(ctx context.Context, sourceID, comicID string) (int, error)
 	Notify()
 }
 
@@ -321,6 +322,11 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 		}
 		if err := s.check(ctx, subscription); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
+		}
+		if retried, err := s.downloads.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
+			s.logger.Printf("scheduler: retry failed downloads %s/%s: %v", subscription.SourceID, subscription.Title, err)
+		} else if retried > 0 {
+			s.logger.Printf("scheduler: retried %d failed download(s) for %s/%s", retried, subscription.SourceID, subscription.Title)
 		}
 	}
 }

@@ -164,6 +164,21 @@ func (m *memoryJobs) ActivateDueRetries(_ context.Context, now time.Time) (int64
 	return activated, nil
 }
 
+func (m *memoryJobs) FailedDownloadJobsByComic(_ context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var failed []model.DownloadJob
+	for _, job := range m.jobs {
+		if job.SourceID != sourceID || job.ComicID != comicID {
+			continue
+		}
+		if job.Status == "failed" || job.Status == "canceled" {
+			failed = append(failed, job)
+		}
+	}
+	return failed, nil
+}
+
 // staticSource returns a fixed chapter list and page list.
 type staticSource struct {
 	detail model.Comic
@@ -1031,6 +1046,35 @@ func TestComicInfoAgeRatingUsesV21Enums(t *testing.T) {
 	comic := model.Comic{Tags: []string{"成人"}}
 	if got := comicInfoAgeRating(comic, comic.Tags); got != "Adults Only 18+" {
 		t.Fatalf("ComicInfo age rating = %q, want Adults Only 18+", got)
+	}
+}
+
+func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
+	nextRetry := time.Now().Add(time.Hour)
+	jobs := &memoryJobs{jobs: []model.DownloadJob{
+		{ID: 1, SourceID: "stub", ComicID: "1", Status: "failed", RetryCount: 2, NextRetryAt: &nextRetry},
+		{ID: 2, SourceID: "stub", ComicID: "1", Status: "completed", RetryCount: 2, NextRetryAt: &nextRetry},
+		{ID: 3, SourceID: "other", ComicID: "1", Status: "failed", RetryCount: 2, NextRetryAt: &nextRetry},
+	}}
+	engine := NewEngine(sources.NewRegistry(nil, nil, nil), jobs, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+
+	retried, err := engine.RetryFailedByComic(context.Background(), "stub", "1")
+	if err != nil {
+		t.Fatalf("RetryFailedByComic() error = %v", err)
+	}
+	if retried != 1 {
+		t.Fatalf("RetryFailedByComic() retried = %d, want 1", retried)
+	}
+	job, ok := jobs.find(1)
+	if !ok {
+		t.Fatal("failed job disappeared")
+	}
+	if job.Status != "queued" || job.RetryCount != 0 || job.NextRetryAt != nil {
+		t.Fatalf("reset job = %#v, want queued with a fresh retry budget", job)
+	}
+	other, _ := jobs.find(3)
+	if other.Status != "failed" || other.RetryCount != 2 {
+		t.Fatalf("unrelated job changed = %#v", other)
 	}
 }
 
