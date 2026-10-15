@@ -50,15 +50,18 @@ type storedDetail struct {
 }
 
 type comicInfo struct {
-	XMLName   xml.Name `xml:"ComicInfo"`
-	Title     string   `xml:"Title,omitempty"`
-	Series    string   `xml:"Series,omitempty"`
-	Writer    string   `xml:"Writer,omitempty"`
-	Summary   string   `xml:"Summary,omitempty"`
-	Genre     string   `xml:"Genre,omitempty"`
-	Web       string   `xml:"Web,omitempty"`
-	Source    string   `xml:"Source,omitempty"`
-	PageCount int      `xml:"PageCount,omitempty"`
+	XMLName     xml.Name `xml:"ComicInfo"`
+	Title       string   `xml:"Title,omitempty"`
+	Series      string   `xml:"Series,omitempty"`
+	Summary     string   `xml:"Summary,omitempty"`
+	Notes       string   `xml:"Notes,omitempty"`
+	Writer      string   `xml:"Writer,omitempty"`
+	Genre       string   `xml:"Genre,omitempty"`
+	Tags        string   `xml:"Tags,omitempty"`
+	Web         string   `xml:"Web,omitempty"`
+	PageCount   int      `xml:"PageCount,omitempty"`
+	LanguageISO string   `xml:"LanguageISO,omitempty"`
+	Manga       string   `xml:"Manga,omitempty"`
 }
 
 func Open(root string, maxAge time.Duration) (*Cache, error) {
@@ -478,15 +481,25 @@ func (c *Cache) writeEntry(path string, entry storedDetail) error {
 func (c *Cache) writeMetadata(path string, entry storedDetail) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	manga := "Unknown"
+	switch NormalizeKind(entry.Kind) {
+	case "book":
+		manga = "No"
+	case "comic":
+		manga = "YesAndRightToLeft"
+	}
 	info := comicInfo{
-		Title:     entry.Comic.Title,
-		Series:    entry.Comic.Title,
-		Writer:    entry.Comic.Author,
-		Summary:   entry.Comic.Description,
-		Genre:     strings.Join(entry.Comic.Tags, ", "),
-		Web:       entry.Comic.Cover,
-		Source:    entry.SourceID,
-		PageCount: len(entry.Chapters),
+		Title:       entry.Comic.Title,
+		Series:      entry.Comic.Title,
+		Summary:     entry.Comic.Description,
+		Notes:       fmt.Sprintf("Manco source=%s", entry.SourceID),
+		Writer:      entry.Comic.Author,
+		Genre:       strings.Join(entry.Comic.Tags, ", "),
+		Tags:        strings.Join(entry.Comic.Tags, ", "),
+		Web:         entry.Comic.Cover,
+		PageCount:   len(entry.Chapters),
+		LanguageISO: "zh-Hans",
+		Manga:       manga,
 	}
 	raw, err := xml.MarshalIndent(info, "", "  ")
 	if err != nil {

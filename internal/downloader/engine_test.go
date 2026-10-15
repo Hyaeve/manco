@@ -471,6 +471,11 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 			t.Fatalf("ComicInfo.xml is missing %q: %s", value, nfo)
 		}
 	}
+	for _, value := range []string{"<PageCount>", "<Pages>", "<Status>"} {
+		if bytes.Contains(nfo, []byte(value)) {
+			t.Fatalf("standalone ComicInfo.xml contains chapter-only %q: %s", value, nfo)
+		}
+	}
 	embedded, ok := first["ComicInfo.xml"]
 	if !ok {
 		t.Fatal("CBZ is missing embedded ComicInfo.xml")
@@ -478,6 +483,8 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	for _, value := range []string{
 		"<Series>测试作品</Series>",
 		"<PageCount>3</PageCount>",
+		`<Pages>`,
+		`<Page Image="0" Type="Story"></Page>`,
 		"<Manga>YesAndRightToLeft</Manga>",
 		"<LanguageISO>zh-Hans</LanguageISO>",
 		"<Genre>测试,漫画</Genre>",
@@ -486,6 +493,9 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 		if !bytes.Contains(embedded, []byte(value)) {
 			t.Fatalf("embedded ComicInfo.xml is missing %q: %s", value, embedded)
 		}
+	}
+	if bytes.Contains(embedded, []byte("<Status>")) {
+		t.Fatalf("ComicInfo.xml contains a non-v2.1 Status element: %s", embedded)
 	}
 
 	// Komga reads Mylar series.json for series-level metadata and OPF for the
@@ -873,6 +883,94 @@ func TestEnsureSeriesMetadataRepairsMissingFiles(t *testing.T) {
 		t.Fatal("metadata was repaired twice")
 	}
 }
+
+func TestMarshalComicInfoV21SchemaOrder(t *testing.T) {
+	payload, err := marshalComicInfo(ComicInfo{
+		Title:               "第1话",
+		Series:              "测试作品",
+		Number:              "1",
+		Count:               12,
+		Volume:              1,
+		AlternateSeries:     "别名",
+		AlternateNumber:     "A1",
+		AlternateCount:      2,
+		Summary:             "测试简介",
+		Notes:               "Manco source=stub comicId=1",
+		Year:                2026,
+		Month:               10,
+		Day:                 16,
+		Writer:              "作者",
+		Penciller:           "铅笔",
+		Inker:               "墨线",
+		Colorist:            "上色",
+		Letterer:            "嵌字",
+		CoverArtist:         "封面",
+		Editor:              "编辑",
+		Translator:          "翻译",
+		Publisher:           "出版社",
+		Imprint:             "副牌",
+		Genre:               "漫画,测试",
+		Tags:                "测试,标签",
+		Web:                 "https://example.com/comic/1",
+		PageCount:           2,
+		LanguageISO:         "zh-Hans",
+		Format:              "Digital",
+		BlackAndWhite:       "No",
+		Manga:               "YesAndRightToLeft",
+		Characters:          "角色",
+		Teams:               "团队",
+		Locations:           "地点",
+		ScanInformation:     "扫描",
+		StoryArc:            "篇章",
+		StoryArcNumber:      "1",
+		SeriesGroup:         "系列组",
+		AgeRating:           "Adults Only 18+",
+		Pages:               &ComicInfoPages{Page: []ComicInfoPage{{Image: 0, Type: "Story"}, {Image: 1, Type: "Story"}}},
+		CommunityRating:     "4.5",
+		MainCharacterOrTeam: "主角",
+		Review:              "评论",
+		GTIN:                "9781234567897",
+	})
+	if err != nil {
+		t.Fatalf("marshal ComicInfo: %v", err)
+	}
+	if bytes.Contains(payload, []byte("<Status>")) {
+		t.Fatalf("ComicInfo v2.1 must not contain Status: %s", payload)
+	}
+	sequence := []string{
+		"Title", "Series", "Number", "Count", "Volume", "AlternateSeries",
+		"AlternateNumber", "AlternateCount", "Summary", "Notes", "Year", "Month",
+		"Day", "Writer", "Penciller", "Inker", "Colorist", "Letterer",
+		"CoverArtist", "Editor", "Translator", "Publisher", "Imprint", "Genre",
+		"Tags", "Web", "PageCount", "LanguageISO", "Format", "BlackAndWhite",
+		"Manga", "Characters", "Teams", "Locations", "ScanInformation",
+		"StoryArc", "StoryArcNumber", "SeriesGroup", "AgeRating", "Pages",
+		"CommunityRating", "MainCharacterOrTeam", "Review", "GTIN",
+	}
+	last := -1
+	for _, name := range sequence {
+		tag := []byte("<" + name + ">")
+		index := bytes.Index(payload, tag)
+		if index < 0 {
+			t.Fatalf("ComicInfo.xml is missing %s: %s", tag, payload)
+		}
+		if index <= last {
+			t.Fatalf("ComicInfo.xml field %s is out of v2.1 schema order: %s", tag, payload)
+		}
+		last = index
+	}
+}
+
+func TestComicInfoAgeRatingUsesV21Enums(t *testing.T) {
+	comic := model.Comic{Tags: []string{"成人"}}
+	if got := comicInfoAgeRating(comic, comic.Tags); got != "Adults Only 18+" {
+		t.Fatalf("ComicInfo age rating = %q, want Adults Only 18+", got)
+	}
+	if got := mylarAgeRating(comic, comic.Tags); got != "Adult" {
+		t.Fatalf("Mylar age rating = %q, want Adult", got)
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

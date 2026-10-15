@@ -122,3 +122,22 @@ func TestApplyComicMetaReadsEnhancedComicInfoFields(t *testing.T) {
 		t.Fatalf("comicinfo labels = %+v", item)
 	}
 }
+
+func TestApplyComicMetaReadsLegacyStatusElement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ComicInfo.xml")
+	payload := `<?xml version="1.0" encoding="UTF-8"?>
+<ComicInfo>
+  <Title>旧版章节</Title>
+  <Series>旧版作品</Series>
+  <Status>连载中</Status>
+</ComicInfo>`
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := localItemEntry{Title: "目录名"}
+	applyComicMeta(path, &item)
+	if item.Status != "连载中" {
+		t.Fatalf("legacy ComicInfo status = %q, want 连载中", item.Status)
+	}
+}

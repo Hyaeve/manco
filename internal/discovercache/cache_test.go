@@ -51,12 +51,16 @@ func TestNamedSourceCacheRoundTrip(t *testing.T) {
 
 	var foundNamedDir bool
 	var foundTitleDir bool
+	var infoPath string
 	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr == nil && entry.IsDir() && entry.Name() == "包子漫画" {
 			foundNamedDir = true
 		}
 		if walkErr == nil && entry.IsDir() && entry.Name() == "测试作品" {
 			foundTitleDir = true
+		}
+		if walkErr == nil && !entry.IsDir() && entry.Name() == "ComicInfo.xml" {
+			infoPath = path
 		}
 		return nil
 	})
@@ -65,6 +69,26 @@ func TestNamedSourceCacheRoundTrip(t *testing.T) {
 	}
 	if !foundTitleDir {
 		t.Fatalf("cache did not preserve the localized work-title directory under %s", root)
+	}
+	if infoPath == "" {
+		t.Fatal("cache did not write ComicInfo.xml")
+	}
+	rawInfo, err := os.ReadFile(infoPath)
+	if err != nil {
+		t.Fatalf("read ComicInfo.xml: %v", err)
+	}
+	textInfo := string(rawInfo)
+	if strings.Contains(textInfo, "<Source>") {
+		t.Fatalf("ComicInfo.xml contains non-v2.1 Source element: %s", textInfo)
+	}
+	for _, value := range []string{
+		"<Notes>Manco source=baozimh</Notes>",
+		"<LanguageISO>zh-Hans</LanguageISO>",
+		"<Manga>YesAndRightToLeft</Manga>",
+	} {
+		if !strings.Contains(textInfo, value) {
+			t.Fatalf("ComicInfo.xml is missing %q: %s", value, textInfo)
+		}
 	}
 
 	recorder := httptest.NewRecorder()

@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.4.7"
+	appVersion    = "v0.4.8"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -3582,6 +3582,10 @@ func applyComicMeta(path string, item *localItemEntry) {
 	if xml.Unmarshal(raw, &info) != nil {
 		return
 	}
+	var legacyStatus struct {
+		Status string `xml:"Status"`
+	}
+	_ = xml.Unmarshal(raw, &legacyStatus)
 	if info.Series != "" {
 		item.Title = info.Series
 	}
@@ -3594,8 +3598,8 @@ func applyComicMeta(path string, item *localItemEntry) {
 	item.Tags = normalizeMetadataTags(strings.FieldsFunc(info.Genre, func(r rune) bool {
 		return r == ',' || r == '，' || r == ';' || r == '；'
 	}))
-	if info.Status != "" {
-		item.Status = info.Status
+	if legacyStatus.Status != "" {
+		item.Status = legacyStatus.Status
 	}
 	if info.Publisher != "" {
 		item.Publisher = info.Publisher

@@ -728,41 +728,69 @@ func imageExtensionFromFile(path, address string) (string, error) {
 	return imageExtension(header[:count], address), nil
 }
 
-// ComicInfo mirrors the ComicInfo.xml schema used by comic readers so the
-// downloaded metadata (author, summary, tags, status) stays interoperable.
+// ComicInfo mirrors the ComicInfo.xml v2.1 schema used by comic readers.
+// Field order is significant because the schema defines an xs:sequence.
 type ComicInfo struct {
-	XMLName         xml.Name `xml:"ComicInfo"`
-	Title           string   `xml:"Title,omitempty"`
-	Series          string   `xml:"Series,omitempty"`
-	Number          string   `xml:"Number,omitempty"`
-	Count           int      `xml:"Count,omitempty"`
-	Volume          string   `xml:"Volume,omitempty"`
-	AlternateSeries string   `xml:"AlternateSeries,omitempty"`
-	AlternateNumber string   `xml:"AlternateNumber,omitempty"`
-	Summary         string   `xml:"Summary,omitempty"`
-	Year            int      `xml:"Year,omitempty"`
-	Month           int      `xml:"Month,omitempty"`
-	Day             int      `xml:"Day,omitempty"`
-	Writer          string   `xml:"Writer,omitempty"`
-	Penciller       string   `xml:"Penciller,omitempty"`
-	Inker           string   `xml:"Inker,omitempty"`
-	Colorist        string   `xml:"Colorist,omitempty"`
-	Letterer        string   `xml:"Letterer,omitempty"`
-	CoverArtist     string   `xml:"CoverArtist,omitempty"`
-	Editor          string   `xml:"Editor,omitempty"`
-	Translator      string   `xml:"Translator,omitempty"`
-	Publisher       string   `xml:"Publisher,omitempty"`
-	Genre           string   `xml:"Genre,omitempty"`
-	Tags            string   `xml:"Tags,omitempty"`
-	Web             string   `xml:"Web,omitempty"`
-	PageCount       int      `xml:"PageCount,omitempty"`
-	Manga           string   `xml:"Manga,omitempty"`
-	LanguageISO     string   `xml:"LanguageISO,omitempty"`
-	SeriesGroup     string   `xml:"SeriesGroup,omitempty"`
-	AgeRating       string   `xml:"AgeRating,omitempty"`
-	GTIN            string   `xml:"GTIN,omitempty"`
-	Status          string   `xml:"Status,omitempty"`
-	Notes           string   `xml:"Notes,omitempty"`
+	XMLName             xml.Name        `xml:"ComicInfo"`
+	Title               string          `xml:"Title,omitempty"`
+	Series              string          `xml:"Series,omitempty"`
+	Number              string          `xml:"Number,omitempty"`
+	Count               int             `xml:"Count,omitempty"`
+	Volume              int             `xml:"Volume,omitempty"`
+	AlternateSeries     string          `xml:"AlternateSeries,omitempty"`
+	AlternateNumber     string          `xml:"AlternateNumber,omitempty"`
+	AlternateCount      int             `xml:"AlternateCount,omitempty"`
+	Summary             string          `xml:"Summary,omitempty"`
+	Notes               string          `xml:"Notes,omitempty"`
+	Year                int             `xml:"Year,omitempty"`
+	Month               int             `xml:"Month,omitempty"`
+	Day                 int             `xml:"Day,omitempty"`
+	Writer              string          `xml:"Writer,omitempty"`
+	Penciller           string          `xml:"Penciller,omitempty"`
+	Inker               string          `xml:"Inker,omitempty"`
+	Colorist            string          `xml:"Colorist,omitempty"`
+	Letterer            string          `xml:"Letterer,omitempty"`
+	CoverArtist         string          `xml:"CoverArtist,omitempty"`
+	Editor              string          `xml:"Editor,omitempty"`
+	Translator          string          `xml:"Translator,omitempty"`
+	Publisher           string          `xml:"Publisher,omitempty"`
+	Imprint             string          `xml:"Imprint,omitempty"`
+	Genre               string          `xml:"Genre,omitempty"`
+	Tags                string          `xml:"Tags,omitempty"`
+	Web                 string          `xml:"Web,omitempty"`
+	PageCount           int             `xml:"PageCount,omitempty"`
+	LanguageISO         string          `xml:"LanguageISO,omitempty"`
+	Format              string          `xml:"Format,omitempty"`
+	BlackAndWhite       string          `xml:"BlackAndWhite,omitempty"`
+	Manga               string          `xml:"Manga,omitempty"`
+	Characters          string          `xml:"Characters,omitempty"`
+	Teams               string          `xml:"Teams,omitempty"`
+	Locations           string          `xml:"Locations,omitempty"`
+	ScanInformation     string          `xml:"ScanInformation,omitempty"`
+	StoryArc            string          `xml:"StoryArc,omitempty"`
+	StoryArcNumber      string          `xml:"StoryArcNumber,omitempty"`
+	SeriesGroup         string          `xml:"SeriesGroup,omitempty"`
+	AgeRating           string          `xml:"AgeRating,omitempty"`
+	Pages               *ComicInfoPages `xml:"Pages,omitempty"`
+	CommunityRating     string          `xml:"CommunityRating,omitempty"`
+	MainCharacterOrTeam string          `xml:"MainCharacterOrTeam,omitempty"`
+	Review              string          `xml:"Review,omitempty"`
+	GTIN                string          `xml:"GTIN,omitempty"`
+}
+
+type ComicInfoPages struct {
+	Page []ComicInfoPage `xml:"Page"`
+}
+
+type ComicInfoPage struct {
+	Image       int    `xml:"Image,attr"`
+	Type        string `xml:"Type,attr,omitempty"`
+	DoublePage  bool   `xml:"DoublePage,attr,omitempty"`
+	ImageSize   int64  `xml:"ImageSize,attr,omitempty"`
+	Key         string `xml:"Key,attr,omitempty"`
+	Bookmark    string `xml:"Bookmark,attr,omitempty"`
+	ImageWidth  int    `xml:"ImageWidth,attr,omitempty"`
+	ImageHeight int    `xml:"ImageHeight,attr,omitempty"`
 }
 
 var (
@@ -1264,7 +1292,7 @@ func writeSeriesMetadataFiles(comic model.Comic, info model.SourceInfo, comicDir
 	series := source.FirstNonEmpty(strings.TrimSpace(comic.Title), strings.TrimSpace(comic.ID), "untitled")
 	genres := comicGenreValues(comic, info)
 	description := strings.TrimSpace(comic.Description)
-	ageRating := comicAgeRating(comic, genres)
+	ageRating := mylarAgeRating(comic, genres)
 	status := mylarStatus(comic.Status)
 	year := metadataYear(comic.UpdatedAt)
 	authors := metadataAuthors(comic.Author)
@@ -1351,12 +1379,26 @@ func metadataAuthors(value string) []string {
 	return result
 }
 
-func comicAgeRating(comic model.Comic, tags []string) string {
+func adultComic(comic model.Comic, tags []string) bool {
 	combined := strings.ToLower(strings.Join(append(append([]string{}, tags...), comic.Status, comic.Description), " "))
 	for _, value := range []string{"成人", "adult", "18+", "r18", "x18", "mature", "色情"} {
 		if strings.Contains(combined, value) {
-			return "Adult"
+			return true
 		}
+	}
+	return false
+}
+
+func comicInfoAgeRating(comic model.Comic, tags []string) string {
+	if adultComic(comic, tags) {
+		return "Adults Only 18+"
+	}
+	return ""
+}
+
+func mylarAgeRating(comic model.Comic, tags []string) string {
+	if adultComic(comic, tags) {
+		return "Adult"
 	}
 	return ""
 }
@@ -1584,6 +1626,7 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 	seriesDoc.Title = source.FirstNonEmpty(comic.Title, comic.ID)
 	seriesDoc.Number = ""
 	seriesDoc.PageCount = 0
+	seriesDoc.Pages = nil
 	seriesPayload, err := marshalComicInfo(seriesDoc)
 	if err != nil {
 		return nil, err
@@ -1608,24 +1651,34 @@ func chapterComicInfo(item source.Source, comic model.Comic, chapterTitle string
 	genres := comicGenreValues(comic, info)
 	tags := genres
 	return ComicInfo{
-		Title:           source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
-		Series:          source.FirstNonEmpty(comic.Title, comic.ID),
-		Number:          comicNumber(chapterOrder),
-		Summary:         comic.Description,
-		Year:            metadataYear(comic.UpdatedAt),
-		Writer:          comic.Author,
-		Publisher:       "",
-		Genre:           strings.Join(genres, ","),
-		Tags:            strings.Join(tags, ","),
-		Web:             comicPageURL(info.Homepage, comic.SourceID, comic.ID),
-		PageCount:       pageCount,
-		Manga:           manga,
-		LanguageISO:     "zh-Hans",
-		AgeRating:       comicAgeRating(comic, tags),
-		AlternateSeries: "",
-		Status:          comic.Status,
-		Notes:           fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID),
+		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
+		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
+		Number:      comicNumber(chapterOrder),
+		Summary:     comic.Description,
+		Notes:       fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID),
+		Year:        metadataYear(comic.UpdatedAt),
+		Writer:      comic.Author,
+		Publisher:   "",
+		Genre:       strings.Join(genres, ","),
+		Tags:        strings.Join(tags, ","),
+		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
+		PageCount:   pageCount,
+		LanguageISO: "zh-Hans",
+		Manga:       manga,
+		AgeRating:   comicInfoAgeRating(comic, tags),
+		Pages:       comicInfoPages(pageCount),
 	}
+}
+
+func comicInfoPages(pageCount int) *ComicInfoPages {
+	if pageCount <= 0 {
+		return nil
+	}
+	pages := &ComicInfoPages{Page: make([]ComicInfoPage, pageCount)}
+	for index := range pages.Page {
+		pages.Page[index] = ComicInfoPage{Image: index, Type: "Story"}
+	}
+	return pages
 }
 
 // marshalComicInfo renders a ComicInfo document with the XML header.
