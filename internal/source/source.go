@@ -149,6 +149,21 @@ type ContentSource interface {
 	ChapterContent(ctx context.Context, account Account, bookID string, chapter model.Chapter) (string, error)
 }
 
+// ChapterArchive is a rich book chapter payload intended for CBZ packaging.
+// Plugin runtimes can return HTML plus source-specific image pages whose bytes
+// are materialized through ImageSource before the archive is written.
+type ChapterArchive struct {
+	HTML   string
+	Images []model.Page
+}
+
+// ChapterArchiveSource is implemented by book sources whose text and images
+// should be persisted as a Kototoro-compatible CBZ instead of a plain text
+// file. FileContentSource still takes precedence for original ebook binaries.
+type ChapterArchiveSource interface {
+	ChapterArchive(ctx context.Context, account Account, bookID string, chapter model.Chapter) (ChapterArchive, error)
+}
+
 // FileContentSource is implemented by book sources that expose a real binary
 // file (for example EPUB, PDF, MOBI or AZW3). The downloader prefers this
 // interface over ContentSource so the original ebook is persisted unchanged.

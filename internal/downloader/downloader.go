@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PuerkitoBio/goquery"
 	"github.com/liuzl/gocc"
 	"golang.org/x/image/webp"
 
@@ -803,6 +804,8 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		if len(data) == 0 {
 			return errors.New("书籍文件为空")
 		}
+	} else if archiveSource, ok := item.(source.ChapterArchiveSource); ok {
+		return e.downloadBookArchive(ctx, item, account, job, chapter, archiveSource)
 	} else if contentSource, ok := item.(source.ContentSource); ok {
 		var err error
 		text, err = contentSource.ChapterContent(ctx, account, job.ComicID, chapter)
@@ -864,6 +867,267 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		e.logger.Printf("downloader: book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
 	}
 	return e.store.UpdateDownloadJob(ctx, job.ID, "completed", 1, 1, outputPath, "")
+}
+
+type chapterArchiveIndex struct {
+	ID          string                           `json:"id"`
+	Title       string                           `json:"title"`
+	Authors     []string                         `json:"authors,omitempty"`
+	URL         string                           `json:"url,omitempty"`
+	PublicURL   string                           `json:"public_url,omitempty"`
+	Cover       string                           `json:"cover,omitempty"`
+	Description string                           `json:"description,omitempty"`
+	State       string                           `json:"state,omitempty"`
+	Source      string                           `json:"source"`
+	Tags        []chapterArchiveIndexTag         `json:"tags,omitempty"`
+	Chapters    map[string]chapterArchiveChapter `json:"chapters"`
+}
+
+type chapterArchiveIndexTag struct {
+	Key   string `json:"key"`
+	Title string `json:"title"`
+}
+
+type chapterArchiveChapter struct {
+	Number  float64               `json:"number,omitempty"`
+	Order   int                   `json:"order"`
+	Name    string                `json:"name,omitempty"`
+	URL     string                `json:"url,omitempty"`
+	Source  string                `json:"source"`
+	Entries string                `json:"entries"`
+	File    string                `json:"file,omitempty"`
+	Images  []chapterArchiveImage `json:"images,omitempty"`
+}
+
+type chapterArchiveImage struct {
+	Remote string `json:"remote"`
+	Local  string `json:"local"`
+}
+
+// downloadBookArchive packages a plugin book chapter as one Kototoro-style
+// CBZ. The chapter HTML is page 0 and every illustration follows as a source
+// page materialized by the plugin runtime, preserving parser headers and
+// descrambling behavior.
+func (e *Engine) downloadBookArchive(
+	ctx context.Context,
+	item source.Source,
+	account source.Account,
+	job model.DownloadJob,
+	chapter model.Chapter,
+	archiveSource source.ChapterArchiveSource,
+) error {
+	content, err := archiveSource.ChapterArchive(ctx, account, job.ComicID, chapter)
+	if err != nil {
+		return fmt.Errorf("fetch chapter archive: %w", err)
+	}
+	if strings.TrimSpace(content.HTML) == "" && len(content.Images) == 0 {
+		return errors.New("章节没有可用内容")
+	}
+	totalPages := len(content.Images) + 1
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", totalPages, 0, "", ""); err != nil {
+		return err
+	}
+
+	comicTitle := job.ComicTitle
+	chapterTitle := job.ChapterTitle
+	metadata := model.Comic{SourceID: job.SourceID, ID: job.ComicID, Title: comicTitle, Cover: job.ComicCover}
+	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+	} else {
+		e.logger.Printf("downloader: book archive detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
+	}
+	html := content.HTML
+	if job.ConvertToSimplified {
+		html = convertToSimplifiedText(html)
+		comicTitle = convertToSimplifiedText(comicTitle)
+		chapterTitle = convertToSimplifiedText(chapterTitle)
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+		metadata.Status = convertToSimplifiedText(metadata.Status)
+		for index := range metadata.Tags {
+			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
+		}
+	}
+
+	downloadRoot, err := e.jobDownloadDir(job)
+	if err != nil {
+		return err
+	}
+	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
+	tempDir := e.stagingDir(job)
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return err
+	}
+	removeStagingParts(tempDir)
+	finished := false
+	defer func() {
+		if finished {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	client := e.registry.ClientForAccount(account)
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	imageEntries := make([]pageEntry, 0, len(content.Images))
+	imageIndex := make([]chapterArchiveImage, 0, len(content.Images))
+	imageNames := make(map[string]string, len(content.Images))
+	completedPages := 1
+	for index, page := range content.Images {
+		if strings.TrimSpace(page.URL) == "" {
+			continue
+		}
+		data, materialized, fetchErr := fetchPageImage(ctx, client, account, item, job.ComicID, chapter, page)
+		if fetchErr != nil {
+			return fmt.Errorf("第 %d 张插图下载失败: %w", index+1, fetchErr)
+		}
+		if page.DescrambleParts > 0 && !materialized {
+			data, fetchErr = Descramble(data, page.DescrambleParts)
+			if fetchErr != nil {
+				return fmt.Errorf("第 %d 张插图解扰失败: %w", index+1, fetchErr)
+			}
+		}
+		if len(data) == 0 {
+			return fmt.Errorf("第 %d 张插图为空", index+1)
+		}
+		name := chapterArchivePageName(index+1, imageExtension(data, page.URL))
+		path := filepath.Join(tempDir, name)
+		if err := writeFileAtomic(path, data); err != nil {
+			return err
+		}
+		imageEntries = append(imageEntries, pageEntry{name: name, path: path})
+		imageNames[page.URL] = name
+		imageIndex = append(imageIndex, chapterArchiveImage{Remote: page.URL, Local: name})
+		completedPages++
+		if err := e.store.UpdateDownloadProgress(ctx, job.ID, completedPages); err != nil {
+			return err
+		}
+	}
+
+	html, err = rewriteChapterArchiveHTML(html, imageNames)
+	if err != nil {
+		return fmt.Errorf("rewrite chapter HTML: %w", err)
+	}
+	htmlName := chapterArchivePageName(0, ".html")
+	htmlPath := filepath.Join(tempDir, htmlName)
+	if err := writeFileAtomic(htmlPath, []byte(html)); err != nil {
+		return err
+	}
+	entries := make([]pageEntry, 0, len(imageEntries)+3)
+	entries = append(entries, pageEntry{name: htmlName, path: htmlPath})
+	entries = append(entries, imageEntries...)
+
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+	archiveIndex := chapterArchiveIndex{
+		ID:          metadata.ID,
+		Title:       metadata.Title,
+		URL:         comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+		PublicURL:   comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+		Cover:       metadata.Cover,
+		Description: metadata.Description,
+		State:       metadata.Status,
+		Source:      job.SourceID,
+		Chapters: map[string]chapterArchiveChapter{
+			job.ChapterID: {
+				Number:  job.ChapterOrder,
+				Order:   1,
+				Name:    chapterTitle,
+				Source:  job.SourceID,
+				Entries: fmt.Sprintf("00000000_%04d\\d{4}", 1),
+				File:    filepath.Base(outputPath),
+				Images:  imageIndex,
+			},
+		},
+	}
+	if strings.TrimSpace(metadata.Author) != "" {
+		archiveIndex.Authors = []string{metadata.Author}
+	}
+	for _, tag := range metadata.Tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		archiveIndex.Tags = append(archiveIndex.Tags, chapterArchiveIndexTag{Key: tag, Title: tag})
+	}
+	indexPayload, err := json.MarshalIndent(archiveIndex, "", "  ")
+	if err != nil {
+		return err
+	}
+	indexPath := filepath.Join(tempDir, "index.json")
+	if err := writeFileAtomic(indexPath, indexPayload); err != nil {
+		return err
+	}
+	entries = append(entries, pageEntry{name: "index.json", path: indexPath})
+
+	infoPayload, err := marshalComicInfo(chapterComicInfo(item, metadata, chapterTitle, job.ChapterOrder, totalPages))
+	if err != nil {
+		return err
+	}
+	infoPath := filepath.Join(tempDir, "ComicInfo.xml")
+	if err := writeFileAtomic(infoPath, infoPayload); err != nil {
+		return err
+	}
+	entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if err := writeZip(outputPath, entries); err != nil {
+		return err
+	}
+
+	e.metaMu.Lock()
+	metaErr := writeBookMetadata(ctx, client, account, item, metadata, comicDir)
+	e.metaMu.Unlock()
+	if metaErr != nil {
+		e.logger.Printf("downloader: book archive metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
+	}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", totalPages, totalPages, outputPath, ""); err != nil {
+		return err
+	}
+	finished = true
+	return nil
+}
+
+func chapterArchivePageName(page int, extension string) string {
+	if strings.TrimSpace(extension) == "" {
+		extension = ".jpg"
+	}
+	return fmt.Sprintf("%08d_%04d%04d%s", 0, 1, page, extension)
+}
+
+func rewriteChapterArchiveHTML(html string, imageNames map[string]string) (string, error) {
+	if strings.TrimSpace(html) == "" || len(imageNames) == 0 {
+		return html, nil
+	}
+	document, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return "", err
+	}
+	document.Find("img").Each(func(_ int, selection *goquery.Selection) {
+		for _, attribute := range []string{"src", "data-src"} {
+			address, exists := selection.Attr(attribute)
+			if !exists {
+				continue
+			}
+			localName, ok := imageNames[strings.TrimSpace(address)]
+			if !ok {
+				continue
+			}
+			selection.SetAttr("src", localName)
+			selection.RemoveAttr("data-src")
+			selection.RemoveAttr("srcset")
+			break
+		}
+	})
+	return document.Html()
 }
 
 // writeFileAtomic keeps book downloads invisible until the complete file has
@@ -1056,7 +1320,6 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return nil, err
 	}
-	info := item.Info()
 	coverURL := strings.TrimSpace(comic.Cover)
 	if coverURL != "" || canMaterializeCover(item, coverURL) {
 		existing, _ := filepath.Glob(filepath.Join(comicDir, "cover.*"))
@@ -1074,20 +1337,7 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 			}
 		}
 	}
-	chapterDoc := ComicInfo{
-		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
-		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
-		Number:      comicNumber(chapterOrder),
-		Writer:      comic.Author,
-		Summary:     comic.Description,
-		Genre:       comicGenre(comic, info),
-		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
-		PageCount:   pageCount,
-		Manga:       "YesAndRightToLeft",
-		LanguageISO: "zh-Hans",
-		Status:      comic.Status,
-		Notes:       fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID),
-	}
+	chapterDoc := chapterComicInfo(item, comic, chapterTitle, chapterOrder, pageCount)
 	payload, err := marshalComicInfo(chapterDoc)
 	if err != nil {
 		return nil, err
@@ -1107,6 +1357,28 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 		return nil, err
 	}
 	return payload, nil
+}
+
+func chapterComicInfo(item source.Source, comic model.Comic, chapterTitle string, chapterOrder float64, pageCount int) ComicInfo {
+	info := item.Info()
+	manga := "YesAndRightToLeft"
+	if source.KindOf(info) == source.KindBook {
+		manga = "No"
+	}
+	return ComicInfo{
+		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
+		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
+		Number:      comicNumber(chapterOrder),
+		Writer:      comic.Author,
+		Summary:     comic.Description,
+		Genre:       comicGenre(comic, info),
+		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
+		PageCount:   pageCount,
+		Manga:       manga,
+		LanguageISO: "zh-Hans",
+		Status:      comic.Status,
+		Notes:       fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID),
+	}
 }
 
 // marshalComicInfo renders a ComicInfo document with the XML header.

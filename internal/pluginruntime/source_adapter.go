@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/PuerkitoBio/goquery"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
@@ -29,6 +32,8 @@ type Adapter struct {
 	filters      []model.FilterGroup
 	tagGroups    map[string]map[string]map[string]any
 }
+
+var _ source.ChapterArchiveSource = (*Adapter)(nil)
 
 func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 	if manager == nil {
@@ -242,6 +247,160 @@ func (a *Adapter) ChapterContent(ctx context.Context, account source.Account, _ 
 		return "", errors.New("该章节没有正文内容")
 	}
 	return stringValue(content["html"]), nil
+}
+
+// ChapterArchive returns the rich chapter payload used by Kototoro-style book
+// downloads. Image bytes are deliberately not fetched here: each page remains
+// a source page so the downloader materializes it through the plugin runtime.
+func (a *Adapter) ChapterArchive(ctx context.Context, account source.Account, _ string, chapter model.Chapter) (source.ChapterArchive, error) {
+	raw, err := decodeObject(chapter.ID)
+	if err != nil {
+		return source.ChapterArchive{}, err
+	}
+	result, err := a.call(ctx, "chapterContent", map[string]any{"chapter": raw}, source.AccountUsesProxy(account))
+	if err != nil {
+		return source.ChapterArchive{}, err
+	}
+	content, ok := result["content"].(map[string]any)
+	if !ok || content == nil {
+		return source.ChapterArchive{}, errors.New("该章节没有正文内容")
+	}
+	sourceRef, ok := raw["source"].(map[string]any)
+	if !ok || sourceRef == nil {
+		return source.ChapterArchive{}, errors.New("章节缺少内容源标识")
+	}
+
+	html := stringValue(content["html"])
+	baseURL := firstNonEmpty(stringValue(raw["url"]), a.info.Homepage)
+	explicitImages := make([]sourceContentImage, 0)
+	explicitHeaders := map[string]map[string]string{}
+	if values, ok := content["images"].([]any); ok {
+		for _, value := range values {
+			item, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			address := resolveArchiveURL(stringValue(item["url"]), baseURL)
+			if address == "" {
+				continue
+			}
+			headers := stringMap(item["headers"])
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			if !hasHeader(headers, "Referer") && baseURL != "" {
+				headers["Referer"] = baseURL
+			}
+			explicitHeaders[address] = headers
+			explicitImages = append(explicitImages, sourceContentImage{URL: address, Headers: headers})
+		}
+	}
+
+	order := make([]string, 0, len(explicitImages))
+	seen := map[string]bool{}
+	addImage := func(address string) {
+		address = strings.TrimSpace(address)
+		if address == "" || seen[address] {
+			return
+		}
+		seen[address] = true
+		order = append(order, address)
+	}
+	if strings.TrimSpace(html) != "" {
+		doc, parseErr := goquery.NewDocumentFromReader(strings.NewReader(html))
+		if parseErr == nil {
+			doc.Find("img").Each(func(_ int, selection *goquery.Selection) {
+				for _, attribute := range []string{"src", "data-src"} {
+					address, exists := selection.Attr(attribute)
+					if !exists {
+						continue
+					}
+					resolved := resolveArchiveURL(address, baseURL)
+					if resolved == "" {
+						continue
+					}
+					_, hasSrc := selection.Attr("src")
+					if attribute == "src" || !hasSrc {
+						selection.SetAttr("src", resolved)
+					}
+					addImage(resolved)
+					break
+				}
+			})
+			if rendered, renderErr := doc.Html(); renderErr == nil {
+				html = rendered
+			}
+		}
+	}
+	for _, image := range explicitImages {
+		addImage(image.URL)
+	}
+
+	images := make([]model.Page, 0, len(order))
+	for index, address := range order {
+		headers := explicitHeaders[address]
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		if !hasHeader(headers, "Referer") && baseURL != "" {
+			headers["Referer"] = baseURL
+		}
+		pageRaw := map[string]any{
+			"id":      strconv.Itoa(index + 1),
+			"url":     address,
+			"preview": nil,
+			"source":  sourceRef,
+			"headers": headers,
+		}
+		assetID, encodeErr := encodeObject(pageRaw)
+		if encodeErr != nil {
+			return source.ChapterArchive{}, encodeErr
+		}
+		images = append(images, model.Page{
+			URL:     address,
+			AssetID: assetID,
+			Referer: baseURL,
+			Headers: headers,
+		})
+	}
+	return source.ChapterArchive{HTML: html, Images: images}, nil
+}
+
+type sourceContentImage struct {
+	URL     string
+	Headers map[string]string
+}
+
+func resolveArchiveURL(address, baseURL string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+	lower := strings.ToLower(address)
+	if strings.HasPrefix(lower, "data:") || strings.HasPrefix(lower, "file:") {
+		return ""
+	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		return ""
+	}
+	if parsed.IsAbs() {
+		return parsed.String()
+	}
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || !base.IsAbs() {
+		return address
+	}
+	return base.ResolveReference(parsed).String()
+}
+
+func hasHeader(headers map[string]string, name string) bool {
+	for key := range headers {
+		if strings.EqualFold(key, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) call(ctx context.Context, operation string, fields map[string]any, useProxy ...bool) (map[string]any, error) {

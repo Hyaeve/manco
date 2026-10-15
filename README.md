@@ -3,7 +3,7 @@
 自托管的漫画 / 书籍订阅下载器。Go 后端 + Vue 3 前端，单镜像部署，容器端口 `15600`。
 
 - 从内容源搜索、浏览、订阅作品，发现新章节后自动下载
-- **一话一个 `.cbz`**，并写入封面与 `ComicInfo.xml`；书籍保留原始 EPUB / PDF / MOBI / AZW3
+- **漫画与插件书籍一话一个 `.cbz`**，并写入封面与 `ComicInfo.xml`；内置电子书源保留原始 EPUB / PDF / MOBI / AZW3
 - 支持多内容源、拓展仓库、代理、本地库、运行日志与全局繁转简
 - 配置与数据分离：`/app/config` 存模块化配置，`/app/data` 存数据库、缓存与密钥
 
@@ -60,7 +60,7 @@ GHCR 镜像为 `linux/amd64`。若拉取提示 `denied`，把 GitHub 包 `manco`
 
 - 哔咔需要账号密码登录
 - 禁漫天堂、包子漫画免登录可浏览，遇到校验时填写站点域名与 Cookie
-- Z-Library 使用邮箱密码登录，下载原始电子书文件
+- Z-Library 使用邮箱密码登录，下载原始电子书文件；插件书籍按 Kototoro 结构生成 CBZ
 - 拓展仓库支持 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库；Kototoro Parsers 的 JAR/DEX 插件由内置 JVM 运行时执行，APK 类型仅登记清单
 - 网络受限时在「系统设置 → 代理」配置 HTTP/HTTPS 代理
 
@@ -92,7 +92,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.4.4 && git push origin v0.4.4   # 构建并发布 :v0.4.4
+git tag v0.4.5 && git push origin v0.4.5   # 构建并发布 :v0.4.5
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -265,6 +266,68 @@ func (s *resumableSource) requestCounts() (int, int) {
 	return s.firstRequests, s.secondRequests
 }
 
+type archiveBookSource struct {
+	detail      model.Comic
+	archive     source.ChapterArchive
+	imageData   map[string][]byte
+	coverData   []byte
+	fallbackTxt string
+}
+
+func (s *archiveBookSource) Info() model.SourceInfo {
+	return model.SourceInfo{ID: "archive-book", Name: "插件书籍", Kind: source.KindBook, CanSearch: true, CanBrowse: true}
+}
+
+func (s *archiveBookSource) Search(context.Context, source.Account, string, int) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
+}
+
+func (s *archiveBookSource) Browse(context.Context, source.Account, model.BrowseOptions, int) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
+}
+
+func (s *archiveBookSource) Detail(context.Context, source.Account, string) (model.Comic, error) {
+	return s.detail, nil
+}
+
+func (s *archiveBookSource) Chapters(context.Context, source.Account, string) ([]model.Chapter, error) {
+	return nil, nil
+}
+
+func (s *archiveBookSource) Pages(context.Context, source.Account, string, model.Chapter) ([]model.Page, error) {
+	return nil, nil
+}
+
+func (s *archiveBookSource) ChapterArchive(context.Context, source.Account, string, model.Chapter) (source.ChapterArchive, error) {
+	return s.archive, nil
+}
+
+func (s *archiveBookSource) ChapterContent(context.Context, source.Account, string, model.Chapter) (string, error) {
+	return s.fallbackTxt, nil
+}
+
+func (s *archiveBookSource) PageImage(_ context.Context, _ source.Account, _ string, _ model.Chapter, page model.Page) ([]byte, string, error) {
+	data, ok := s.imageData[page.URL]
+	if !ok {
+		return nil, "", fmt.Errorf("unknown image %q", page.URL)
+	}
+	return data, "image/png", nil
+}
+
+func (s *archiveBookSource) CoverImage(context.Context, source.Account, model.Comic) ([]byte, string, error) {
+	return s.coverData, "image/png", nil
+}
+
+type ebookFileSource struct {
+	*archiveBookSource
+	data     []byte
+	filename string
+}
+
+func (s *ebookFileSource) ChapterFile(context.Context, source.Account, string, model.Chapter) ([]byte, string, error) {
+	return s.data, s.filename, nil
+}
+
 func pngImage(t *testing.T, shade uint8) []byte {
 	t.Helper()
 	canvas := image.NewRGBA(image.Rect(0, 0, 8, 8))
@@ -414,6 +477,156 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 	if !bytes.Contains(embedded, []byte("<Series>测试作品</Series>")) || !bytes.Contains(embedded, []byte("<PageCount>3</PageCount>")) {
 		t.Fatalf("embedded ComicInfo.xml content mismatch: %s", embedded)
+	}
+}
+
+func TestPluginBookChapterDownloadsAsKototoroCBZ(t *testing.T) {
+	firstImage := pngImage(t, 0x41)
+	secondImage := pngImage(t, 0x52)
+	item := &archiveBookSource{
+		detail: model.Comic{
+			SourceID:    "archive-book",
+			ID:          "book-1",
+			Title:       "插件小说",
+			Author:      "测试作者",
+			Description: "章节简介",
+			Cover:       "cover",
+			Tags:        []string{"小说", "测试"},
+		},
+		archive: source.ChapterArchive{
+			HTML: `<p>正文</p><img src="illustration-1"><img data-src="illustration-2">`,
+			Images: []model.Page{
+				{URL: "illustration-1"},
+				{URL: "illustration-2"},
+			},
+		},
+		imageData: map[string][]byte{
+			"illustration-1": firstImage,
+			"illustration-2": secondImage,
+		},
+		coverData:   pngImage(t, 0x63),
+		fallbackTxt: "这个回退文本不应落盘",
+	}
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(item)
+
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "archive-book",
+		ComicID:      "book-1",
+		ComicTitle:   "插件小说",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第1章",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download plugin book: %v", err)
+	}
+
+	archivePath := filepath.Join(downloadDir, "插件小说", "第1章.cbz")
+	archive := readZip(t, archivePath)
+	htmlName := "00000000_00010000.html"
+	firstImageName := "00000000_00010001.png"
+	secondImageName := "00000000_00010002.png"
+	assertEntries(t, archive, []string{htmlName, firstImageName, secondImageName, "index.json", "ComicInfo.xml"})
+	html := string(archive[htmlName])
+	if !strings.Contains(html, `src="`+firstImageName+`"`) || !strings.Contains(html, `src="`+secondImageName+`"`) {
+		t.Fatalf("chapter HTML was not rewritten to archive-local images: %s", html)
+	}
+	if !bytes.Equal(archive[firstImageName], firstImage) || !bytes.Equal(archive[secondImageName], secondImage) {
+		t.Fatal("chapter archive image bytes mismatch")
+	}
+
+	var index struct {
+		Source   string `json:"source"`
+		Chapters map[string]struct {
+			Entries string `json:"entries"`
+			Images  []struct {
+				Remote string `json:"remote"`
+				Local  string `json:"local"`
+			} `json:"images"`
+		} `json:"chapters"`
+	}
+	if err := json.Unmarshal(archive["index.json"], &index); err != nil {
+		t.Fatalf("decode index.json: %v", err)
+	}
+	chapter := index.Chapters["chapter-1"]
+	if index.Source != "archive-book" || chapter.Entries != `00000000_0001\d{4}` {
+		t.Fatalf("unexpected Kototoro index metadata: %s", archive["index.json"])
+	}
+	if len(chapter.Images) != 2 || chapter.Images[0].Remote != "illustration-1" || chapter.Images[0].Local != firstImageName {
+		t.Fatalf("index image mapping mismatch: %+v", chapter.Images)
+	}
+
+	comicInfo := string(archive["ComicInfo.xml"])
+	for _, value := range []string{"<Manga>No</Manga>", "<Genre>小说,测试,书籍</Genre>", "<PageCount>3</PageCount>"} {
+		if !strings.Contains(comicInfo, value) {
+			t.Fatalf("book ComicInfo.xml is missing %q: %s", value, comicInfo)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(downloadDir, "插件小说", "第1章.txt")); !os.IsNotExist(err) {
+		t.Fatalf("fallback text file should not exist: %v", err)
+	}
+	bookMetadata, err := os.ReadFile(filepath.Join(downloadDir, "插件小说", "book.json"))
+	if err != nil {
+		t.Fatalf("read book metadata: %v", err)
+	}
+	if !bytes.Contains(bookMetadata, []byte(`"type": "book"`)) {
+		t.Fatalf("unexpected book.json: %s", bookMetadata)
+	}
+}
+
+func TestBookFileContentSourceStillKeepsOriginalFormat(t *testing.T) {
+	item := &ebookFileSource{
+		archiveBookSource: &archiveBookSource{
+			detail: model.Comic{
+				SourceID: "archive-book",
+				ID:       "book-2",
+				Title:    "原格式书籍",
+			},
+			archive: source.ChapterArchive{
+				HTML: "<p>不应使用归档</p>",
+			},
+		},
+		data:     []byte("epub-data"),
+		filename: "book.epub",
+	}
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(item)
+
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "archive-book",
+		ComicID:      "book-2",
+		ComicTitle:   "原格式书籍",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第1章",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download ebook file: %v", err)
+	}
+
+	outputPath := filepath.Join(downloadDir, "原格式书籍", "book.epub")
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read original ebook: %v", err)
+	}
+	if string(data) != "epub-data" {
+		t.Fatalf("original ebook data = %q", data)
+	}
+	if archives := listCBZ(t, downloadDir); len(archives) != 0 {
+		t.Fatalf("original ebook was unexpectedly repackaged: %v", archives)
 	}
 }
 
