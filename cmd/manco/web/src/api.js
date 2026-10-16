@@ -142,6 +142,7 @@ export const api = {
     return `/api/local/file?${params.toString()}`
   },
   localCBZ: (path) => request(`/api/local/cbz?path=${encodeURIComponent(path)}`),
+  localEPUB: (path) => request(`/api/local/epub?path=${encodeURIComponent(path)}`),
   localMerge: (paths) => request('/api/local/merge', { method: 'POST', body: JSON.stringify({ paths }) }),
   localSimplify: (paths) => request('/api/local/simplify', { method: 'POST', body: JSON.stringify({ paths }) }),
   localDelete: (paths) => request('/api/local/delete', { method: 'POST', body: JSON.stringify({ paths }) }),
@@ -150,6 +151,12 @@ export const api = {
     const params = new URLSearchParams({ path, entry })
     if (download) params.set('download', '1')
     return `/api/local/cbz/file?${params.toString()}`
+  },
+  localEPUBFileUrl: (path, entry, download = false) => {
+    if (!path || !entry) return ''
+    const params = new URLSearchParams({ path, entry })
+    if (download) params.set('download', '1')
+    return `/api/local/epub/file?${params.toString()}`
   },
   settings: () => request('/api/settings'),
   saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),

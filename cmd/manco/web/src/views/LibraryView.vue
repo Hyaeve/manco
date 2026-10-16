@@ -85,7 +85,7 @@ function chapterOrder(chapters) {
     <HardDrive :size="16" />
     <span>本地目录：{{ downloadDir }}</span>
     <span class="spacer" />
-    <span class="muted small">共 {{ items.length }} 部作品 / {{ totalChapters }} 个 CBZ</span>
+    <span class="muted small">共 {{ items.length }} 部作品 / {{ totalChapters }} 个下载文件</span>
   </div>
 
   <div v-if="loading && !items.length" class="empty">
@@ -94,7 +94,7 @@ function chapterOrder(chapters) {
   </div>
   <div v-else-if="!items.length" class="card empty">
     <FolderOpen :size="26" />
-    <p>资料库还是空的。完成一话下载后，对应的 CBZ 会显示在这里。</p>
+    <p>资料库还是空的。完成下载后，对应的 CBZ 或 EPUB 会显示在这里。</p>
   </div>
   <div v-else-if="!visible.length" class="card empty">
     <Search :size="26" />
@@ -115,7 +115,7 @@ function chapterOrder(chapters) {
         <span class="library-info">
           <span class="comic-title">{{ item.title }}</span>
           <span class="muted small">
-            {{ item.sourceId }} · {{ item.chapters.length }} 话 · 每话一个 CBZ
+            {{ item.sourceId }} · {{ item.chapters.length }} 话 · 漫画 CBZ / 书籍 EPUB
           </span>
         </span>
         <component :is="isOpen(item) ? ChevronDown : ChevronRight" :size="18" />

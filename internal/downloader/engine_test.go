@@ -236,6 +236,23 @@ func (s *unsupportedMergedBookSource) Info() model.SourceInfo {
 	return info
 }
 
+type textBookSource struct {
+	*staticSource
+	text string
+}
+
+func (s *textBookSource) Info() model.SourceInfo {
+	info := s.staticSource.Info()
+	info.ID = "text-book"
+	info.Name = "文本书籍源"
+	info.Kind = source.KindBook
+	return info
+}
+
+func (s *textBookSource) ChapterContent(context.Context, source.Account, string, model.Chapter) (string, error) {
+	return s.text, nil
+}
+
 func newResumableSource(base *staticSource, firstPage, secondPage []byte) *resumableSource {
 	source := &resumableSource{
 		staticSource: base,
@@ -668,7 +685,7 @@ func TestMergedComicDownloadWritesOneOrderedCBZ(t *testing.T) {
 	}
 }
 
-func TestMergedBookDownloadWritesHTMLImagesAndIndexInOneCBZ(t *testing.T) {
+func TestMergedBookDownloadWritesOneEPUB(t *testing.T) {
 	firstImage := pngImage(t, 0x61)
 	secondImage := pngImage(t, 0x72)
 	item := &archiveBookSource{
@@ -724,35 +741,44 @@ func TestMergedBookDownloadWritesHTMLImagesAndIndexInOneCBZ(t *testing.T) {
 		t.Fatalf("download merged book: %v", err)
 	}
 
-	if archives := listCBZ(t, downloadDir); len(archives) != 1 {
-		t.Fatalf("merged book produced %d CBZ files, want 1 (%v)", len(archives), archives)
+	if books := listEPUB(t, downloadDir); len(books) != 1 {
+		t.Fatalf("merged book produced %d EPUB files, want 1 (%v)", len(books), books)
 	}
-	archivePath := filepath.Join(downloadDir, "合并小说", "第1章 - 第2章.cbz")
+	if archives := listCBZ(t, downloadDir); len(archives) != 0 {
+		t.Fatalf("merged book unexpectedly produced CBZ files: %v", archives)
+	}
+	archivePath := filepath.Join(downloadDir, "合并小说", "第1章 - 第2章.epub")
 	archive := readZip(t, archivePath)
 	assertEntries(t, archive, []string{
-		"001-0001.html",
-		"001-0001.png",
-		"002-0001.html",
-		"002-0001.png",
-		"index.json",
-		"ComicInfo.xml",
+		"mimetype",
+		"META-INF/container.xml",
+		"OEBPS/toc.ncx",
+		"OEBPS/content.opf",
+		"OEBPS/nav.xhtml",
+		"OEBPS/style.css",
+		"OEBPS/chapter-0001.xhtml",
+		"OEBPS/chapter-0002.xhtml",
+		"OEBPS/images/001-0001.png",
+		"OEBPS/images/002-0001.png",
 	})
-	if !bytes.Equal(archive["001-0001.png"], firstImage) || !bytes.Equal(archive["002-0001.png"], secondImage) {
+	if string(archive["mimetype"]) != "application/epub+zip" {
+		t.Fatalf("unexpected EPUB mimetype: %q", archive["mimetype"])
+	}
+	if !bytes.Equal(archive["OEBPS/images/001-0001.png"], firstImage) || !bytes.Equal(archive["OEBPS/images/002-0001.png"], secondImage) {
 		t.Fatal("merged book image bytes mismatch")
 	}
-	if !strings.Contains(string(archive["001-0001.html"]), `src="001-0001.png"`) ||
-		!strings.Contains(string(archive["002-0001.html"]), `src="002-0001.png"`) {
-		t.Fatal("merged book HTML did not reference archive-local images")
+	if !strings.Contains(string(archive["OEBPS/chapter-0001.xhtml"]), `src="images/001-0001.png"`) ||
+		!strings.Contains(string(archive["OEBPS/chapter-0002.xhtml"]), `src="images/002-0001.png"`) {
+		t.Fatal("merged book XHTML did not reference EPUB-local images")
 	}
-	var index chapterArchiveIndex
-	if err := json.Unmarshal(archive["index.json"], &index); err != nil {
-		t.Fatalf("decode merged book index: %v", err)
+	packageDocument := string(archive["OEBPS/content.opf"])
+	for _, value := range []string{"<dc:title>合并小说</dc:title>", `<itemref idref="chapter-1"/>`, `<itemref idref="chapter-2"/>`} {
+		if !strings.Contains(packageDocument, value) {
+			t.Fatalf("EPUB package is missing %q: %s", value, packageDocument)
+		}
 	}
-	if len(index.Chapters) != 2 {
-		t.Fatalf("merged book index has %d chapters, want 2: %s", len(index.Chapters), archive["index.json"])
-	}
-	if !bytes.Contains(archive["ComicInfo.xml"], []byte("<PageCount>4</PageCount>")) {
-		t.Fatalf("merged book ComicInfo.xml has wrong page count: %s", archive["ComicInfo.xml"])
+	if !firstZipEntryIsMimetype(t, archivePath) {
+		t.Fatal("EPUB mimetype must be the first ZIP entry and stored without compression")
 	}
 }
 
@@ -779,7 +805,7 @@ func TestMergedBookDownloadRejectsSourceWithoutChapterArchive(t *testing.T) {
 	}
 }
 
-func TestPluginBookChapterDownloadsAsKototoroCBZ(t *testing.T) {
+func TestPluginBookChapterDownloadsAsEPUB(t *testing.T) {
 	firstImage := pngImage(t, 0x41)
 	secondImage := pngImage(t, 0x52)
 	item := &archiveBookSource{
@@ -827,46 +853,28 @@ func TestPluginBookChapterDownloadsAsKototoroCBZ(t *testing.T) {
 		t.Fatalf("download plugin book: %v", err)
 	}
 
-	archivePath := filepath.Join(downloadDir, "插件小说", "第1章.cbz")
+	archivePath := filepath.Join(downloadDir, "插件小说", "第1章.epub")
 	archive := readZip(t, archivePath)
-	htmlName := "00000000_00010000.html"
-	firstImageName := "00000000_00010001.png"
-	secondImageName := "00000000_00010002.png"
-	assertEntries(t, archive, []string{htmlName, firstImageName, secondImageName, "index.json", "ComicInfo.xml"})
+	htmlName := "OEBPS/chapter-0001.xhtml"
+	firstImageName := "OEBPS/images/00000000_00010001.png"
+	secondImageName := "OEBPS/images/00000000_00010002.png"
+	assertEntries(t, archive, []string{
+		"mimetype",
+		"META-INF/container.xml",
+		"OEBPS/toc.ncx",
+		"OEBPS/content.opf",
+		"OEBPS/nav.xhtml",
+		"OEBPS/style.css",
+		htmlName,
+		firstImageName,
+		secondImageName,
+	})
 	html := string(archive[htmlName])
-	if !strings.Contains(html, `src="`+firstImageName+`"`) || !strings.Contains(html, `src="`+secondImageName+`"`) {
-		t.Fatalf("chapter HTML was not rewritten to archive-local images: %s", html)
+	if !strings.Contains(html, `src="images/00000000_00010001.png"`) || !strings.Contains(html, `src="images/00000000_00010002.png"`) {
+		t.Fatalf("chapter XHTML was not rewritten to EPUB-local images: %s", html)
 	}
 	if !bytes.Equal(archive[firstImageName], firstImage) || !bytes.Equal(archive[secondImageName], secondImage) {
-		t.Fatal("chapter archive image bytes mismatch")
-	}
-
-	var index struct {
-		Source   string `json:"source"`
-		Chapters map[string]struct {
-			Entries string `json:"entries"`
-			Images  []struct {
-				Remote string `json:"remote"`
-				Local  string `json:"local"`
-			} `json:"images"`
-		} `json:"chapters"`
-	}
-	if err := json.Unmarshal(archive["index.json"], &index); err != nil {
-		t.Fatalf("decode index.json: %v", err)
-	}
-	chapter := index.Chapters["chapter-1"]
-	if index.Source != "archive-book" || chapter.Entries != `00000000_0001\d{4}` {
-		t.Fatalf("unexpected Kototoro index metadata: %s", archive["index.json"])
-	}
-	if len(chapter.Images) != 2 || chapter.Images[0].Remote != "illustration-1" || chapter.Images[0].Local != firstImageName {
-		t.Fatalf("index image mapping mismatch: %+v", chapter.Images)
-	}
-
-	comicInfo := string(archive["ComicInfo.xml"])
-	for _, value := range []string{"<Manga>No</Manga>", "<Genre>小说,测试,书籍</Genre>", "<PageCount>3</PageCount>"} {
-		if !strings.Contains(comicInfo, value) {
-			t.Fatalf("book ComicInfo.xml is missing %q: %s", value, comicInfo)
-		}
+		t.Fatal("chapter EPUB image bytes mismatch")
 	}
 	if _, err := os.Stat(filepath.Join(downloadDir, "插件小说", "第1章.txt")); !os.IsNotExist(err) {
 		t.Fatalf("fallback text file should not exist: %v", err)
@@ -886,7 +894,7 @@ func TestPluginBookChapterDownloadsAsKototoroCBZ(t *testing.T) {
 	}
 }
 
-func TestBookFileContentSourceStillKeepsOriginalFormat(t *testing.T) {
+func TestBookFileContentSourceKeepsNativeEPUB(t *testing.T) {
 	item := &ebookFileSource{
 		archiveBookSource: &archiveBookSource{
 			detail: model.Comic{
@@ -932,6 +940,137 @@ func TestBookFileContentSourceStillKeepsOriginalFormat(t *testing.T) {
 	}
 	if archives := listCBZ(t, downloadDir); len(archives) != 0 {
 		t.Fatalf("original ebook was unexpectedly repackaged: %v", archives)
+	}
+}
+
+func TestBookFileContentSourceRejectsNonEPUB(t *testing.T) {
+	item := &ebookFileSource{
+		archiveBookSource: &archiveBookSource{
+			detail: model.Comic{
+				SourceID: "archive-book",
+				ID:       "book-pdf",
+				Title:    "PDF 书籍",
+			},
+		},
+		data:     []byte("%PDF-1.7"),
+		filename: "book.pdf",
+	}
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(item)
+
+	downloadDir := t.TempDir()
+	store := &memoryJobs{}
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "archive-book",
+		ComicID:      "book-pdf",
+		ComicTitle:   "PDF 书籍",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "书籍",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err == nil || !strings.Contains(err.Error(), "仅支持 EPUB") {
+		t.Fatalf("non-EPUB book error = %v", err)
+	}
+	if files := listEPUB(t, downloadDir); len(files) != 0 {
+		t.Fatalf("non-EPUB source produced EPUB files: %v", files)
+	}
+}
+
+func TestPlainTextBookDownloadsAsEPUB(t *testing.T) {
+	item := &textBookSource{
+		staticSource: &staticSource{detail: model.Comic{
+			SourceID: "text-book",
+			ID:       "text-1",
+			Title:    "文本小说",
+			Author:   "测试作者",
+		}},
+		text: "第一段正文\n\n第二段正文",
+	}
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(item)
+
+	downloadDir := t.TempDir()
+	store := &memoryJobs{}
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "text-book",
+		ComicID:      "text-1",
+		ComicTitle:   "文本小说",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第1章",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download text book: %v", err)
+	}
+	outputPath := filepath.Join(downloadDir, "文本小说", "第1章.epub")
+	archive := readZip(t, outputPath)
+	assertEntries(t, archive, []string{
+		"mimetype",
+		"META-INF/container.xml",
+		"OEBPS/toc.ncx",
+		"OEBPS/content.opf",
+		"OEBPS/nav.xhtml",
+		"OEBPS/style.css",
+		"OEBPS/chapter-0001.xhtml",
+	})
+	if !strings.Contains(string(archive["OEBPS/chapter-0001.xhtml"]), "第一段正文") ||
+		!strings.Contains(string(archive["OEBPS/chapter-0001.xhtml"]), "第二段正文") {
+		t.Fatalf("plain-text EPUB is missing chapter content: %s", archive["OEBPS/chapter-0001.xhtml"])
+	}
+	if files := listCBZ(t, downloadDir); len(files) != 0 {
+		t.Fatalf("plain-text book unexpectedly produced CBZ files: %v", files)
+	}
+}
+
+func TestBookFileContentSourceWrapsPlainTextAsEPUB(t *testing.T) {
+	item := &ebookFileSource{
+		archiveBookSource: &archiveBookSource{
+			detail: model.Comic{
+				SourceID: "archive-book",
+				ID:       "book-txt",
+				Title:    "文本文件书籍",
+				Author:   "测试作者",
+			},
+		},
+		data:     []byte("第一行\n第二行"),
+		filename: "book.txt",
+	}
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(item)
+
+	downloadDir := t.TempDir()
+	store := &memoryJobs{}
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "archive-book",
+		ComicID:      "book-txt",
+		ComicTitle:   "文本文件书籍",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第1章",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download text file book: %v", err)
+	}
+	outputPath := filepath.Join(downloadDir, "文本文件书籍", "第1章.epub")
+	archive := readZip(t, outputPath)
+	if !strings.Contains(string(archive["OEBPS/chapter-0001.xhtml"]), "第一行") ||
+		!strings.Contains(string(archive["OEBPS/chapter-0001.xhtml"]), "第二行") {
+		t.Fatalf("text-file EPUB is missing chapter content: %s", archive["OEBPS/chapter-0001.xhtml"])
+	}
+	if _, err := os.Stat(filepath.Join(downloadDir, "文本文件书籍", "book.txt")); !os.IsNotExist(err) {
+		t.Fatalf("plain text source should not be stored as .txt: %v", err)
 	}
 }
 
@@ -1345,6 +1484,50 @@ func listCBZ(t *testing.T, root string) []string {
 		t.Fatalf("walk %s: %v", root, err)
 	}
 	return found
+}
+
+func listEPUB(t *testing.T, root string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.EqualFold(filepath.Ext(path), ".epub") {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return found
+}
+
+func firstZipEntryIsMimetype(t *testing.T, path string) bool {
+	t.Helper()
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer reader.Close()
+	if len(reader.File) == 0 {
+		return false
+	}
+	first := reader.File[0]
+	if first.Name != "mimetype" || first.Method != zip.Store {
+		return false
+	}
+	handle, err := first.Open()
+	if err != nil {
+		t.Fatalf("open mimetype: %v", err)
+	}
+	defer handle.Close()
+	data, err := io.ReadAll(handle)
+	if err != nil {
+		t.Fatalf("read mimetype: %v", err)
+	}
+	return string(data) == "application/epub+zip"
 }
 
 func readZip(t *testing.T, path string) map[string][]byte {

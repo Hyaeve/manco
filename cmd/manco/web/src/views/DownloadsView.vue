@@ -365,8 +365,8 @@ async function retrySelected() {
 
 async function remove(item, removeFile) {
   const hint = removeFile
-    ? `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录并删除已下载的 CBZ 文件吗？`
-    : `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录吗？CBZ 文件会保留。`
+    ? `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录并删除已下载文件吗？`
+    : `确定删除「${item.comicTitle} ${item.chapterTitle}」的任务记录吗？下载文件会保留。`
   const confirmed = await askConfirm({
     title: removeFile ? '删除任务和文件' : '删除任务记录',
     message: hint,
@@ -437,7 +437,7 @@ async function remove(item, removeFile) {
   </div>
   <div v-else-if="!items.length" class="card empty">
     <FileArchive :size="26" />
-    <p>还没有下载任务。每个章节会单独打包成一个 CBZ 文件。</p>
+    <p>还没有下载任务。漫画章节会打包为 CBZ，书籍会生成或保留 EPUB。</p>
     <ContentLink class="btn small" to="/discover">
       <Compass :size="15" />
       浏览漫画源

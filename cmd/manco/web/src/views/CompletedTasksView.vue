@@ -162,7 +162,7 @@ function handleGroupCoverError(group) {
 async function remove(item) {
   const confirmed = await askConfirm({
     title: '删除已完成记录',
-    message: `确定删除「${item.comicTitle} ${item.chapterTitle}」的已完成记录吗？CBZ 文件会保留。`,
+    message: `确定删除「${item.comicTitle} ${item.chapterTitle}」的已完成记录吗？下载文件会保留。`,
     confirmText: '删除',
     danger: true,
   })

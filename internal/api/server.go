@@ -11,6 +11,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	htmlpkg "html"
 	"io"
 	"io/fs"
 	"log"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	nethtml "golang.org/x/net/html"
 
 	"github.com/hyaeve/manco/internal/config"
 	"github.com/hyaeve/manco/internal/configstore"
@@ -53,7 +55,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.2"
+	appVersion    = "v0.5.3"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -324,6 +326,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/local/file", s.requireAuth(s.handleLocalFile))
 	mux.HandleFunc("GET /api/local/cbz", s.requireAuth(s.handleLocalCBZ))
 	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
+	mux.HandleFunc("GET /api/local/epub", s.requireAuth(s.handleLocalEPUB))
+	mux.HandleFunc("GET /api/local/epub/file", s.requireAuth(s.handleLocalEPUBFile))
 	mux.HandleFunc("POST /api/local/merge", s.requireAuth(s.handleLocalMerge))
 	mux.HandleFunc("POST /api/local/simplify", s.requireAuth(s.handleLocalSimplify))
 	mux.HandleFunc("POST /api/local/delete", s.requireAuth(s.handleLocalDelete))
@@ -4286,6 +4290,429 @@ func (s *Server) handleLocalCBZFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "CBZ 条目不存在")
+}
+
+type epubReaderChapter struct {
+	Title      string `json:"title"`
+	HTML       string `json:"html,omitempty"`
+	Href       string `json:"href,omitempty"`
+	MediaType  string `json:"mediaType,omitempty"`
+	Properties string `json:"properties,omitempty"`
+}
+
+// handleLocalEPUB lists the reading order of a downloaded EPUB so the local
+// library can render it without extracting the archive to disk.
+func (s *Server) handleLocalEPUB(w http.ResponseWriter, r *http.Request) {
+	target, err := s.resolveLocalTarget(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	archive, err := zip.OpenReader(target)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取 EPUB 文件: "+err.Error())
+		return
+	}
+	defer archive.Close()
+
+	packagePath, packageDocument, err := readEPUBPackageDocument(archive)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法解析 EPUB 目录结构: "+err.Error())
+		return
+	}
+	packageDir := path.Dir(packagePath)
+	var packageXML struct {
+		Manifest struct {
+			Items []struct {
+				ID         string `xml:"id,attr"`
+				Href       string `xml:"href,attr"`
+				MediaType  string `xml:"media-type,attr"`
+				Properties string `xml:"properties,attr"`
+			} `xml:"item"`
+		} `xml:"manifest"`
+		Spine struct {
+			Items []struct {
+				IDRef string `xml:"idref,attr"`
+			} `xml:"itemref"`
+		} `xml:"spine"`
+	}
+	if err := xml.Unmarshal(packageDocument, &packageXML); err != nil {
+		writeError(w, http.StatusBadGateway, "无法解析 EPUB 包文档: "+err.Error())
+		return
+	}
+	manifest := make(map[string]struct {
+		href       string
+		mediaType  string
+		properties string
+	}, len(packageXML.Manifest.Items))
+	for _, item := range packageXML.Manifest.Items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		manifest[id] = struct {
+			href       string
+			mediaType  string
+			properties string
+		}{href: item.Href, mediaType: item.MediaType, properties: item.Properties}
+	}
+
+	chapters := make([]epubReaderChapter, 0, len(packageXML.Spine.Items))
+	for _, reference := range packageXML.Spine.Items {
+		id := strings.TrimSpace(reference.IDRef)
+		item, ok := manifest[id]
+		if !ok || strings.TrimSpace(item.href) == "" {
+			continue
+		}
+		entryName, err := normalizeEPUBEntryPath(packageDir, item.href)
+		if err != nil {
+			continue
+		}
+		mediaType := strings.TrimSpace(item.mediaType)
+		if mediaType == "" {
+			mediaType = "application/xhtml+xml"
+		}
+		chapter := epubReaderChapter{
+			Title:      id,
+			Href:       entryName,
+			MediaType:  mediaType,
+			Properties: item.properties,
+		}
+		if !strings.Contains(mediaType, "xhtml") && !strings.Contains(mediaType, "html") {
+			chapters = append(chapters, chapter)
+			continue
+		}
+		raw, err := readEPUBEntry(archive, entryName)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "无法读取 EPUB 章节: "+err.Error())
+			return
+		}
+		html, title := sanitizeEPUBChapterHTML(raw)
+		if strings.TrimSpace(title) != "" {
+			chapter.Title = title
+		}
+		chapter.HTML = html
+		chapters = append(chapters, chapter)
+	}
+	if len(chapters) == 0 {
+		writeError(w, http.StatusBadGateway, "EPUB 没有可阅读章节")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": chapters})
+}
+
+// handleLocalEPUBFile streams one asset from an EPUB. Image URLs inside the
+// chapter HTML are rewritten to this endpoint before the reader receives them.
+func (s *Server) handleLocalEPUBFile(w http.ResponseWriter, r *http.Request) {
+	target, err := s.resolveLocalTarget(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entryName := strings.TrimSpace(r.URL.Query().Get("entry"))
+	if entryName == "" || strings.Contains(entryName, "..") {
+		writeError(w, http.StatusBadRequest, "无效的 EPUB 条目")
+		return
+	}
+	archive, err := zip.OpenReader(target)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取 EPUB 文件: "+err.Error())
+		return
+	}
+	defer archive.Close()
+	for _, file := range archive.File {
+		if file.Name != entryName || file.FileInfo().IsDir() {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		defer reader.Close()
+		contentType := strings.TrimSpace(mime.TypeByExtension(strings.ToLower(path.Ext(entryName))))
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Header().Set("Content-Length", strconv.FormatUint(file.UncompressedSize64, 10))
+		if r.URL.Query().Get("download") == "1" {
+			w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(entryName)+"\"")
+		}
+		_, _ = io.Copy(w, io.LimitReader(reader, 128<<20))
+		return
+	}
+	writeError(w, http.StatusNotFound, "EPUB 条目不存在")
+}
+
+func readEPUBPackageDocument(archive *zip.ReadCloser) (string, []byte, error) {
+	container, err := readEPUBEntry(archive, "META-INF/container.xml")
+	if err != nil {
+		return "", nil, err
+	}
+	var payload struct {
+		Rootfiles []struct {
+			FullPath string `xml:"full-path,attr"`
+		} `xml:"rootfiles>rootfile"`
+	}
+	if err := xml.Unmarshal(container, &payload); err != nil {
+		return "", nil, err
+	}
+	packagePath := ""
+	for _, rootfile := range payload.Rootfiles {
+		if value := strings.TrimSpace(rootfile.FullPath); value != "" {
+			packagePath = value
+			break
+		}
+	}
+	if packagePath == "" {
+		return "", nil, errors.New("container.xml 缺少 rootfile")
+	}
+	packagePath = strings.TrimPrefix(path.Clean(strings.ReplaceAll(packagePath, "\\", "/")), "/")
+	document, err := readEPUBEntry(archive, packagePath)
+	if err != nil {
+		return "", nil, err
+	}
+	return packagePath, document, nil
+}
+
+func readEPUBEntry(archive *zip.ReadCloser, name string) ([]byte, error) {
+	name = strings.TrimSpace(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" || strings.Contains(name, "..") {
+		return nil, errors.New("无效的 EPUB 条目")
+	}
+	for _, file := range archive.File {
+		if file.Name != name || file.FileInfo().IsDir() {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		return io.ReadAll(io.LimitReader(reader, 64<<20))
+	}
+	return nil, fmt.Errorf("EPUB 条目不存在: %s", name)
+}
+
+func normalizeEPUBEntryPath(base, reference string) (string, error) {
+	reference = strings.TrimSpace(strings.ReplaceAll(reference, "\\", "/"))
+	if reference == "" || strings.ContainsAny(reference, "\x00") {
+		return "", errors.New("无效的 EPUB 路径")
+	}
+	lower := strings.ToLower(reference)
+	if strings.HasPrefix(lower, "http:") || strings.HasPrefix(lower, "https:") || strings.HasPrefix(lower, "data:") || strings.HasPrefix(reference, "//") {
+		return "", errors.New("不支持外部 EPUB 资源")
+	}
+	if index := strings.IndexAny(reference, "?#"); index >= 0 {
+		reference = reference[:index]
+	}
+	if reference == "" {
+		return "", errors.New("无效的 EPUB 路径")
+	}
+	if strings.HasPrefix(reference, "/") {
+		return path.Clean(strings.TrimPrefix(reference, "/")), nil
+	}
+	joined := path.Join(base, reference)
+	cleaned := path.Clean(joined)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", errors.New("EPUB 路径越界")
+	}
+	return cleaned, nil
+}
+
+func sanitizeEPUBChapterHTML(raw []byte) (string, string) {
+	document, err := nethtml.Parse(strings.NewReader(string(raw)))
+	if err != nil {
+		return string(raw), ""
+	}
+	title := firstEPUBHeading(document)
+	body := findHTMLNode(document, "body")
+	if body == nil {
+		body = document
+	}
+	for _, node := range epubHTMLNodes(body) {
+		if node.Type != nethtml.ElementNode {
+			continue
+		}
+		tag := strings.ToLower(node.Data)
+		if tag == "script" || tag == "iframe" || tag == "object" || tag == "embed" || tag == "form" || tag == "head" || tag == "meta" || tag == "link" {
+			node.Type = nethtml.CommentNode
+			node.Data = ""
+			node.Attr = nil
+			node.FirstChild = nil
+			node.LastChild = nil
+			continue
+		}
+		attributes := node.Attr[:0]
+		for _, attribute := range node.Attr {
+			key := strings.ToLower(strings.TrimSpace(attribute.Key))
+			if key == "" || strings.HasPrefix(key, "on") {
+				continue
+			}
+			switch key {
+			case "style":
+				continue
+			case "src", "href", "xlink:href":
+				rewritten := rewriteEPUBHTMLReference(tag, key, attribute.Val)
+				if rewritten == "" {
+					continue
+				}
+				attribute.Val = rewritten
+			}
+			attributes = append(attributes, attribute)
+		}
+		node.Attr = attributes
+	}
+	var output strings.Builder
+	if err := renderEPUBXHTMLNode(&output, body); err != nil {
+		return string(raw), title
+	}
+	return output.String(), title
+}
+
+func rewriteEPUBHTMLReference(tag, key, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "javascript:") || strings.HasPrefix(lower, "vbscript:") || strings.HasPrefix(lower, "data:") {
+		return ""
+	}
+	if strings.HasPrefix(lower, "http:") || strings.HasPrefix(lower, "https:") || strings.HasPrefix(lower, "mailto:") || strings.HasPrefix(value, "#") || strings.HasPrefix(value, "//") {
+		return value
+	}
+	if key == "href" && tag != "image" && tag != "link" {
+		// Chapter-to-chapter links cannot be resolved inside the reader modal;
+		// keep them as plain text rather than exposing raw EPUB entries.
+		return ""
+	}
+	name := value
+	if index := strings.IndexAny(name, "#?"); index >= 0 {
+		name = name[:index]
+	}
+	name = strings.TrimPrefix(strings.ReplaceAll(name, "\\", "/"), "/")
+	if name == "" || strings.Contains(name, "..") {
+		return ""
+	}
+	return "/api/local/epub/file?entry=" + url.QueryEscape(name)
+}
+
+func walkEPUBHTML(node *nethtml.Node, visit func(*nethtml.Node) error) error {
+	if err := visit(node); err != nil {
+		return err
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if err := walkEPUBHTML(child, visit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func epubHTMLNodes(root *nethtml.Node) []*nethtml.Node {
+	nodes := make([]*nethtml.Node, 0, 32)
+	_ = walkEPUBHTML(root, func(node *nethtml.Node) error {
+		nodes = append(nodes, node)
+		return nil
+	})
+	return nodes
+}
+
+func findHTMLNode(node *nethtml.Node, name string) *nethtml.Node {
+	if node.Type == nethtml.ElementNode && strings.EqualFold(node.Data, name) {
+		return node
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if found := findHTMLNode(child, name); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func renderEPUBXHTMLNode(output *strings.Builder, node *nethtml.Node) error {
+	switch node.Type {
+	case nethtml.TextNode:
+		output.WriteString(htmlpkg.EscapeString(node.Data))
+		return nil
+	case nethtml.ElementNode:
+		tag := strings.ToLower(node.Data)
+		if tag == "script" || tag == "style" || tag == "head" || tag == "html" || tag == "body" {
+			for child := node.FirstChild; child != nil; child = child.NextSibling {
+				if err := renderEPUBXHTMLNode(output, child); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		output.WriteByte('<')
+		output.WriteString(tag)
+		for _, attribute := range node.Attr {
+			key := strings.TrimSpace(attribute.Key)
+			if key == "" || strings.HasPrefix(strings.ToLower(key), "on") {
+				continue
+			}
+			output.WriteByte(' ')
+			output.WriteString(key)
+			output.WriteString(`="`)
+			output.WriteString(htmlpkg.EscapeString(attribute.Val))
+			output.WriteByte('"')
+		}
+		if isEPUBXHTMLVoidElement(tag) {
+			output.WriteString("/>")
+			return nil
+		}
+		output.WriteByte('>')
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			if err := renderEPUBXHTMLNode(output, child); err != nil {
+				return err
+			}
+		}
+		output.WriteString("</")
+		output.WriteString(tag)
+		output.WriteByte('>')
+		return nil
+	default:
+		return nil
+	}
+}
+
+func isEPUBXHTMLVoidElement(tag string) bool {
+	switch tag {
+	case "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstEPUBHeading(document *nethtml.Node) string {
+	var title string
+	_ = walkEPUBHTML(document, func(node *nethtml.Node) error {
+		if node.Type != nethtml.ElementNode || title != "" {
+			return nil
+		}
+		switch strings.ToLower(node.Data) {
+		case "h1", "h2", "title":
+			title = strings.Join(strings.Fields(epubNodeText(node)), " ")
+		}
+		return nil
+	})
+	return title
+}
+
+func epubNodeText(node *nethtml.Node) string {
+	var output strings.Builder
+	_ = walkEPUBHTML(node, func(current *nethtml.Node) error {
+		if current.Type == nethtml.TextNode {
+			output.WriteString(current.Data)
+		}
+		return nil
+	})
+	return output.String()
 }
 
 func (s *Server) handleLocalFile(w http.ResponseWriter, r *http.Request) {

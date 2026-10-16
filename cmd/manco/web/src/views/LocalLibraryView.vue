@@ -129,6 +129,12 @@ const heroStyle = computed(() => ({
 const readerTitle = computed(() => reader.value?.file?.name || '')
 const readerImages = computed(() => reader.value?.images || [])
 const readerText = computed(() => reader.value?.text || '')
+const readerEpubChapters = computed(() =>
+  (reader.value?.epubChapters || []).map((chapter) => ({
+    ...chapter,
+    html: rewriteEpubAssetUrls(chapter.html),
+  })),
+)
 const selectedItems = computed(() => items.value.filter((item) => selectedPaths.value.includes(keyOf(item))))
 const selectedCount = computed(() => selectedItems.value.length)
 const selectedFileCount = computed(() =>
@@ -427,12 +433,15 @@ async function openReader(file) {
   try {
     if (file.ext === 'cbz' || file.ext === 'zip') {
       const payload = await api.localCBZ(file.path)
-      reader.value = { file, images: payload.items || [], text: '' }
+      reader.value = { file, images: payload.items || [], text: '', epubChapters: [] }
+    } else if (file.ext === 'epub') {
+      const payload = await api.localEPUB(file.path)
+      reader.value = { file, images: [], text: '', epubChapters: payload.items || [] }
     } else {
-      reader.value = { file, images: [], text: '' }
+      reader.value = { file, images: [], text: '', epubChapters: [] }
       const response = await fetch(api.localFileUrl(file.path))
       if (!response.ok) throw new Error(`无法读取文件（${response.status}）`)
-      reader.value = { file, images: [], text: await response.text() }
+      reader.value = { file, images: [], text: await response.text(), epubChapters: [] }
     }
   } catch (err) {
     reader.value = null
@@ -448,6 +457,20 @@ function closeReader() {
 
 function readerImageUrl(entry) {
   return api.localCBZFileUrl(reader.value.file.path, entry.name)
+}
+
+function rewriteEpubAssetUrls(html) {
+  if (!html) return ''
+  const path = reader.value?.file?.path || ''
+  return html.replace(/\/api\/local\/epub\/file\?entry=([^"')>\s]+)/g, (match, entry) => {
+    let decoded = entry
+    try {
+      decoded = decodeURIComponent(entry)
+    } catch {
+      decoded = entry
+    }
+    return api.localEPUBFileUrl(path, decoded)
+  })
 }
 
 function downloadReaderFile() {
@@ -635,7 +658,7 @@ function downloadReaderFile() {
     </div>
     <div v-else-if="!items.length" class="card empty">
       <FolderOpen :size="26" />
-      <p>本地仓库还是空的。下载完成后，漫画 CBZ 与书籍文本会显示在这里。</p>
+      <p>本地仓库还是空的。下载完成后，漫画 CBZ 与书籍 EPUB 会显示在这里。</p>
     </div>
     <div v-else-if="!filtered.length" class="card empty">
       <Search :size="26" />
@@ -694,6 +717,9 @@ function downloadReaderFile() {
           <p v-if="readerImages.length" class="muted small">
             共 {{ readerImages.length }} 张 · 条漫模式
           </p>
+          <p v-else-if="readerEpubChapters.length" class="muted small">
+            共 {{ readerEpubChapters.length }} 章
+          </p>
         </div>
         <div class="inline">
           <button class="btn secondary small" type="button" @click="downloadReaderFile">
@@ -720,6 +746,12 @@ function downloadReaderFile() {
             loading="lazy"
           />
         </div>
+        <article v-else-if="readerEpubChapters.length" class="epub-reader">
+          <section v-for="(chapter, index) in readerEpubChapters" :key="index" class="epub-chapter">
+            <!-- Content comes from the user's own downloaded EPUB and is sanitized by the backend. -->
+            <div class="epub-chapter-body" v-html="chapter.html"></div>
+          </section>
+        </article>
         <pre v-else class="reader-text">{{ readerText || '（空文件）' }}</pre>
       </template>
     </div>

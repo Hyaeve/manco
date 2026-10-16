@@ -935,28 +935,9 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 		}
 	}
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
-	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
-	entries := make([]pageEntry, 0, len(chapters)*8)
-	index := chapterArchiveIndex{
-		ID:          metadata.ID,
-		Title:       metadata.Title,
-		URL:         comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
-		PublicURL:   comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
-		Cover:       metadata.Cover,
-		Description: metadata.Description,
-		State:       metadata.Status,
-		Source:      job.SourceID,
-		Chapters:    map[string]chapterArchiveChapter{},
-	}
-	if strings.TrimSpace(metadata.Author) != "" {
-		index.Authors = []string{metadata.Author}
-	}
-	for _, tag := range metadata.Tags {
-		tag = strings.TrimSpace(tag)
-		if tag != "" {
-			index.Tags = append(index.Tags, chapterArchiveIndexTag{Key: tag, Title: tag})
-		}
-	}
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".epub"))
+	epubChapters := make([]epubChapter, 0, len(chapters))
+	epubImages := make([]pageEntry, 0, len(chapters)*8)
 
 	totalPages := 0
 	completed := 0
@@ -969,8 +950,6 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 			return fmt.Errorf("章节 %s 没有可用内容", chapter.Title)
 		}
 		imageNames := make(map[string]string, len(content.Images))
-		imageEntries := make([]pageEntry, 0, len(content.Images))
-		imageIndex := make([]chapterArchiveImage, 0, len(content.Images))
 		for pageIndex, page := range content.Images {
 			if strings.TrimSpace(page.URL) == "" {
 				continue
@@ -993,9 +972,9 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 			if err := writeFileAtomic(path, data); err != nil {
 				return err
 			}
-			imageEntries = append(imageEntries, pageEntry{name: name, path: path})
-			imageNames[page.URL] = name
-			imageIndex = append(imageIndex, chapterArchiveImage{Remote: page.URL, Local: name})
+			epubName := "images/" + name
+			epubImages = append(epubImages, pageEntry{name: epubName, path: path})
+			imageNames[page.URL] = epubName
 			totalPages++
 			completed++
 			_ = e.store.UpdateDownloadProgress(ctx, job.ID, completed)
@@ -1004,50 +983,17 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 		if rewriteErr != nil {
 			return fmt.Errorf("章节 %s 正文处理失败: %w", chapter.Title, rewriteErr)
 		}
-		htmlName := fmt.Sprintf("%03d-%04d.html", chapterIndex+1, 1)
-		htmlPath := filepath.Join(tempDir, htmlName)
-		if err := writeFileAtomic(htmlPath, []byte(html)); err != nil {
-			return err
-		}
-		entries = append(entries, pageEntry{name: htmlName, path: htmlPath})
-		entries = append(entries, imageEntries...)
+		epubChapters = append(epubChapters, epubChapter{Title: chapter.Title, HTML: html})
 		totalPages++
 		completed++
-		index.Chapters[chapter.ID] = chapterArchiveChapter{
-			Number:  chapter.Order,
-			Order:   chapterIndex + 1,
-			Name:    chapter.Title,
-			Source:  job.SourceID,
-			Entries: fmt.Sprintf("^%03d-", chapterIndex+1),
-			File:    filepath.Base(outputPath),
-			Images:  imageIndex,
-		}
 	}
 	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", totalPages, completed, "", ""); err != nil {
 		return err
 	}
-	indexPayload, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return err
-	}
-	indexPath := filepath.Join(tempDir, "index.json")
-	if err := writeFileAtomic(indexPath, indexPayload); err != nil {
-		return err
-	}
-	entries = append(entries, pageEntry{name: "index.json", path: indexPath})
-	infoPayload, err := marshalComicInfo(chapterComicInfo(item, metadata, chapterTitle, job.ChapterOrder, totalPages))
-	if err != nil {
-		return err
-	}
-	infoPath := filepath.Join(tempDir, "ComicInfo.xml")
-	if err := writeFileAtomic(infoPath, infoPayload); err != nil {
-		return err
-	}
-	entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
-	if err := writeZip(outputPath, entries); err != nil {
+	if err := writeEPUB(outputPath, metadata, comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID), epubChapters, epubImages); err != nil {
 		return err
 	}
 	e.metaMu.Lock()
@@ -1231,9 +1177,9 @@ func SimplifiedText(value string) string {
 	return convertToSimplifiedText(value)
 }
 
-// downloadBook persists one file per chapter for book sources (the original
-// ebook binary when the source implements FileContentSource, otherwise the
-// chapter text), plus the shared ComicInfo.xml metadata sidecar.
+// downloadBook persists one EPUB per chapter for book sources. Native EPUB
+// files are kept unchanged; plain text and archive-style chapters are packaged
+// into EPUB, alongside the shared metadata sidecars.
 func (e *Engine) downloadBook(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
 	chapter := model.Chapter{ID: job.ChapterID, ComicID: job.ComicID, Title: job.ChapterTitle, Order: job.ChapterOrder}
 	// Mark the job running before the (potentially large) ebook fetch so the
@@ -1255,6 +1201,12 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		}
 		if len(data) == 0 {
 			return errors.New("书籍文件为空")
+		}
+		if extension := bookFileExtension(filename); extension == ".txt" {
+			text = string(data)
+			isText = true
+			data = nil
+			filename = ""
 		}
 	} else if archiveSource, ok := item.(source.ChapterArchiveSource); ok {
 		return e.downloadBookArchive(ctx, item, account, job, chapter, archiveSource)
@@ -1301,16 +1253,33 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		return err
 	}
 	outputName := chapterTitle
-	extension := ".txt"
 	if !isText {
 		if base := bookFileBaseName(filename); base != "" {
 			outputName = base
 		}
-		extension = bookFileExtension(filename)
 	}
-	outputPath := filepath.Join(comicDir, ChapterFileName(outputName, job.ChapterOrder, job.ChapterMarker, extension))
-	if err := writeFileAtomic(outputPath, data); err != nil {
-		return err
+	outputPath := filepath.Join(comicDir, ChapterFileName(outputName, job.ChapterOrder, job.ChapterMarker, ".epub"))
+	if isText {
+		if err := writeEPUB(
+			outputPath,
+			metadata,
+			comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+			[]epubChapter{{Title: chapterTitle, HTML: plainTextToXHTML(text)}},
+			nil,
+		); err != nil {
+			return err
+		}
+	} else {
+		extension := bookFileExtension(filename)
+		if !strings.EqualFold(extension, ".epub") {
+			if extension == "" {
+				extension = "未知"
+			}
+			return fmt.Errorf("该书源返回了非 EPUB 格式（%s），当前书籍下载仅支持 EPUB", extension)
+		}
+		if err := writeFileAtomic(outputPath, data); err != nil {
+			return err
+		}
 	}
 	e.metaMu.Lock()
 	metaErr := writeBookMetadata(ctx, e.registry.ClientForAccount(account), account, item, metadata, comicDir)
@@ -1321,45 +1290,9 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	return e.store.UpdateDownloadJob(ctx, job.ID, "completed", 1, 1, outputPath, "")
 }
 
-type chapterArchiveIndex struct {
-	ID          string                           `json:"id"`
-	Title       string                           `json:"title"`
-	Authors     []string                         `json:"authors,omitempty"`
-	URL         string                           `json:"url,omitempty"`
-	PublicURL   string                           `json:"public_url,omitempty"`
-	Cover       string                           `json:"cover,omitempty"`
-	Description string                           `json:"description,omitempty"`
-	State       string                           `json:"state,omitempty"`
-	Source      string                           `json:"source"`
-	Tags        []chapterArchiveIndexTag         `json:"tags,omitempty"`
-	Chapters    map[string]chapterArchiveChapter `json:"chapters"`
-}
-
-type chapterArchiveIndexTag struct {
-	Key   string `json:"key"`
-	Title string `json:"title"`
-}
-
-type chapterArchiveChapter struct {
-	Number  float64               `json:"number,omitempty"`
-	Order   int                   `json:"order"`
-	Name    string                `json:"name,omitempty"`
-	URL     string                `json:"url,omitempty"`
-	Source  string                `json:"source"`
-	Entries string                `json:"entries"`
-	File    string                `json:"file,omitempty"`
-	Images  []chapterArchiveImage `json:"images,omitempty"`
-}
-
-type chapterArchiveImage struct {
-	Remote string `json:"remote"`
-	Local  string `json:"local"`
-}
-
-// downloadBookArchive packages a plugin book chapter as one Kototoro-style
-// CBZ. The chapter HTML is page 0 and every illustration follows as a source
-// page materialized by the plugin runtime, preserving parser headers and
-// descrambling behavior.
+// downloadBookArchive packages a plugin book chapter as one EPUB. HTML and
+// illustrations are materialized through the source runtime so parser headers
+// and descrambling behavior remain intact.
 func (e *Engine) downloadBookArchive(
 	ctx context.Context,
 	item source.Source,
@@ -1428,8 +1361,7 @@ func (e *Engine) downloadBookArchive(
 	if client == nil {
 		client = source.NewHTTPClient()
 	}
-	imageEntries := make([]pageEntry, 0, len(content.Images))
-	imageIndex := make([]chapterArchiveImage, 0, len(content.Images))
+	epubImages := make([]pageEntry, 0, len(content.Images))
 	imageNames := make(map[string]string, len(content.Images))
 	completedPages := 1
 	for index, page := range content.Images {
@@ -1454,9 +1386,9 @@ func (e *Engine) downloadBookArchive(
 		if err := writeFileAtomic(path, data); err != nil {
 			return err
 		}
-		imageEntries = append(imageEntries, pageEntry{name: name, path: path})
-		imageNames[page.URL] = name
-		imageIndex = append(imageIndex, chapterArchiveImage{Remote: page.URL, Local: name})
+		epubName := "images/" + name
+		epubImages = append(epubImages, pageEntry{name: epubName, path: path})
+		imageNames[page.URL] = epubName
 		completedPages++
 		if err := e.store.UpdateDownloadProgress(ctx, job.ID, completedPages); err != nil {
 			return err
@@ -1467,71 +1399,14 @@ func (e *Engine) downloadBookArchive(
 	if err != nil {
 		return fmt.Errorf("rewrite chapter HTML: %w", err)
 	}
-	htmlName := chapterArchivePageName(0, ".html")
-	htmlPath := filepath.Join(tempDir, htmlName)
-	if err := writeFileAtomic(htmlPath, []byte(html)); err != nil {
-		return err
-	}
-	entries := make([]pageEntry, 0, len(imageEntries)+3)
-	entries = append(entries, pageEntry{name: htmlName, path: htmlPath})
-	entries = append(entries, imageEntries...)
-
-	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
-	archiveIndex := chapterArchiveIndex{
-		ID:          metadata.ID,
-		Title:       metadata.Title,
-		URL:         comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
-		PublicURL:   comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
-		Cover:       metadata.Cover,
-		Description: metadata.Description,
-		State:       metadata.Status,
-		Source:      job.SourceID,
-		Chapters: map[string]chapterArchiveChapter{
-			job.ChapterID: {
-				Number:  job.ChapterOrder,
-				Order:   1,
-				Name:    chapterTitle,
-				Source:  job.SourceID,
-				Entries: fmt.Sprintf("00000000_%04d\\d{4}", 1),
-				File:    filepath.Base(outputPath),
-				Images:  imageIndex,
-			},
-		},
-	}
-	if strings.TrimSpace(metadata.Author) != "" {
-		archiveIndex.Authors = []string{metadata.Author}
-	}
-	for _, tag := range metadata.Tags {
-		tag = strings.TrimSpace(tag)
-		if tag == "" {
-			continue
-		}
-		archiveIndex.Tags = append(archiveIndex.Tags, chapterArchiveIndexTag{Key: tag, Title: tag})
-	}
-	indexPayload, err := json.MarshalIndent(archiveIndex, "", "  ")
-	if err != nil {
-		return err
-	}
-	indexPath := filepath.Join(tempDir, "index.json")
-	if err := writeFileAtomic(indexPath, indexPayload); err != nil {
-		return err
-	}
-	entries = append(entries, pageEntry{name: "index.json", path: indexPath})
-
-	infoPayload, err := marshalComicInfo(chapterComicInfo(item, metadata, chapterTitle, job.ChapterOrder, totalPages))
-	if err != nil {
-		return err
-	}
-	infoPath := filepath.Join(tempDir, "ComicInfo.xml")
-	if err := writeFileAtomic(infoPath, infoPayload); err != nil {
-		return err
-	}
-	entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
-
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		return err
-	}
-	if err := writeZip(outputPath, entries); err != nil {
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".epub"))
+	if err := writeEPUB(
+		outputPath,
+		metadata,
+		comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+		[]epubChapter{{Title: chapterTitle, HTML: html}},
+		epubImages,
+	); err != nil {
 		return err
 	}
 
@@ -2421,22 +2296,28 @@ func Descramble(data []byte, parts int) ([]byte, error) {
 		parts = height
 	}
 	output := image.NewRGBA(image.Rect(0, 0, width, height))
-	over := height % parts
+	blockSize := height / parts
+	remainder := height % parts
+	destinationY := 0
 	for index := 0; index < parts; index++ {
-		move := height / parts
-		ySource := height - move*(index+1) - over
-		yDest := move * index
-		if index == 0 {
-			move += over
-		} else {
-			yDest += over
+		move := blockSize
+		if index == parts-1 {
+			move += remainder
 		}
 		if move <= 0 {
 			continue
 		}
-		sourcePoint := image.Pt(bounds.Min.X, bounds.Min.Y+ySource)
-		destination := image.Rect(0, yDest, width, yDest+move)
+		// Blocks are reversed from bottom to top. The reference decoder keeps
+		// the remainder on the last (bottom) block, so every other source
+		// block is offset by it.
+		sourceY := 0
+		if index != parts-1 {
+			sourceY = (parts-index-1)*blockSize + remainder
+		}
+		sourcePoint := image.Pt(bounds.Min.X, bounds.Min.Y+sourceY)
+		destination := image.Rect(0, destinationY, width, destinationY+move)
 		draw.Draw(output, destination, decoded, sourcePoint, draw.Src)
+		destinationY += move
 	}
 	format := detectImageExtension(data)
 	buffer := &bytes.Buffer{}

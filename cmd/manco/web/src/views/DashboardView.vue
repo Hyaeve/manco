@@ -70,7 +70,7 @@ function statusClass(status) {
         <span class="stat-icon"><Library :size="18" /></span>
         <span>
           <span class="stat-value">{{ stats?.libraryItems ?? 0 }}</span>
-          <span class="stat-label">本地 CBZ</span>
+          <span class="stat-label">本地作品</span>
         </span>
       </div>
     </div>

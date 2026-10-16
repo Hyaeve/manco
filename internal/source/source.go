@@ -19,7 +19,7 @@ var ErrAuthRequired = errors.New("source account is not connected")
 const DefaultReloginDays = 7
 
 // Source kinds. Comic sources yield image chapters packed into CBZ files;
-// book sources yield per-chapter text files instead.
+// book sources yield EPUB files.
 const (
 	KindComic = "comic"
 	KindBook  = "book"
@@ -151,13 +151,13 @@ type LoginResult struct {
 }
 
 // ContentSource is implemented by book sources whose chapter is plain text.
-// The downloader persists one file per chapter. Sources that expose a real
+// The downloader packages each chapter as EPUB. Sources that expose a real
 // ebook file should implement FileContentSource, which takes precedence.
 type ContentSource interface {
 	ChapterContent(ctx context.Context, account Account, bookID string, chapter model.Chapter) (string, error)
 }
 
-// ChapterArchive is a rich book chapter payload intended for CBZ packaging.
+// ChapterArchive is a rich book chapter payload intended for EPUB packaging.
 // Plugin runtimes can return HTML plus source-specific image pages whose bytes
 // are materialized through ImageSource before the archive is written.
 type ChapterArchive struct {
@@ -166,8 +166,8 @@ type ChapterArchive struct {
 }
 
 // ChapterArchiveSource is implemented by book sources whose text and images
-// should be persisted as a Kototoro-compatible CBZ instead of a plain text
-// file. FileContentSource still takes precedence for original ebook binaries.
+// should be persisted as EPUB. FileContentSource still takes precedence for
+// native ebook binaries.
 type ChapterArchiveSource interface {
 	ChapterArchive(ctx context.Context, account Account, bookID string, chapter model.Chapter) (ChapterArchive, error)
 }

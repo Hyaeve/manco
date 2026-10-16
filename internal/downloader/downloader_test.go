@@ -6,6 +6,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
@@ -90,6 +91,61 @@ func TestDescrambleRotatesStrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	restored, err := Descramble(scrambled.Bytes(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeImage(restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			wantR, _, _, _ := source.At(x, y).RGBA()
+			gotR, _, _, _ := decoded.At(x, y).RGBA()
+			if wantR != gotR {
+				t.Fatalf("pixel (%d,%d) = %d, want %d", x, y, gotR, wantR)
+			}
+		}
+	}
+}
+
+// TestDescrambleMatchesJMReferenceRemainderEncoding mirrors the Kototoro/Kotatsu
+// JM descrambler so a non-divisible height cannot silently rotate the wrong
+// block. The reference reads blocks bottom-up and gives the remainder to the
+// block that ends up at the top; Descramble iterates top-down instead.
+func TestDescrambleMatchesJMReferenceRemainderEncoding(t *testing.T) {
+	const width, height, parts = 3, 100, 3
+	source := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			source.Set(x, y, color.RGBA{R: uint8(y), G: uint8(y / 2), B: uint8(y / 3), A: 255})
+		}
+	}
+	scrambled := image.NewRGBA(image.Rect(0, 0, width, height))
+	blockSize := height / parts
+	remainder := height % parts
+	y := 0
+	for index := parts - 1; index >= 0; index-- {
+		start := index * blockSize
+		end := start + blockSize
+		if index == parts-1 {
+			end += remainder
+		}
+		copied := end - start
+		draw.Draw(
+			scrambled,
+			image.Rect(0, y, width, y+copied),
+			source,
+			image.Pt(0, start),
+			draw.Src,
+		)
+		y += copied
+	}
+	buffer := &bytes.Buffer{}
+	if err := png.Encode(buffer, scrambled); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Descramble(buffer.Bytes(), parts)
 	if err != nil {
 		t.Fatal(err)
 	}

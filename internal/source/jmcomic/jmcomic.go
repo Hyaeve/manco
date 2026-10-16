@@ -442,7 +442,6 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		albumID = intValue(photoID)
 	}
 	scrambleID := s.scrambleID(ctx, account, photoID, strconv.Itoa(albumID))
-	parts := scrambleParts(scrambleID, albumID, strings.TrimSpace(names[0]))
 	referer := source.BuildURL(base, "/", nil)
 	headers := map[string]string{
 		"X-Requested-With": "com.JMComic3.app",
@@ -454,6 +453,11 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		if name == "" {
 			continue
 		}
+		// The scramble segment count is derived per image from the album id and
+		// the file name without its extension, matching Kototoro/Kotatsu JM
+		// parsers. Using one shared value (or an extension-suffixed name)
+		// scrambles every page in modern albums.
+		parts := scrambleParts(scrambleID, albumID, name)
 		addresses := make([]string, 0, len(imageDomains))
 		for _, domain := range imageDomains {
 			addresses = append(addresses, fmt.Sprintf("%s/media/photos/%s/%s", strings.TrimRight(domain, "/"), photoID, name))
@@ -929,12 +933,19 @@ func scrambleParts(scrambleID, albumID int, fileName string) int {
 	if scrambleID == 0 || albumID == 0 || albumID < scrambleID {
 		return 0
 	}
+	fileName = strings.TrimSpace(fileName)
+	if index := strings.LastIndex(fileName, "."); index > 0 {
+		fileName = fileName[:index]
+	}
+	if fileName == "" {
+		return 0
+	}
 	if albumID < 268850 {
 		return 10
 	}
-	base := 8
-	if albumID < 421926 {
-		base = 10
+	base := 10
+	if albumID > 421926 {
+		base = 8
 	}
 	digest := md5.Sum([]byte(strconv.Itoa(albumID) + fileName))
 	encoded := hex.EncodeToString(digest[:])

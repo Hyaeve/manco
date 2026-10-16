@@ -503,6 +503,44 @@ body,
   word-break: break-word;
 }
 
+.epub-reader {
+  max-height: calc(100dvh - 180px);
+  padding: 28px clamp(18px, 5vw, 64px);
+  overflow: auto;
+  color: #22262e;
+  background: #f7f4ec;
+}
+
+.epub-chapter + .epub-chapter {
+  margin-top: 34px;
+  padding-top: 30px;
+  border-top: 1px solid rgba(34, 38, 46, 0.12);
+}
+
+.epub-chapter-body {
+  max-width: 760px;
+  margin: 0 auto;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 17px;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+
+.epub-chapter-body h1,
+.epub-chapter-body h2,
+.epub-chapter-body h3 {
+  margin: 0 0 18px;
+  font-size: 22px;
+  line-height: 1.4;
+}
+
+.epub-chapter-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 18px auto;
+}
+
 .log-toolbar {
   display: flex;
   align-items: center;
