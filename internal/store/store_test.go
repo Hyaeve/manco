@@ -531,3 +531,55 @@ func TestListDownloadJobsKeepsFailedWhenManyQueued(t *testing.T) {
 		t.Fatalf("failed job %d missing from %d results", failed.ID, len(jobs))
 	}
 }
+
+func TestExtensionCandidatesCacheRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	if _, _, err := repository.ExtensionCandidates(ctx, "repo", "ext"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty cache error = %v, want ErrNotFound", err)
+	}
+	if err := repository.SaveExtensionCandidates(ctx, "repo", "ext", "1.2.3", `{"candidates":[]}`); err != nil {
+		t.Fatalf("SaveExtensionCandidates: %v", err)
+	}
+	payload, version, err := repository.ExtensionCandidates(ctx, "repo", "ext")
+	if err != nil {
+		t.Fatalf("ExtensionCandidates: %v", err)
+	}
+	if version != "1.2.3" || payload != `{"candidates":[]}` {
+		t.Fatalf("payload = %q version = %q", payload, version)
+	}
+
+	// 同一个仓库+扩展再写一次是覆盖，保留最新一次枚举的结果。
+	if err := repository.SaveExtensionCandidates(ctx, "repo", "ext", "1.2.4", `{"candidates":[1]}`); err != nil {
+		t.Fatalf("overwrite candidates: %v", err)
+	}
+	payload, version, err = repository.ExtensionCandidates(ctx, "repo", "ext")
+	if err != nil {
+		t.Fatalf("ExtensionCandidates after overwrite: %v", err)
+	}
+	if version != "1.2.4" || payload != `{"candidates":[1]}` {
+		t.Fatalf("overwritten payload = %q version = %q", payload, version)
+	}
+
+	if err := repository.SaveExtensionCandidates(ctx, "repo", "other", "1", `{}`); err != nil {
+		t.Fatalf("save second extension: %v", err)
+	}
+	if err := repository.DeleteExtensionCandidates(ctx, "repo", "ext"); err != nil {
+		t.Fatalf("DeleteExtensionCandidates: %v", err)
+	}
+	if _, _, err := repository.ExtensionCandidates(ctx, "repo", "ext"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted entry error = %v, want ErrNotFound", err)
+	}
+	if _, _, err := repository.ExtensionCandidates(ctx, "repo", "other"); err != nil {
+		t.Fatalf("deleting one extension removed another: %v", err)
+	}
+
+	// 删除仓库时整片清掉，避免留下无主的缓存行。
+	if err := repository.DeleteExtensionCandidatesForRepository(ctx, "repo"); err != nil {
+		t.Fatalf("DeleteExtensionCandidatesForRepository: %v", err)
+	}
+	if _, _, err := repository.ExtensionCandidates(ctx, "repo", "other"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("repository purge left entries: %v", err)
+	}
+}

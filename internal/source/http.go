@@ -138,7 +138,12 @@ func SetHTTPClientProxyCredentials(client *http.Client, raw, username, password 
 	if !ok {
 		return errors.New("HTTP client does not support runtime proxy configuration")
 	}
-	return transport.proxy.SetCredentials(raw, username, password)
+	if err := transport.proxy.SetCredentials(raw, username, password); err != nil {
+		return err
+	}
+	// 换代理后丢掉旧代理上的空闲连接，长轮询之类常驻请求能尽快用上新代理。
+	transport.CloseIdleConnections()
+	return nil
 }
 
 func FetchText(ctx context.Context, client *http.Client, address string, headers map[string]string) (string, error) {

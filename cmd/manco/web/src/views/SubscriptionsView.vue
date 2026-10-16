@@ -6,6 +6,7 @@ import {
   CalendarClock,
   Film,
   FolderOpen,
+  History,
   Layers,
   Layers3,
   ListChecks,
@@ -16,6 +17,7 @@ import {
   RefreshCw,
   Rss,
   Save,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-vue-next'
@@ -41,9 +43,6 @@ const editorOpen = ref(false)
 const editing = ref(null)
 const selectionMode = ref(false)
 const selected = ref(new Set())
-// 封面模糊的卡片需要点一下才显示清晰封面；这里只在内存里记住已解锁的卡片，
-// 切换页面或刷新浏览器都会回到模糊状态。
-const revealedCovers = ref(new Set())
 // 订阅很多时逐个渲染所有卡片会把主线程拖到无响应，这里分批渲染。
 const renderLimit = ref(60)
 let scrollEl = null
@@ -68,24 +67,6 @@ const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 
 function itemKind(item) {
   const kind = sources.value[item.sourceId]?.kind
   return kind === 'book' || kind === 'other' ? kind : 'comic'
-}
-
-function coverRevealed(item) {
-  return revealedCovers.value.has(item.id)
-}
-
-// 返回 true 表示允许跳转；首次点击模糊封面时只解锁并拦住跳转，
-// 再点一次清晰封面才进入作品详情页。
-function revealCover(item) {
-  if (!item.coverBlur || revealedCovers.value.has(item.id)) return true
-  const next = new Set(revealedCovers.value)
-  next.add(item.id)
-  revealedCovers.value = next
-  return false
-}
-
-function clearRevealedCovers() {
-  if (revealedCovers.value.size) revealedCovers.value = new Set()
 }
 
 const downloadDirs = computed(() => {
@@ -235,7 +216,6 @@ onUnmounted(() => {
 
 onDeactivated(() => {
   clearSubscriptionSelection()
-  clearRevealedCovers()
 })
 
 function onKeydown(event) {
@@ -320,10 +300,7 @@ function openEditor(item) {
 
 async function saveEditor() {
   if (!editing.value) return
-  if (!form.value.cronExpr.trim()) {
-    notify('Cron 表达式不能为空', 'warning')
-    return
-  }
+  // Cron 留空表示这个订阅不做定时检查，不再强制填写。
   if (!form.value.downloadDir.trim()) {
     notify('请选择下载位置', 'warning')
     return
@@ -438,6 +415,16 @@ function cardTitle(item) {
 function jobStats(item) {
   const key = `${item.sourceId}\u0000${item.comicId}`
   return statsByComic.value.get(key) || { success: 0, failed: 0 }
+}
+
+// 卡片里的「最近执行」＝上一次定时检查/手动检查的时间，后端存的是 UTC。
+function lastRunLabel(item) {
+  const raw = item?.lastCheckedAt
+  if (!raw) return '最近执行：尚未执行'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return '最近执行：尚未执行'
+  const pad = (value) => String(value).padStart(2, '0')
+  return `最近执行：${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function downloadTaskLink(item, filter) {
@@ -571,6 +558,17 @@ function batchFill() {
   })
 }
 
+// 刮削：重新拉取订阅源的元数据，覆盖本地已有的 ComicInfo.xml / series.json / cover。
+function batchScrape() {
+  return runBatch({
+    title: '刮削元数据',
+    message: `确定重新拉取所选 ${selectedCount.value} 个订阅的元数据，并覆盖本地已有的 ComicInfo.xml 与 series.json 吗？`,
+    confirmText: '开始刮削',
+    action: (item) => api.scrapeSubscription(item.id),
+    successText: '刮削完成',
+  })
+}
+
 function batchArchive() {
   return runBatch({
     title: '归档订阅',
@@ -678,9 +676,8 @@ function batchDelete() {
       <div class="subscription-main">
         <ContentLink
           class="subscription-cover"
-          :class="{ blurred: item.coverBlur && !coverRevealed(item) }"
+          :class="{ blurred: item.coverBlur }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
-          :before-navigate="() => revealCover(item)"
         >
           <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
           <BookOpen v-else :size="24" />
@@ -704,6 +701,10 @@ function batchDelete() {
           <div class="subscription-line">
             <FolderOpen :size="14" />
             <span>{{ item.downloadDir || '未设置下载目录' }}</span>
+          </div>
+          <div class="subscription-line">
+            <History :size="14" />
+            <span>{{ lastRunLabel(item) }}</span>
           </div>
           <div class="subscription-job-stats">
             <ContentLink class="subscription-stat success" :to="downloadTaskLink(item, 'completed')">
@@ -761,6 +762,7 @@ function batchDelete() {
         <label class="field">
           <span>Cron 表达式</span>
           <input v-model="form.cronExpr" class="input" placeholder="0 21 * * 5" />
+          <span class="muted small">留空即不启用定时检查更新。</span>
         </label>
         <label class="field">
           <span>下载位置</span>
@@ -819,6 +821,10 @@ function batchDelete() {
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchFill">
       <ListChecks :size="14" />
       补全
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchScrape">
+      <Sparkles :size="14" />
+      刮削
     </button>
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchArchive">
       <Archive :size="14" />

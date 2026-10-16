@@ -743,8 +743,8 @@
 }
 
 [data-theme='dark'] .sidebar {
-  background: #1c2117;
-  border-right-color: #2e3626;
+  background: #262019;
+  border-right-color: #3a3125;
 }
 
 [data-theme='dark'] .sidebar .brand-text strong {
@@ -756,8 +756,8 @@
 }
 
 [data-theme='dark'] .sidebar nav button.active {
-  color: #e7f0c4;
-  background: #333d25;
+  color: #ffd88a;
+  background: #3a2f1c;
 }
 
 /* 面包屑收矮 */
@@ -937,15 +937,7 @@
   gap: 12px;
 }
 
-.settings-save-button {
-  background: #8ba043;
-  border-color: #788b39;
-  color: #fff;
-}
-
-.settings-save-button:hover:not(:disabled) {
-  background: #76893a;
-}
+/* 设置页保存按钮不再单独配色，统一跟随主按钮（--primary）。 */
 
 .archive-number-row {
   display: flex;
@@ -1503,9 +1495,9 @@
 }
 
 [data-theme='dark'] {
-  --primary: #e6ae72;
-  --primary-strong: #f3c18c;
-  --primary-soft: #3a2d20;
+  --primary: #f2b544;
+  --primary-strong: #ffd06a;
+  --primary-soft: #3f3220;
 }
 
 /* 所有滚动条统一为极浅灰色细条。 */
@@ -1549,8 +1541,8 @@
 }
 
 [data-theme='dark'] .sidebar {
-  background: #20261c;
-  border-right-color: #323b29;
+  background: #262019;
+  border-right-color: #3a3125;
 }
 
 /* 探索发现：来源分类、搜索栏和来源条在顶部严格对齐。 */
@@ -2313,20 +2305,11 @@
 }
 
 [data-theme='dark'] .sidebar {
-  background: #232a1d;
-  border-right-color: #343d28;
+  background: #262019;
+  border-right-color: #3a3125;
 }
 
-/* 保存按钮：琥珀暖色，替代黄绿色 */
-.settings-save-button {
-  background: #c8892f;
-  border-color: #ac7423;
-  color: #fff9ee;
-}
-
-.settings-save-button:hover:not(:disabled) {
-  background: #b27726;
-}
+/* 设置页保存按钮统一用主按钮配色，不再用单独的琥珀/黄绿色。 */
 
 /* 作品详情：抬高顶部区域，封面/标题/操作同一水平线，返回按钮位于封面之上 */
 .detail-hero {
@@ -3049,8 +3032,8 @@
   background: color-mix(in srgb, #f6f3b6 74%, #eff3dc);
 }
 [data-theme='dark'] .sidebar {
-  background: #20261a;
-  border-right-color: #303824;
+  background: #262019;
+  border-right-color: #3a3125;
 }
 
 /* v0.1.13：下载列表进度条与状态列对齐 */
@@ -3320,8 +3303,8 @@
   background: color-mix(in srgb, #fbf7dc 86%, #f3f1e2);
 }
 [data-theme='dark'] .sidebar {
-  background: #20261a;
-  border-right-color: #303824;
+  background: #262019;
+  border-right-color: #3a3125;
 }
 
 .source-proxy-toggle{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px;color:var(--text-secondary,#6b7280);}
@@ -3353,6 +3336,17 @@
   overflow: visible;
   border-radius: 10px;
   background: var(--surface-muted);
+}
+
+/* 圆角框固定大小：放大的封面由这层裁掉，框本身不跟着放大。 */
+.local-library-card .local-library-cover-frame {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--surface-muted);
+  place-items: center;
 }
 .local-library-card .local-library-chapter-badge {
   position: absolute;
@@ -4145,10 +4139,10 @@ svg.source-editor-icon {
   min-width: 0;
 }
 
-/* v0.1.25：全站滚动条默认浅灰，悬浮时显示淡黄色；本地库详情沿用探索发现标签样式。 */
+/* 滚动条：默认浅灰细条，悬浮时只加很淡的暖色高亮（此前 24% 主色偏深）。 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(203, 213, 225, 0.62) transparent;
+  scrollbar-color: rgba(203, 213, 225, 0.55) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -4156,14 +4150,26 @@ svg.source-editor-icon {
   height: 4px;
 }
 
-*::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-thumb,
+.content-scroll::-webkit-scrollbar-thumb,
+.page-scroll::-webkit-scrollbar-thumb,
+.thin-scroll-area::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb,
+.notification-list::-webkit-scrollbar-thumb,
+.rounded-select-popup::-webkit-scrollbar-thumb,
+.directory-options::-webkit-scrollbar-thumb,
+.site-picker-popup::-webkit-scrollbar-thumb {
   border: 0;
   border-radius: 999px;
-  background: rgba(203, 213, 225, 0.7);
+  background: rgba(203, 213, 225, 0.6);
 }
 
-*::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--primary) 24%, #e5e7eb);
+*::-webkit-scrollbar-thumb:hover,
+.content-scroll::-webkit-scrollbar-thumb:hover,
+.page-scroll::-webkit-scrollbar-thumb:hover,
+.thin-scroll-area::-webkit-scrollbar-thumb:hover,
+.modal-body::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--primary) 12%, #eef1f5);
 }
 
 .local-detail-view .tag-pill {
@@ -4633,14 +4639,22 @@ svg.source-editor-icon {
 .sidebar .brand {
   flex-direction: column;
   align-items: flex-start;
-  gap: 7px;
+  gap: 0;
   padding: 2px 8px 16px;
+}
+
+.sidebar .brand-mark {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  max-width: 208px;
 }
 
 .sidebar .brand-lockup {
   display: block;
   width: 100%;
-  max-width: 208px;
+  max-width: none;
   height: auto;
   user-select: none;
   -webkit-user-drag: none;
@@ -4659,16 +4673,19 @@ svg.source-editor-icon {
 }
 
 .sidebar .brand-tagline {
+  /* 横条图里纸箱猫约占左侧 37.6%，缩进到这里正好落在 Manco 字标下方。 */
+  padding-left: 37.5%;
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.4;
+  white-space: nowrap;
 }
 
 /* ===== 活动通知窗口 ===== */
 /* 淡黄底、统一字体；标题加粗，成功/失败/待处理汇总行保持常规字号、不做斜体。 */
 .notification-dropdown {
-  border-color: color-mix(in srgb, #dcbb6e 40%, var(--border));
-  background: #fffaea;
+  border-color: color-mix(in srgb, #dcbb6e 30%, var(--border));
+  background: #fffdf6;
 }
 
 .notification-list strong {
@@ -4686,62 +4703,52 @@ svg.source-editor-icon {
 }
 
 [data-theme='dark'] .notification-dropdown {
-  border-color: color-mix(in srgb, #dcbb6e 26%, var(--border));
-  background: #241f14;
+  border-color: color-mix(in srgb, #dcbb6e 20%, var(--border));
+  background: #2b2419;
 }
 
 [data-theme='dark'] .notification-list strong {
-  color: #f3e6c9;
+  color: #f7ecd8;
 }
 
 [data-theme='dark'] .notification-summary {
   color: #bfae82;
 }
 
-/* ===== 功能开关按钮（订阅/下载任务设置） ===== */
-/* 圆角框 + 淡黄底；启用时更亮，未启用偏灰，点击切换。 */
+/* ===== 功能开关按钮（订阅/下载任务设置、TG 通知） ===== */
+/* 与「订阅卡片编辑窗口」的圆角框同款：中性底 + 常规边框，启用时才染上主色。 */
 .function-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 7px 13px;
-  border: 1px solid color-mix(in srgb, #d9c48a 54%, var(--border));
+  gap: 7px;
+  min-height: 42px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
   border-radius: 9px;
-  background: color-mix(in srgb, #fdf3d6 60%, var(--surface));
-  color: color-mix(in srgb, #6f6a5c 84%, var(--text-muted));
+  background: var(--surface-muted);
+  color: var(--text);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .function-toggle:hover {
-  border-color: color-mix(in srgb, #d9a83c 62%, var(--border));
-  color: color-mix(in srgb, #6b5a2e 88%, var(--text));
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface-muted));
 }
 
 .function-toggle.active {
-  border-color: color-mix(in srgb, #d69b26 74%, var(--border));
-  background: linear-gradient(180deg, #ffe9a8, #fbd97e);
-  color: #6b4c10;
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: color-mix(in srgb, var(--primary) 20%, var(--surface-muted));
+  color: var(--primary-strong);
   font-weight: 600;
 }
 
 .function-toggle svg {
   flex: 0 0 auto;
-}
-
-[data-theme='dark'] .function-toggle {
-  border-color: color-mix(in srgb, #b99b52 40%, var(--border));
-  background: color-mix(in srgb, #b99b52 15%, var(--surface));
-  color: #a8a294;
-}
-
-[data-theme='dark'] .function-toggle.active {
-  border-color: color-mix(in srgb, #e0b866 55%, var(--border));
-  background: color-mix(in srgb, #e0b866 32%, var(--surface));
-  color: #f4dda2;
 }
 
 /* ===== 探索发现页工具条 ===== */
@@ -4813,4 +4820,85 @@ svg.source-editor-icon {
 .source-filter-grid .sort-chip {
   flex: 0 0 150px;
   max-width: none;
+}
+
+/* ===== v0.5.7：订阅卡片悬浮反馈 ===== */
+/* 模糊封面默认一直模糊，只有鼠标移到封面上时才临时解除；移开立即恢复。
+   放在文件最后是为了压过前面「卡片悬浮时提亮」的规则（那条会把模糊一起顶掉）。 */
+.subscription-card .subscription-cover.blurred img {
+  filter: blur(7px);
+  transform: scale(1.06);
+}
+
+.subscription-card .subscription-cover.blurred:hover img,
+.subscription-card .subscription-cover.blurred:focus-within img {
+  filter: none;
+  transform: scale(1.04);
+}
+
+/* 悬浮任意订阅卡片时给一层橘色描边，与选中态的橘色保持一致。 */
+.subscription-card:hover,
+.archive-card:hover {
+  border-color: color-mix(in srgb, #e07a2f 72%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, #e07a2f 42%, transparent);
+}
+
+/* ===== v0.5.7：多选操作胶囊条统一为订阅清单那套扁平样式 ===== */
+/* 容器统一成订阅清单的胶囊条；按钮不带边框，悬浮时才出现圆角高亮块。 */
+.selection-pill,
+.source-selection-bar,
+.local-selection-bar {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(12px) saturate(1.08);
+  -webkit-backdrop-filter: blur(12px) saturate(1.08);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+}
+
+[data-theme='dark'] .selection-pill,
+[data-theme='dark'] .source-selection-bar,
+[data-theme='dark'] .local-selection-bar {
+  background: rgba(31, 36, 28, 0.82);
+}
+
+.selection-pill .btn,
+.selection-pill .btn.small,
+.source-selection-bar .btn,
+.source-selection-bar .btn.small,
+.local-selection-bar .btn,
+.local-selection-bar .btn.small {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.selection-pill .btn:hover:not(:disabled),
+.source-selection-bar .btn:hover:not(:disabled),
+.local-selection-bar .btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--text);
+}
+
+.selection-pill .btn.danger,
+.source-selection-bar .btn.danger,
+.local-selection-bar .btn.danger {
+  color: var(--danger);
+}
+
+.selection-pill .btn.danger:hover:not(:disabled),
+.source-selection-bar .btn.danger:hover:not(:disabled),
+.local-selection-bar .btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.selection-pill .btn:disabled,
+.source-selection-bar .btn:disabled,
+.local-selection-bar .btn:disabled {
+  opacity: 0.45;
 }

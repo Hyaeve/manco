@@ -150,6 +150,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			value TEXT NOT NULL,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS extension_source_cache (
+			repository_id TEXT NOT NULL,
+			extension_id TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '[]',
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (repository_id, extension_id)
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -628,6 +636,48 @@ func scanExtensionRepository(row rowScanner) (model.ExtensionRepository, error) 
 
 func (s *Store) DeleteExtensionRepository(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM extension_repositories WHERE id = ?`, id)
+	return err
+}
+
+// ExtensionCandidates returns the cached candidate payload for one repository
+// extension plus the extension version it was enumerated from. Enumerating an
+// extension means installing the plugin and restarting the JVM sidecar, so the
+// result is reused until the repository re-syncs a new version.
+func (s *Store) ExtensionCandidates(ctx context.Context, repositoryID, extensionID string) (string, string, error) {
+	var payload, version string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT payload_json, version FROM extension_source_cache WHERE repository_id = ? AND extension_id = ?`,
+		repositoryID, extensionID).Scan(&payload, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return payload, version, nil
+}
+
+func (s *Store) SaveExtensionCandidates(ctx context.Context, repositoryID, extensionID, version, payload string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO extension_source_cache(repository_id, extension_id, version, payload_json, updated_at)
+		VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(repository_id, extension_id) DO UPDATE SET
+			version = excluded.version,
+			payload_json = excluded.payload_json,
+			updated_at = CURRENT_TIMESTAMP`,
+		repositoryID, extensionID, version, payload)
+	return err
+}
+
+func (s *Store) DeleteExtensionCandidates(ctx context.Context, repositoryID, extensionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM extension_source_cache WHERE repository_id = ? AND extension_id = ?`,
+		repositoryID, extensionID)
+	return err
+}
+
+func (s *Store) DeleteExtensionCandidatesForRepository(ctx context.Context, repositoryID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM extension_source_cache WHERE repository_id = ?`, repositoryID)
 	return err
 }
 

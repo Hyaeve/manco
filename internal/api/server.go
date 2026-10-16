@@ -56,7 +56,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.6"
+	appVersion    = "v0.5.7"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -94,7 +94,19 @@ type Server struct {
 
 	discoverQueueOnce sync.Once
 	discoverQueue     chan discoverCacheTask
+
+	// 作品目录 → 本地 cover 的短期缓存：订阅页每 5 秒轮询一次，逐个
+	// filepath.Glob 在 NAS 上会被放大成「订阅数 × 轮询次数」次目录扫描。
+	coverCacheMu sync.Mutex
+	coverCache   map[string]coverCacheEntry
 }
+
+type coverCacheEntry struct {
+	value   string
+	expires time.Time
+}
+
+const localCoverCacheTTL = 30 * time.Second
 
 var pluginCoverFetchSlots = make(chan struct{}, 2)
 
@@ -124,7 +136,6 @@ type Settings struct {
 	TelegramEnabled       bool
 	TelegramToken         string
 	TelegramChatIDs       []string
-	TelegramProxy         string
 }
 
 type Options struct {
@@ -226,9 +237,6 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 			current.TelegramChatIDs = ids
 		}
 	}
-	if value, err := s.store.Setting(ctx, "telegram_proxy"); err == nil {
-		current.TelegramProxy = strings.TrimSpace(value)
-	}
 	if value, err := s.store.Setting(ctx, "proxy"); err == nil {
 		current.Proxy = strings.TrimSpace(value)
 	}
@@ -304,6 +312,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repositories/{id}/sync", s.requireAuth(s.handleSyncRepository))
 	mux.HandleFunc("DELETE /api/repositories/{id}", s.requireAuth(s.handleDeleteRepository))
 	mux.HandleFunc("POST /api/repositories/{id}/extensions/{extensionId}", s.requireAuth(s.handleImportRepositoryExtension))
+	mux.HandleFunc("POST /api/plugins/prune", s.requireAuth(s.handlePrunePlugins))
 	mux.HandleFunc("POST /api/custom-sources", s.requireAuth(s.handleCreateCustomSource))
 	mux.HandleFunc("GET /api/custom-sources/{id}", s.requireAuth(s.handleGetCustomSource))
 	mux.HandleFunc("PUT /api/custom-sources/{id}", s.requireAuth(s.handleUpdateCustomSource))
@@ -335,6 +344,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{id}/download", s.requireAuth(s.handleDownloadSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/download-all", s.requireAuth(s.handleDownloadAllSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/fill", s.requireAuth(s.handleFillSubscription))
+	mux.HandleFunc("POST /api/subscriptions/{id}/scrape", s.requireAuth(s.handleScrapeSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/chapter-marker/backfill", s.requireAuth(s.handleBackfillChapterMarkers))
 	mux.HandleFunc("POST /api/subscriptions/{id}/archive", s.requireAuth(s.handleArchiveSubscription))
 	mux.HandleFunc("POST /api/subscriptions/{id}/restore", s.requireAuth(s.handleRestoreSubscription))
@@ -1432,6 +1442,17 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "该来源缺少插件安装地址")
 		return
 	}
+	// 枚举要先把插件装上再重启 sidecar，很慢；命中缓存就直接返回上次的结果。
+	// 仓库重新同步会带出新版本号，版本不一致时缓存自然失效。
+	if r.URL.Query().Get("refresh") != "1" {
+		payload, version, err := s.store.ExtensionCandidates(r.Context(), repo.ID, selected.ID)
+		if err == nil && version == strings.TrimSpace(selected.Version) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(payload))
+			return
+		}
+	}
 	runtimeType := pluginRuntimeFor(repo, selected)
 	prefix := "kototoro-"
 	if runtimeType == pluginruntime.RuntimeMihon {
@@ -1441,13 +1462,15 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 	if !pluginIDPattern.MatchString(pluginID) {
 		pluginID = prefix + repository.Slug(selected.ID)
 	}
-	sources, err := s.runtime.InstallWithRuntime(r.Context(), pluginID, selected.InstallURL, runtimeType)
+	// 只装这一个扩展，并且只返回它新引入的来源：sidecar 的 metadata 会报告
+	// 整个运行时里所有插件的内容源，不做差集就会把别的插件来源算到它头上。
+	sources, err := s.runtime.InstallIsolated(r.Context(), pluginID, selected.InstallURL, runtimeType)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "安装插件失败："+err.Error())
 		return
 	}
 	if len(sources) == 0 {
-		writeError(w, http.StatusBadGateway, "插件未声明任何可用内容源")
+		writeError(w, http.StatusBadGateway, "该扩展没有新增可添加的内容源")
 		return
 	}
 	candidates := make([]map[string]any, 0, len(sources))
@@ -1468,6 +1491,7 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 			ContentType: parsed.ContentType,
 			Locale:      parsed.Locale,
 			Homepage:    parsed.Homepage,
+			InstallURL:  selected.InstallURL,
 		})
 		candidates = append(candidates, map[string]any{
 			"id":          sourceID,
@@ -1485,11 +1509,21 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 			"pluginId":    pluginID,
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload, err := json.Marshal(map[string]any{
 		"plugin":     pluginID,
 		"candidates": candidates,
 		"sources":    candidates,
 	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.SaveExtensionCandidates(r.Context(), repo.ID, selected.ID, strings.TrimSpace(selected.Version), string(payload)); err != nil {
+		s.logger.Printf("repository: cache extension candidates %s/%s: %v", repo.ID, selected.ID, err)
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
 }
 
 func repositoryView(item model.ExtensionRepository) model.ExtensionRepository {
@@ -1503,6 +1537,9 @@ func repositoryView(item model.ExtensionRepository) model.ExtensionRepository {
 	}
 	if len(item.Catalog) > 0 {
 		_ = json.Unmarshal(item.Catalog, &item.Extensions)
+		// 清单原文可能有几 MB（Keiyoushi 这类几百个扩展的仓库），前端只用
+		// 解析后的 extensions，没必要把原始 JSON 再下发一份。
+		item.Catalog = nil
 	}
 	return item
 }
@@ -1662,6 +1699,8 @@ func (s *Server) handleDeleteRepository(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 仓库没了，它下面扩展的内容源缓存也没意义，顺手清掉。
+	_ = s.store.DeleteExtensionCandidatesForRepository(r.Context(), id)
 	_ = s.configs.PersistRepositories(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -1729,6 +1768,52 @@ func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.
 	}
 	_ = s.configs.PersistSources(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, map[string]any{"source": saved})
+}
+
+// handlePrunePlugins unregisters extensions that no added source references.
+// Reading a repository's candidate list requires installing its extensions, so
+// without this the sidecar would keep loading every enumerated extension on
+// every restart, which is what made the add-source dialog slow and heavy.
+func (s *Server) handlePrunePlugins(w http.ResponseWriter, r *http.Request) {
+	removed, err := s.PruneUnusedPlugins(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "清理插件失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+// PruneUnusedPlugins drops every installed extension that no added source
+// references. It is also called once at startup so a runtime left behind by the
+// old "enumerate every repository on open" behaviour is cleaned automatically —
+// hundreds of registered plugins otherwise make the sidecar load them all on
+// every restart and slow the whole app down.
+func (s *Server) PruneUnusedPlugins(ctx context.Context) (int, error) {
+	if s.runtime == nil {
+		return 0, nil
+	}
+	items, err := s.store.ListCustomSources(ctx)
+	if err != nil {
+		return 0, err
+	}
+	keep := map[string]struct{}{}
+	for _, item := range items {
+		var config pluginruntime.Config
+		if err := json.Unmarshal(item.Config, &config); err != nil {
+			continue
+		}
+		if id := strings.TrimSpace(config.PluginID); id != "" {
+			keep[id] = struct{}{}
+		}
+	}
+	removed, err := s.runtime.PrunePlugins(keep)
+	if err != nil {
+		return 0, err
+	}
+	if removed > 0 {
+		s.logger.Printf("plugins: pruned %d unused extension(s)", removed)
+	}
+	return removed, nil
 }
 
 func newConfigID(prefix, value string) string {
@@ -1814,6 +1899,13 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 		if strings.TrimSpace(runtimeConfig.PluginID) == "" || strings.TrimSpace(runtimeConfig.SourceName) == "" {
 			writeError(w, http.StatusBadRequest, "插件来源缺少 pluginId 或 sourceName")
 			return
+		}
+		// 枚举用的插件在批量加载结束后会被清理，添加来源时按需补装回来。
+		if installURL := strings.TrimSpace(runtimeConfig.InstallURL); installURL != "" && s.runtime != nil {
+			if err := s.runtime.EnsureWithRuntime(r.Context(), runtimeConfig.PluginID, installURL, runtimeConfig.Runtime); err != nil {
+				writeError(w, http.StatusBadGateway, "安装插件失败："+err.Error())
+				return
+			}
 		}
 	} else {
 		if strings.TrimSpace(payload.Homepage) == "" {
@@ -2619,6 +2711,7 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	for index := range items {
 		items[index] = s.subscriptionWithCovers(r.Context(), items[index])
 	}
+	// 启动时会用这份快照 Restore 回数据库，所以读取时也要保持它是最新的。
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	stats, err := s.store.DownloadJobStats(r.Context())
 	if err != nil {
@@ -2667,7 +2760,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		SeriesDir           string  `json:"seriesDir"`
 		AutoDownload        *bool   `json:"autoDownload"`
 		Enabled             *bool   `json:"enabled"`
-		CronExpr            string  `json:"cronExpr"`
+		CronExpr            *string `json:"cronExpr"`
 		DownloadDir         string  `json:"downloadDir"`
 		ConvertToSimplified *bool   `json:"convertToSimplified"`
 		ChapterMarker       *bool   `json:"chapterMarker"`
@@ -2684,13 +2777,16 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "缺少漫画源或作品 ID")
 		return
 	}
-	cronExpr := strings.TrimSpace(payload.CronExpr)
-	if cronExpr == "" {
-		cronExpr = cronutil.Default(time.Now())
+	// 显式传空串表示关掉这个订阅的定时检查；字段缺省才补默认周期，兼容老客户端。
+	cronExpr := cronutil.Default(time.Now())
+	if payload.CronExpr != nil {
+		cronExpr = strings.TrimSpace(*payload.CronExpr)
 	}
-	if err := cronutil.Validate(cronExpr); err != nil {
-		writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
-		return
+	if cronExpr != "" {
+		if err := cronutil.Validate(cronExpr); err != nil {
+			writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
+			return
+		}
 	}
 	downloadDir, err := s.cleanDownloadDir(payload.DownloadDir)
 	if err != nil {
@@ -2796,13 +2892,13 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		auto = *payload.AutoDownload
 	}
 	if payload.CronExpr != nil {
+		// 空串表示关掉这个订阅的定时检查，不再回退到旧值。
 		cronExpr = strings.TrimSpace(*payload.CronExpr)
-		if cronExpr == "" {
-			cronExpr = existing.CronExpr
-		}
-		if err := cronutil.Validate(cronExpr); err != nil {
-			writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
-			return
+		if cronExpr != "" {
+			if err := cronutil.Validate(cronExpr); err != nil {
+				writeError(w, http.StatusBadRequest, "Cron 表达式无效: "+err.Error())
+				return
+			}
 		}
 	}
 	if payload.DownloadDir != nil {
@@ -3374,6 +3470,29 @@ func (s *Server) handleFillSubscription(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": queued, "skipped": skipped, "missing": queued, "total": queued + skipped})
 }
 
+// handleScrapeSubscription re-fetches the upstream metadata and overwrites the
+// already downloaded ComicInfo.xml / series.json / cover files. Unlike the
+// metadata completion that runs during checks, it never skips work because the
+// files look current.
+func (s *Server) handleScrapeSubscription(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
+		return
+	}
+	subscription, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	updated, err := s.engine.ScrapeSeriesMetadata(r.Context(), subscription)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "刮削失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": updated})
+}
+
 // requeueMissingFiles resets completed jobs whose CBZ file no longer exists on
 // disk so the following queue pass downloads them again.
 func (s *Server) requeueMissingFiles(ctx context.Context, subscription model.Subscription) {
@@ -3617,6 +3736,43 @@ func (s *Server) localCoverForDir(root, folder string) string {
 	if err != nil {
 		return ""
 	}
+	key := root + "\x00" + folder
+	if value, ok := s.cachedLocalCover(key); ok {
+		return value
+	}
+	value := resolveLocalCover(root, folder)
+	// 只缓存命中的结果：目录里还没有 cover 时不能缓存，否则刚下载完的作品
+	// 会在 TTL 内一直查不到封面。
+	if value != "" {
+		s.rememberLocalCover(key, value)
+	}
+	return value
+}
+
+func (s *Server) cachedLocalCover(key string) (string, bool) {
+	s.coverCacheMu.Lock()
+	defer s.coverCacheMu.Unlock()
+	entry, ok := s.coverCache[key]
+	if !ok || time.Now().After(entry.expires) {
+		return "", false
+	}
+	return entry.value, true
+}
+
+func (s *Server) rememberLocalCover(key, value string) {
+	s.coverCacheMu.Lock()
+	defer s.coverCacheMu.Unlock()
+	if s.coverCache == nil {
+		s.coverCache = make(map[string]coverCacheEntry, 64)
+	}
+	// 缓存只用于削掉重复的目录扫描，条目太多时整体丢弃即可。
+	if len(s.coverCache) > 4096 {
+		s.coverCache = make(map[string]coverCacheEntry, 64)
+	}
+	s.coverCache[key] = coverCacheEntry{value: value, expires: time.Now().Add(localCoverCacheTTL)}
+}
+
+func resolveLocalCover(root, folder string) string {
 	covers, err := filepath.Glob(filepath.Join(folder, "cover.*"))
 	if err != nil || len(covers) == 0 {
 		return ""
@@ -3739,7 +3895,6 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		convertToSimplified = *payload.ConvertToSimplified
 	}
 	chapterMarker := payload.ChapterMarker != nil && *payload.ChapterMarker
-	coverBlur := payload.CoverBlur != nil && *payload.CoverBlur
 	seriesDir := subscriptionSeriesDirName(payload.SeriesDir, title, convertToSimplified)
 	created := make([]model.DownloadJob, 0, len(chapters))
 	queuedCount := 0
@@ -3824,29 +3979,8 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			created = append(created, saved)
 		}
 	}
-	if payload.AutoDownload && len(created) > 0 {
-		lastChapter := normalizedChapters[len(normalizedChapters)-1]
-		if _, err := s.store.UpsertSubscription(r.Context(), model.Subscription{
-			SourceID:            payload.SourceID,
-			ComicID:             payload.ComicID,
-			Title:               title,
-			Author:              strings.TrimSpace(payload.ComicAuthor),
-			SeriesDir:           seriesDir,
-			Cover:               payload.ComicCover,
-			DownloadDir:         downloadDir,
-			Enabled:             true,
-			AutoDownload:        true,
-			CronExpr:            cronutil.Default(time.Now()),
-			ConvertToSimplified: convertToSimplified,
-			ChapterMarker:       chapterMarker,
-			CoverBlur:           coverBlur,
-			LastChapterID:       lastChapter.ID,
-			LastChapterTitle:    source.FirstNonEmpty(lastChapter.Title, lastChapter.ID),
-			LastChapterOrder:    lastChapter.Order,
-		}); err != nil {
-			s.logger.Printf("api: auto subscribe: %v", err)
-		}
-	}
+	// 作品详情页直接「下载」只产生下载任务，不再顺手创建订阅：订阅清单应该
+	// 只收录用户显式订阅过的作品。要追更请走订阅任务设置。
 	s.engine.Notify()
 	writeJSON(w, http.StatusOK, map[string]any{"items": created, "queued": queuedCount, "skipped": skippedCount})
 }
@@ -5145,7 +5279,6 @@ func (s *Server) settingsResponse(ctx context.Context, username string) map[stri
 		"telegramEnabled":       current.TelegramEnabled,
 		"telegramToken":         current.TelegramToken,
 		"telegramChatIds":       current.TelegramChatIDs,
-		"telegramProxy":         current.TelegramProxy,
 	}
 }
 
@@ -5156,10 +5289,9 @@ func (s *Server) reloadTelegram(ctx context.Context) {
 	}
 	current := s.loadSettings(ctx)
 	s.telegram.Configure(telegram.Config{
-		Enabled:  current.TelegramEnabled,
-		Token:    current.TelegramToken,
-		ChatIDs:  current.TelegramChatIDs,
-		ProxyURL: current.TelegramProxy,
+		Enabled: current.TelegramEnabled,
+		Token:   current.TelegramToken,
+		ChatIDs: current.TelegramChatIDs,
 	})
 }
 
@@ -5193,7 +5325,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		TelegramEnabled       *bool          `json:"telegramEnabled"`
 		TelegramToken         *string        `json:"telegramToken"`
 		TelegramChatIDs       []string       `json:"telegramChatIds"`
-		TelegramProxy         *string        `json:"telegramProxy"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -5426,12 +5557,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		raw, _ := json.Marshal(normalized)
 		if err := s.store.SetSetting(r.Context(), "telegram_chats", string(raw)); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	if payload.TelegramProxy != nil {
-		if err := s.store.SetSetting(r.Context(), "telegram_proxy", strings.TrimSpace(*payload.TelegramProxy)); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

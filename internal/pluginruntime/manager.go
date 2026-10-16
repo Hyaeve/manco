@@ -80,6 +80,9 @@ type Config struct {
 	ContentType string `json:"contentType,omitempty"`
 	Locale      string `json:"locale,omitempty"`
 	Homepage    string `json:"homepage,omitempty"`
+	// InstallURL lets the API re-install the plugin when a user adds a source
+	// after unused plugins were pruned.
+	InstallURL string `json:"installUrl,omitempty"`
 }
 
 type Manager struct {
@@ -327,6 +330,160 @@ func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runti
 	m.rememberSourcesLocked(runtimeType, sources)
 	_ = os.Remove(backup)
 	return sources, nil
+}
+
+// EnsureWithRuntime registers one extension only when it is not already in the
+// plugin registry, so re-adding a source after PrunePlugins does not need a
+// second download of a plugin that is still on disk.
+func (m *Manager) EnsureWithRuntime(ctx context.Context, id, downloadURL, runtimeType string) error {
+	id = strings.TrimSpace(id)
+	if !pluginIDPattern.MatchString(id) {
+		return fmt.Errorf("插件 ID 无效: %q", id)
+	}
+	m.mu.Lock()
+	installed := m.hasPluginLocked(id)
+	m.mu.Unlock()
+	if installed {
+		return nil
+	}
+	_, err := m.InstallWithRuntime(ctx, id, downloadURL, runtimeType)
+	return err
+}
+
+// sourcesForRuntime reads the sources one runtime currently declares. It does
+// not start the sidecar when the runtime has no plugins registered.
+func (m *Manager) sourcesForRuntime(ctx context.Context, runtimeType string) ([]Source, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errors.New("plugin runtime 已关闭")
+	}
+	if !m.hasPluginsForRuntimeLocked(runtimeType) {
+		return nil, nil
+	}
+	metadata, err := m.callRuntimeLocked(ctx, runtimeType, "metadata", nil)
+	if err != nil {
+		return nil, err
+	}
+	sources, err := decodeSources(metadata)
+	if err != nil {
+		return nil, err
+	}
+	m.rememberSourcesLocked(runtimeType, sources)
+	return sources, nil
+}
+
+// InstallIsolated installs one extension and returns only the sources that this
+// extension introduced. The sidecar's metadata call reports every source of the
+// runtime, so the previously declared names are diffed out; without that the
+// add-source dialog would attribute another plugin's sources to this extension.
+func (m *Manager) InstallIsolated(ctx context.Context, id, downloadURL, runtimeType string) ([]Source, error) {
+	before, err := m.sourcesForRuntime(ctx, runtimeType)
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]struct{}, len(before))
+	for _, item := range before {
+		known[strings.ToLower(strings.TrimSpace(item.Name))] = struct{}{}
+	}
+	all, err := m.InstallWithRuntime(ctx, id, downloadURL, runtimeType)
+	if err != nil {
+		return nil, err
+	}
+	return diffSources(known, all), nil
+}
+
+// diffSources returns the entries of all whose name is not in the before set.
+// Names are compared case-insensitively because the sidecar preserves the
+// plugin's own casing and the same source can be reported differently.
+func diffSources(before map[string]struct{}, all []Source) []Source {
+	added := make([]Source, 0, len(all))
+	seen := make(map[string]struct{}, len(all))
+	for _, item := range all {
+		key := strings.ToLower(strings.TrimSpace(item.Name))
+		if key == "" {
+			continue
+		}
+		if _, ok := before[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		added = append(added, item)
+	}
+	return added
+}
+
+// PrunePlugins unregisters and deletes every installed extension whose ID is
+// not in keep, then restarts each runtime that lost plugins. The add-source
+// dialog enumerates candidates by installing extensions, so without this the
+// sidecar ends up loading every extension of every repository on each restart.
+func (m *Manager) PrunePlugins(keep map[string]struct{}) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return 0, errors.New("plugin runtime 已关闭")
+	}
+	removed := make([]pluginRecord, 0)
+	kept := make([]pluginRecord, 0, len(m.plugins))
+	for _, item := range m.plugins {
+		if _, ok := keep[strings.TrimSpace(item.ID)]; ok {
+			kept = append(kept, item)
+			continue
+		}
+		removed = append(removed, item)
+	}
+	if len(removed) == 0 {
+		return 0, nil
+	}
+
+	previous := append([]pluginRecord(nil), m.plugins...)
+	m.plugins = kept
+	if err := m.writeConfigLocked(); err != nil {
+		m.plugins = previous
+		return 0, err
+	}
+	for _, runtimeType := range []string{RuntimeKototoro, RuntimeMihon} {
+		if m.processForRuntimeLocked(runtimeType) == nil {
+			continue
+		}
+		if !m.hasPluginsForRuntimeLocked(runtimeType) {
+			// Nothing left for this runtime: stop the sidecar instead of
+			// restarting it with an empty plugin list.
+			if current := m.processForRuntimeLockedMust(runtimeType); current != nil {
+				current.close()
+				m.setProcessForRuntimeLocked(runtimeType, nil)
+			}
+			continue
+		}
+		if err := m.restartLocked(runtimeType); err != nil {
+			m.plugins = previous
+			_ = m.writeConfigLocked()
+			for _, rollbackType := range []string{RuntimeKototoro, RuntimeMihon} {
+				_ = m.restartLocked(rollbackType)
+			}
+			return 0, err
+		}
+	}
+	for _, item := range removed {
+		path := strings.TrimSpace(item.Path)
+		if path == "" {
+			continue
+		}
+		_ = os.Remove(filepath.Join(m.configDir, filepath.FromSlash(path)))
+	}
+	return len(removed), nil
+}
+
+func (m *Manager) hasPluginLocked(id string) bool {
+	for _, item := range m.plugins {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Call(ctx context.Context, operation string, fields map[string]any) (map[string]any, error) {

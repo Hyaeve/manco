@@ -188,6 +188,16 @@ func (s *Server) BotFill(ctx context.Context, subscriptionID int64) (int, int, e
 	return s.scheduler.QueueAll(ctx, subscription)
 }
 
+// BotScrape re-fetches the source metadata and overwrites the local
+// ComicInfo.xml / series.json / cover files of an already downloaded work.
+func (s *Server) BotScrape(ctx context.Context, subscriptionID int64) (bool, error) {
+	subscription, err := s.store.Subscription(ctx, subscriptionID)
+	if err != nil {
+		return false, err
+	}
+	return s.engine.ScrapeSeriesMetadata(ctx, subscription)
+}
+
 // BotFullDownload performs the same full refresh as the web UI: clear records
 // and files, then re-queue every chapter.
 func (s *Server) BotFullDownload(ctx context.Context, subscriptionID int64) (int, error) {

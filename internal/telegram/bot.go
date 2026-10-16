@@ -31,6 +31,7 @@ type App interface {
 	BotCheck(ctx context.Context, subscriptionID int64) (BotCheckResult, error)
 	BotArchive(ctx context.Context, subscriptionID int64) error
 	BotFill(ctx context.Context, subscriptionID int64) (int, int, error)
+	BotScrape(ctx context.Context, subscriptionID int64) (bool, error)
 	BotFullDownload(ctx context.Context, subscriptionID int64) (int, error)
 	BotDelete(ctx context.Context, subscriptionID int64) error
 }
@@ -60,10 +61,9 @@ type BotCheckResult struct {
 
 // Config holds the Telegram settings persisted in the app settings store.
 type Config struct {
-	Enabled  bool
-	Token    string
-	ChatIDs  []string
-	ProxyURL string
+	Enabled bool
+	Token   string
+	ChatIDs []string
 }
 
 type updateEnvelope struct {
@@ -141,6 +141,18 @@ func (s *Service) SetApp(app App) {
 	s.mu.Unlock()
 }
 
+// SetHTTPClient makes the bot reuse the application's HTTP client, so Telegram
+// traffic follows the system proxy configured on the settings page instead of
+// needing a dedicated proxy field.
+func (s *Service) SetHTTPClient(client *http.Client) {
+	if client == nil {
+		return
+	}
+	s.mu.Lock()
+	s.client = client
+	s.mu.Unlock()
+}
+
 // Configure swaps the runtime configuration. A token or proxy change restarts
 // the polling loop.
 func (s *Service) Configure(cfg Config) {
@@ -155,15 +167,22 @@ func (s *Service) Configure(cfg Config) {
 	s.mu.Lock()
 	previous := s.cfg
 	s.cfg = cfg
-	restart := s.started && (previous.Token != cfg.Token || previous.ProxyURL != cfg.ProxyURL)
-	if restart {
+	shouldRun := cfg.Enabled && cfg.Token != ""
+	wasRunning := s.started
+	tokenChanged := previous.Token != cfg.Token
+	// 停用、换 Token，或本来没在跑但现在该跑（比如用户刚在设置里填好 Token），
+	// 都要先把旧的长轮询停掉。
+	if wasRunning && (!shouldRun || tokenChanged) {
 		if s.cancel != nil {
 			s.cancel()
+			s.cancel = nil
 		}
 		s.started = false
 	}
 	s.mu.Unlock()
-	if restart {
+	// 之前没启动过（启动时未配置）而现在启用了，这里必须真正开始轮询，
+	// 否则用户在设置里填了 Token 也不会收到任何响应。
+	if shouldRun && (!wasRunning || tokenChanged) {
 		s.Start(context.Background())
 	}
 }
@@ -244,7 +263,8 @@ func (s *Service) pollOnce(ctx context.Context) error {
 		return nil
 	}
 	values := url.Values{}
-	values.Set("timeout", "50")
+	// 共用应用的 HTTP 客户端（60 秒超时），长轮询留出足够余量。
+	values.Set("timeout", "40")
 	if offset > 0 {
 		values.Set("offset", strconv.FormatInt(offset, 10))
 	}
@@ -254,7 +274,7 @@ func (s *Service) pollOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	response, err := s.httpClient().Do(request)
+	response, err := s.client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -279,25 +299,6 @@ func (s *Service) pollOnce(ctx context.Context) error {
 		s.handleUpdate(ctx, update)
 	}
 	return nil
-}
-
-func (s *Service) httpClient() *http.Client {
-	s.mu.RLock()
-	proxy := s.cfg.ProxyURL
-	s.mu.RUnlock()
-	if proxy == "" {
-		return s.client
-	}
-	parsed, err := url.Parse(proxy)
-	if err != nil {
-		return s.client
-	}
-	return &http.Client{
-		Timeout: 70 * time.Second,
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(parsed),
-		},
-	}
 }
 
 func (s *Service) allowed(chatID int64) bool {
@@ -357,7 +358,7 @@ func (s *Service) sendMessage(ctx context.Context, chatID, text string, keyboard
 		return
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := s.httpClient().Do(request)
+	response, err := s.client.Do(request)
 	if err != nil {
 		s.logger.Printf("telegram: send: %v", err)
 		return
@@ -380,7 +381,7 @@ func (s *Service) answerCallback(ctx context.Context, callbackID string) {
 		return
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := s.httpClient().Do(request)
+	response, err := s.client.Do(request)
 	if err != nil {
 		return
 	}

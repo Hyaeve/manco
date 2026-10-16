@@ -1845,6 +1845,17 @@ func metadataYear(value string) int {
 // Only series directories that already contain downloaded entries are
 // considered, so a freshly created subscription is left untouched.
 func (e *Engine) EnsureSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error) {
+	return e.writeSeriesMetadata(ctx, subscription, false)
+}
+
+// ScrapeSeriesMetadata re-fetches the upstream metadata and overwrites the
+// local ComicInfo.xml / series.json / cover even when they already look
+// current. EnsureSeriesMetadata only fills in what is missing.
+func (e *Engine) ScrapeSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error) {
+	return e.writeSeriesMetadata(ctx, subscription, true)
+}
+
+func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Subscription, force bool) (bool, error) {
 	if strings.TrimSpace(subscription.SourceID) == "" || strings.TrimSpace(subscription.ComicID) == "" {
 		return false, nil
 	}
@@ -1874,7 +1885,7 @@ func (e *Engine) EnsureSeriesMetadata(ctx context.Context, subscription model.Su
 		return false, err
 	}
 	book := source.KindOf(item.Info()) == source.KindBook
-	if seriesMetadataCurrent(comicDir) {
+	if !force && seriesMetadataCurrent(comicDir) {
 		if covers, _ := filepath.Glob(filepath.Join(comicDir, "cover.*")); len(covers) > 0 {
 			return false, nil
 		}

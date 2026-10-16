@@ -50,6 +50,7 @@ export const api = {
     request(`/api/repositories/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   importRepositoryExtension: (repositoryId, extensionId) =>
     request(`/api/repositories/${encodeURIComponent(repositoryId)}/extensions/${encodeURIComponent(extensionId)}`, { method: 'POST' }),
+  prunePlugins: () => request('/api/plugins/prune', { method: 'POST' }),
   createCustomSource: (payload) =>
     request('/api/custom-sources', { method: 'POST', body: JSON.stringify(payload) }),
   customSourceConfig: (id) => request(`/api/custom-sources/${encodeURIComponent(id)}`),
@@ -116,6 +117,7 @@ export const api = {
   downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
   downloadAllSubscription: (id) => request(`/api/subscriptions/${id}/download-all`, { method: 'POST' }),
   fillSubscription: (id) => request(`/api/subscriptions/${id}/fill`, { method: 'POST' }),
+  scrapeSubscription: (id) => request(`/api/subscriptions/${id}/scrape`, { method: 'POST' }),
   archiveSubscription: (id) => request(`/api/subscriptions/${id}/archive`, { method: 'POST' }),
   restoreSubscription: (id) => request(`/api/subscriptions/${id}/restore`, { method: 'POST' }),
   backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),

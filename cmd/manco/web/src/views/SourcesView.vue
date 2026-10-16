@@ -66,7 +66,12 @@ const browserCookies = ref('')
 const sourceSelection = ref(new Set())
 const sourceAnchor = ref(-1)
 const extensionCandidates = ref([])
-const candidateCache = ref({})
+// 枚举内容源要先把插件装好并重启 JVM sidecar，单个扩展就要数秒；结果按
+// 「仓库ID:来源类型」缓存到 localStorage，重开窗口直接命中，不再重复安装。
+const CANDIDATE_CACHE_KEY = 'manco-add-source-candidates-v1'
+const CANDIDATE_TIMEOUT_MS = 90000
+const CANDIDATE_CONCURRENCY = 2
+const candidateCache = ref(readCandidateCacheFromStorage())
 const candidateFilter = ref('all')
 const repositoryStripRef = ref(null)
 const typeStripRef = ref(null)
@@ -83,7 +88,10 @@ const iconUploading = ref(false)
 const iconDownloading = ref(false)
 const iconUploadInput = ref(null)
 const candidateLoading = ref(false)
-const candidateLoadedRepos = ref(new Set())
+// 命中本地缓存的仓库视为已加载，避免打开窗口时又整批重装插件。
+const candidateLoadedRepos = ref(new Set(Object.keys(candidateCache.value)))
+const candidateProgress = reactive({ done: 0, total: 0, label: '' })
+const candidateCancel = ref(false)
 const pluginAuth = ref(null)
 const pluginPreferences = ref(null)
 const pluginPreferenceValues = ref({})
@@ -209,17 +217,16 @@ function onSourceKeydown(event) {
 watch(addRepositoryID, () => {
   candidateFilter.value = 'all'
   syncExtensionCandidates()
-  if (addSourceOpen.value) loadRepositoryCandidates(selectedRepository.value)
 })
 
-watch(selectedRepository, (repository) => {
-  if (addSourceOpen.value) loadRepositoryCandidates(repository)
+// 切换仓库/类型只重排展示，不再自动批量安装插件；要枚举内容源由用户显式触发。
+watch(selectedRepository, () => {
+  syncExtensionCandidates()
 })
 
 watch(activeKind, () => {
   candidateFilter.value = 'all'
   syncExtensionCandidates()
-  if (addSourceOpen.value) loadRepositoryCandidates(selectedRepository.value)
 })
 
 watch(activeKind, () => clearSourceSelection())
@@ -981,10 +988,10 @@ function openAddSource() {
   candidateFilter.value = 'all'
   syncExtensionCandidates()
   addSourceOpen.value = true
-  loadRepositoryCandidates(null)
 }
 
-async function loadRepositoryCandidates(repository) {
+async function loadRepositoryCandidates(repository, options = {}) {
+  const force = Boolean(options.force)
   const targets = repository
     ? [repository]
     : addRepositoryID.value === 'all'
@@ -994,50 +1001,186 @@ async function loadRepositoryCandidates(repository) {
     syncExtensionCandidates()
     return
   }
-  candidateLoading.value = true
-  const errors = []
+
+  const kind = activeKind.value
+  const tasks = []
   for (const target of targets) {
-    const cachedKey = `${target.id}:${activeKind.value}`
-    if (candidateLoadedRepos.value.has(cachedKey)) continue
+    const cachedKey = `${target.id}:${kind}`
+    if (!force && candidateLoadedRepos.value.has(cachedKey)) continue
     const extensions = (target.extensions || []).filter((extension) => canInstallExtension(target, extension))
     if (!extensions.length) {
       candidateCache.value = { ...candidateCache.value, [cachedKey]: [] }
       candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
       continue
     }
-    const collected = []
-    for (const extension of extensions) {
+    for (const extension of extensions) tasks.push({ target, extension, cachedKey })
+  }
+
+  if (!tasks.length) {
+    syncExtensionCandidates()
+    persistCandidateCache()
+    notify('内容源已是最新，无需重复加载', 'info')
+    return
+  }
+
+  candidateCancel.value = false
+  candidateLoading.value = true
+  candidateProgress.done = 0
+  candidateProgress.total = tasks.length
+  candidateProgress.label = ''
+
+  const errors = []
+  const collectedByRepo = new Map()
+  const failedKeys = new Set()
+  const processedKeys = new Set()
+
+  // 每装完一个扩展就刷新一次列表，用户能边加载边挑，也能随时取消。
+  const flushCollected = () => {
+    if (!collectedByRepo.size) return
+    const next = { ...candidateCache.value }
+    for (const [cachedKey, rows] of collectedByRepo) {
+      const seen = new Set()
+      next[cachedKey] = rows.filter((candidate) => {
+        if (!candidate?.id || seen.has(candidate.id)) return false
+        seen.add(candidate.id)
+        return true
+      })
+    }
+    candidateCache.value = next
+    syncExtensionCandidates()
+  }
+
+  let cursor = 0
+  const worker = async () => {
+    while (!candidateCancel.value) {
+      const index = cursor
+      cursor += 1
+      if (index >= tasks.length) return
+      const { target, extension, cachedKey } = tasks[index]
+      processedKeys.add(cachedKey)
+      candidateProgress.label = `${target.name} · ${extension.name || extension.id}`
       try {
-        const result = await api.importRepositoryExtension(target.id, extension.id)
+        const result = await withCandidateTimeout(api.importRepositoryExtension(target.id, extension.id))
         const candidates = Array.isArray(result.candidates) ? result.candidates : (Array.isArray(result.sources) ? result.sources : [])
-        collected.push(...candidates.map((candidate) => ({
+        const rows = collectedByRepo.get(cachedKey) || []
+        rows.push(...candidates.map((candidate) => ({
           ...candidate,
           repositoryId: target.id,
           repositoryName: target.name,
         })))
+        collectedByRepo.set(cachedKey, rows)
       } catch (err) {
+        failedKeys.add(cachedKey)
         errors.push(`${extension.name || extension.id}：${err.message}`)
+      } finally {
+        candidateProgress.done += 1
       }
+      flushCollected()
     }
-    const seen = new Set()
-    candidateCache.value = {
-      ...candidateCache.value,
-      [cachedKey]: collected.filter((candidate) => {
-        if (!candidate?.id || seen.has(candidate.id)) return false
-        seen.add(candidate.id)
-        return true
-      }),
-    }
-    candidateLoadedRepos.value = new Set([...candidateLoadedRepos.value, cachedKey])
   }
-  syncExtensionCandidates()
+
+  await Promise.all(
+    Array.from({ length: Math.min(CANDIDATE_CONCURRENCY, tasks.length) }, () => worker()),
+  )
+
+  // 失败的扩展保持未加载，便于下次只补它。
+  for (const task of tasks) {
+    if (!processedKeys.has(task.cachedKey)) continue
+    if (failedKeys.has(task.cachedKey) || collectedByRepo.has(task.cachedKey)) continue
+    collectedByRepo.set(task.cachedKey, [])
+  }
+  flushCollected()
+  persistCandidateCache()
+
+  // 只有「这个仓库的所有扩展都跑完且没有失败」才算加载完成；取消掉的仓库保持未加载。
+  const loaded = new Set(candidateLoadedRepos.value)
+  for (const cachedKey of new Set(tasks.map((task) => task.cachedKey))) {
+    if (failedKeys.has(cachedKey)) continue
+    const repoTasks = tasks.filter((task) => task.cachedKey === cachedKey)
+    if (repoTasks.every((task) => processedKeys.has(task.cachedKey))) loaded.add(cachedKey)
+  }
+  candidateLoadedRepos.value = loaded
+
   candidateLoading.value = false
+  candidateProgress.label = ''
   nextTick(updateAllStripBounds)
-  if (extensionCandidates.value.length) {
+  if (candidateCancel.value) {
+    notify(`已停止加载，当前有 ${extensionCandidates.value.length} 个可添加内容源`, 'info')
+  } else if (extensionCandidates.value.length) {
     notify(`已加载 ${extensionCandidates.value.length} 个可添加内容源`, 'success')
   } else if (errors.length) {
     notify(`内容源加载失败：${errors[0]}`, 'error')
+  } else {
+    notify('所选仓库没有可添加的内容源', 'info')
   }
+}
+
+// 枚举候选会把扩展真正装进插件运行时；关闭窗口时把没有被任何已添加来源引用的
+// 插件卸掉，避免 sidecar 每次重启都加载几百个用不到的扩展。
+function closeAddSource() {
+  addSourceOpen.value = false
+  api.prunePlugins().catch(() => {})
+}
+
+// 批量枚举要逐个安装扩展并重启插件运行时，先算清楚要装多少个，数量多就问一次。
+async function startBulkCandidateLoad() {
+  const targets = addRepositoryID.value === 'all'
+    ? repositories.value
+    : [selectedRepository.value].filter(Boolean)
+  const kind = activeKind.value
+  const pending = targets.reduce((sum, target) => {
+    const cachedKey = `${target.id}:${kind}`
+    if (candidateLoadedRepos.value.has(cachedKey)) return sum
+    return sum + (target.extensions || []).filter((extension) => canInstallExtension(target, extension)).length
+  }, 0)
+  if (!pending) {
+    notify('内容源已是最新，无需重复加载', 'info')
+    return
+  }
+  if (pending > 5) {
+    const confirmed = await askConfirm({
+      title: '加载内容源',
+      message: `这次需要安装并枚举 ${pending} 个扩展，每个扩展都会重启一次插件运行时，可能要等较久。确定开始吗？`,
+      confirmText: '开始加载',
+    })
+    if (!confirmed) return
+  }
+  await loadRepositoryCandidates(selectedRepository.value)
+}
+
+function readCandidateCacheFromStorage() {
+  try {
+    const raw = window.localStorage.getItem(CANDIDATE_CACHE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function persistCandidateCache() {
+  try {
+    window.localStorage.setItem(CANDIDATE_CACHE_KEY, JSON.stringify(candidateCache.value))
+  } catch {
+    // 隐私模式或配额满时忽略，缓存写不进去不影响主流程。
+  }
+}
+
+function withCandidateTimeout(promise) {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error('加载超时')), CANDIDATE_TIMEOUT_MS)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        window.clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
 }
 
 function syncExtensionCandidates() {
@@ -1101,15 +1244,40 @@ async function loadExtensionCandidates(repository, extension) {
   }
   busy.value = `extension-${extension.id}`
   candidateLoading.value = true
+  candidateProgress.done = 0
+  candidateProgress.total = 1
+  candidateProgress.label = `${repository.name} · ${extension.name || extension.id}`
   try {
-    const result = await api.importRepositoryExtension(repository.id, extension.id)
+    const result = await withCandidateTimeout(api.importRepositoryExtension(repository.id, extension.id))
     const candidates = Array.isArray(result.candidates) ? result.candidates : (Array.isArray(result.sources) ? result.sources : [])
-    extensionCandidates.value = candidates
+    // 逐个扩展加载时只做增量合并，不把整个仓库标记为已加载，方便继续挑其它扩展。
+    const cachedKey = `${repository.id}:${activeKind.value}`
+    const seen = new Set()
+    const rows = [
+      ...(candidateCache.value[cachedKey] || []),
+      ...candidates.map((candidate) => ({
+        ...candidate,
+        repositoryId: repository.id,
+        repositoryName: repository.name,
+      })),
+    ]
+    candidateCache.value = {
+      ...candidateCache.value,
+      [cachedKey]: rows.filter((candidate) => {
+        if (!candidate?.id || seen.has(candidate.id)) return false
+        seen.add(candidate.id)
+        return true
+      }),
+    }
+    persistCandidateCache()
+    syncExtensionCandidates()
     notify(candidates.length ? `已加载 ${candidates.length} 个可添加内容源` : '该仓库没有可添加内容源', candidates.length ? 'success' : 'info')
   } catch (err) {
     notify(`加载内容源失败：${err.message}`, 'error')
   } finally {
     candidateLoading.value = false
+    candidateProgress.done = candidateProgress.total
+    candidateProgress.label = ''
     busy.value = ''
   }
 }
@@ -1135,6 +1303,13 @@ async function addCandidate(candidate) {
     await api.saveAccount(saved.id, { useProxy: addUseProxy.value !== false }).catch(() => {})
     sources.value = [...sources.value, saved]
     extensionCandidates.value = extensionCandidates.value.filter((item) => item.id !== candidate.id)
+    // 同步从本地候选缓存里移除，避免重开窗口又把已添加的来源列出来。
+    const nextCache = {}
+    for (const [key, rows] of Object.entries(candidateCache.value)) {
+      nextCache[key] = (rows || []).filter((item) => item.id !== candidate.id)
+    }
+    candidateCache.value = nextCache
+    persistCandidateCache()
     notify(`${saved.name} 已添加`, 'success')
   } catch (err) {
     notify(`添加失败：${err.message}`, 'error')
@@ -1393,14 +1568,14 @@ function onDragEnd() {
     </div>
   </template>
 
-  <div v-if="addSourceOpen" class="modal-backdrop" @click.self="addSourceOpen = false">
+        <div v-if="addSourceOpen" class="modal-backdrop" @click.self="closeAddSource">
     <div class="modal modal-lg source-add-modal">
       <div class="modal-head">
         <div>
           <h2>添加内容源</h2>
           <p class="muted small">从拓展仓库中选择要加入资源库的内容源，添加后可在探索发现中使用。</p>
         </div>
-        <button class="btn ghost icon" type="button" aria-label="关闭" @click="addSourceOpen = false">
+              <button class="btn ghost icon" type="button" aria-label="关闭" @click="closeAddSource">
           <X :size="18" />
         </button>
       </div>
@@ -1490,10 +1665,26 @@ function onDragEnd() {
             <input v-model="addUseProxy" type="checkbox" />
             <span>应用代理</span>
           </label>
+          <button
+            v-if="!candidateLoading"
+            class="btn small secondary"
+            type="button"
+            @click="startBulkCandidateLoad"
+          >
+            <PackagePlus :size="14" />
+            {{ addRepositoryID === 'all' ? '加载全部仓库内容源' : '加载本仓库内容源' }}
+          </button>
+          <button v-else class="btn small secondary" type="button" @click="candidateCancel = true">
+            <X :size="14" />
+            取消<template v-if="candidateProgress.total">（{{ candidateProgress.done }}/{{ candidateProgress.total }}）</template>
+          </button>
         </div>
-        <div v-if="candidateLoading" class="empty compact">
+        <div v-if="candidateLoading && !visibleCandidates.length" class="empty compact">
           <Loader2 :size="20" class="spin" />
-          <span>正在加载仓库内容源</span>
+          <span>
+            正在加载仓库内容源<template v-if="candidateProgress.total">（{{ candidateProgress.done }}/{{ candidateProgress.total }}）</template>
+            <template v-if="candidateProgress.label"> · {{ candidateProgress.label }}</template>
+          </span>
         </div>
         <div v-else-if="visibleCandidates.length" class="source-add-list">
           <article v-for="candidate in visibleCandidates" :key="candidate.id" class="source-add-row">
@@ -1538,6 +1729,10 @@ function onDragEnd() {
               {{ canInstallExtension(selectedRepository, extension) ? '加载内容源' : '暂不支持' }}
             </button>
           </article>
+        </div>
+        <div v-else-if="addRepositoryID === 'all'" class="empty compact">
+          <PackagePlus :size="20" />
+          <span>先选一个具体仓库，点某个拓展后面的「加载内容源」；或点上方「加载全部仓库内容源」一次性枚举。</span>
         </div>
         <div v-else class="empty compact">该仓库没有可添加的内容源，或仓库尚未同步。</div>
       </div>

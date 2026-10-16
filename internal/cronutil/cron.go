@@ -33,17 +33,12 @@ func Next(expression string, after time.Time) (time.Time, error) {
 	return schedule.Next(after), nil
 }
 
-// Due reports whether a subscription is due according to its cron expression,
-// falling back to a fixed interval for legacy rows without a cron value.
-func Due(expression string, base, now time.Time, fallback time.Duration) (bool, error) {
+// Due reports whether a subscription is due according to its cron expression.
+// A blank expression means the user turned the scheduled update check off, so
+// the subscription never becomes due on its own.
+func Due(expression string, base, now time.Time) (bool, error) {
 	if strings.TrimSpace(expression) == "" {
-		if fallback <= 0 {
-			fallback = 30 * time.Minute
-		}
-		if base.IsZero() {
-			return false, nil
-		}
-		return !now.Before(base.Add(fallback)), nil
+		return false, nil
 	}
 	if base.IsZero() {
 		return false, nil

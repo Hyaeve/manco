@@ -39,7 +39,6 @@ const form = reactive({
   telegramEnabled: false,
   telegramToken: '',
   telegramChatIds: '',
-  telegramProxy: '',
 })
 
 onMounted(async () => {
@@ -76,7 +75,6 @@ async function load() {
     form.telegramEnabled = Boolean(payload.telegramEnabled)
     form.telegramToken = payload.telegramToken || ''
     form.telegramChatIds = Array.isArray(payload.telegramChatIds) ? payload.telegramChatIds.join(', ') : ''
-    form.telegramProxy = payload.telegramProxy || ''
     currentVersion.value = versionPayload.version || ''
   } catch (err) {
     notify(`设置加载失败：${err.message}`, 'error')
@@ -156,7 +154,6 @@ async function saveTelegram() {
       telegramEnabled: Boolean(form.telegramEnabled),
       telegramToken: form.telegramToken.trim(),
       telegramChatIds: chats,
-      telegramProxy: form.telegramProxy.trim(),
     })
     notify(form.telegramEnabled ? 'TG 通知已开启' : 'TG 通知已关闭', 'success')
   } catch (err) {
@@ -225,7 +222,8 @@ async function checkUpdate() {
             保存
           </button>
         </div>
-        <div class="settings-form-stack">
+        <!-- 回车即保存：keydown 会从内部输入框冒泡到这里。 -->
+        <div class="settings-form-stack" @keydown.enter.prevent="saveAccount">
           <label class="field">
             <span>账号</span>
             <input v-model="form.username" class="input" autocomplete="username" />
@@ -257,7 +255,7 @@ async function checkUpdate() {
             保存
           </button>
         </div>
-        <div class="settings-form-stack">
+        <div class="settings-form-stack" @keydown.enter.prevent="saveProxy">
           <label class="field">
             <span>代理地址</span>
             <input v-model="form.proxy" class="input" placeholder="http://127.0.0.1:7890" />
@@ -285,7 +283,7 @@ async function checkUpdate() {
           </button>
         </div>
         <p class="muted small settings-card-help">
-          在 @BotFather 创建机器人拿到 Token，把聊天 ID 填进允许列表后即可接收例行通知，也能直接用指令查看订阅、搜索并订阅作品。
+          在 @BotFather 创建机器人拿到 Token，把聊天 ID 填进允许列表后即可接收例行通知，也能直接用指令查看订阅、搜索并订阅作品。网络走上面「代理」栏目里的系统代理设置。
         </p>
         <button
           class="function-toggle"
@@ -296,7 +294,7 @@ async function checkUpdate() {
           <Send :size="16" />
           <span>启用 TG 通知</span>
         </button>
-        <div class="settings-form-stack">
+        <div class="settings-form-stack" @keydown.enter.prevent="saveTelegram">
           <label class="field">
             <span>Bot Token</span>
             <input v-model="form.telegramToken" class="input" autocomplete="off" placeholder="123456:ABC-DEF..." />
@@ -304,10 +302,6 @@ async function checkUpdate() {
           <label class="field">
             <span>允许的 Chat ID</span>
             <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
-          </label>
-          <label class="field">
-            <span>TG 专用代理（可选）</span>
-            <input v-model="form.telegramProxy" class="input" placeholder="http://127.0.0.1:7890" />
           </label>
         </div>
       </section>

@@ -26,53 +26,54 @@
 
 [data-theme='dark'] {
   color-scheme: dark;
-  --bg: #0f1319;
-  --surface: #161b22;
-  --surface-muted: #1c232c;
-  --border: #2a323d;
-  --border-strong: #3a4553;
-  --text: #e6edf3;
-  --text-muted: #8b97a5;
-  --primary: #7c8cf8;
-  --primary-strong: #97a4f8;
-  --primary-soft: #232a48;
-  --select-highlight: #3b381f;
-  --select-highlight-strong: #746c30;
-  --select-highlight-text: #f7efb0;
-  --success: #4ade80;
-  --success-soft: #122a1c;
-  --warning: #fbbf24;
-  --warning-soft: #2a2413;
-  --danger: #fb7185;
-  --danger-soft: #2d151c;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  /* 卡通风格暖色夜间：可可底 + 奶油字 + 纸箱猫的橘黄主色。 */
+  --bg: #1b1512;
+  --surface: #251d17;
+  --surface-muted: #2f261d;
+  --border: #3d3226;
+  --border-strong: #57462f;
+  --text: #f7eddd;
+  --text-muted: #c2ae93;
+  --primary: #f2b544;
+  --primary-strong: #ffd06a;
+  --primary-soft: #3f3220;
+  --select-highlight: #453a1e;
+  --select-highlight-strong: #8a763a;
+  --select-highlight-text: #ffe9a8;
+  --success: #6ee7a8;
+  --success-soft: #143021;
+  --warning: #fcd34d;
+  --warning-soft: #33280f;
+  --danger: #fb8f8f;
+  --danger-soft: #35191a;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-color-scheme: dark) {
   [data-theme='auto'] {
     color-scheme: dark;
-    --bg: #0f1319;
-    --surface: #161b22;
-    --surface-muted: #1c232c;
-    --border: #2a323d;
-    --border-strong: #3a4553;
-    --text: #e6edf3;
-    --text-muted: #8b97a5;
-    --primary: #7c8cf8;
-    --primary-strong: #97a4f8;
-    --primary-soft: #232a48;
-    --select-highlight: #3b381f;
-    --select-highlight-strong: #746c30;
-    --select-highlight-text: #f7efb0;
-    --success: #4ade80;
-    --success-soft: #122a1c;
-    --warning: #fbbf24;
-    --warning-soft: #2a2413;
-    --danger: #fb7185;
-    --danger-soft: #2d151c;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    --bg: #1b1512;
+    --surface: #251d17;
+    --surface-muted: #2f261d;
+    --border: #3d3226;
+    --border-strong: #57462f;
+    --text: #f7eddd;
+    --text-muted: #c2ae93;
+    --primary: #f2b544;
+    --primary-strong: #ffd06a;
+    --primary-soft: #3f3220;
+    --select-highlight: #453a1e;
+    --select-highlight-strong: #8a763a;
+    --select-highlight-text: #ffe9a8;
+    --success: #6ee7a8;
+    --success-soft: #143021;
+    --warning: #fcd34d;
+    --warning-soft: #33280f;
+    --danger: #fb8f8f;
+    --danger-soft: #35191a;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   }
 }
 

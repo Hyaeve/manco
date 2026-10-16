@@ -132,6 +132,8 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	engine.SetCacheDir(filepath.Join(cfg.DataDir, "download-cache"))
 	scanner := scheduler.New(registry, repository, downloadQueue{store: repository, engine: engine}, cfg.ScanInterval, logger)
 	bot := telegram.New(logger)
+	// TG 复用应用统一创建的 HTTP 客户端，因此直接跟随系统设置里的代理。
+	bot.SetHTTPClient(client)
 
 	assets, err := fs.Sub(embedded, "web/dist")
 	if err != nil {
@@ -155,6 +157,13 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Telegram:  bot,
 	})
 	bot.SetApp(server)
+	// 旧的「打开添加内容源就把所有仓库枚举一遍」会把几百个扩展留在运行时里，
+	// 每次重启 sidecar 都要全部加载，整站都会跟着变慢；启动时先清一次。
+	if removed, err := server.PruneUnusedPlugins(ctx); err != nil {
+		logger.Printf("manco: prune unused plugins: %v", err)
+	} else if removed > 0 {
+		logger.Printf("manco: pruned %d unused extension(s) on startup", removed)
+	}
 	scanner.SetNotifier(bot)
 	settings, err := server.Settings(ctx)
 	if err != nil {
@@ -164,10 +173,9 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		engine.SetSourceSettings(server.SourceSettings(ctx))
 		engine.SetDownloadPolicy(settings.BatchSize, settings.BatchIntervalMinutes, settings.ConvertToSimplified)
 		bot.Configure(telegram.Config{
-			Enabled:  settings.TelegramEnabled,
-			Token:    settings.TelegramToken,
-			ChatIDs:  settings.TelegramChatIDs,
-			ProxyURL: settings.TelegramProxy,
+			Enabled: settings.TelegramEnabled,
+			Token:   settings.TelegramToken,
+			ChatIDs: settings.TelegramChatIDs,
 		})
 	}
 	bot.Start(ctx)

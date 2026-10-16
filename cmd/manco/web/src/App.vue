@@ -321,9 +321,12 @@ function activityIcon(level) {
     <div v-if="menuOpen" class="nav-overlay" @click="menuOpen = false" />
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
-        <img class="brand-lockup brand-lockup-light" src="/brand-lockup.png" alt="Manco 漫画书籍订阅下载" />
-        <img class="brand-lockup brand-lockup-dark" src="/brand-lockup-plate.png" alt="Manco 漫画书籍订阅下载" />
-        <small class="brand-tagline">漫画书籍 · 订阅下载</small>
+        <span class="brand-mark">
+          <img class="brand-lockup brand-lockup-light" src="/brand-lockup.png" alt="Manco 漫画书籍订阅下载" />
+          <img class="brand-lockup brand-lockup-dark" src="/brand-lockup-plate.png" alt="Manco 漫画书籍订阅下载" />
+          <!-- 副标题对齐横条图里 “Manco” 字标的左边，而不是整条图的左边。 -->
+          <small class="brand-tagline">漫画书籍 · 订阅下载</small>
+        </span>
       </div>
       <nav aria-label="主导航">
         <div class="nav-group">

@@ -85,6 +85,7 @@ var actionAliases = map[string]string{
 	"检查": "check",
 	"归档": "archive",
 	"补全": "fill",
+	"刮削": "scrape",
 	"全量": "full",
 	"删除": "delete",
 }
@@ -115,6 +116,7 @@ func helpText() string {
 		"包子搜索 关键词",
 		"检查 作品名",
 		"补全 作品名",
+		"刮削 作品名",
 		"全量 作品名",
 		"归档 作品名",
 		"删除 作品名",
@@ -217,6 +219,17 @@ func (s *Service) runAction(ctx context.Context, chat, action string, subscripti
 			return
 		}
 		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》缺 %d 章，已全部入队（已存在 %d 章）。", subscription.Title, queued, skipped), nil)
+	case "scrape":
+		updated, err := s.app.BotScrape(ctx, subscription.ID)
+		if err != nil {
+			s.sendMessage(ctx, chat, "刮削失败："+err.Error(), nil)
+			return
+		}
+		if !updated {
+			s.sendMessage(ctx, chat, fmt.Sprintf("《%s》还没有可刮削的本地文件。", subscription.Title), nil)
+			return
+		}
+		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》已重新刮削元数据，ComicInfo.xml 与 series.json 已覆盖。", subscription.Title), nil)
 	case "full":
 		queued, err := s.app.BotFullDownload(ctx, subscription.ID)
 		if err != nil {

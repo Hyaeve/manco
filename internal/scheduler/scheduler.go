@@ -357,7 +357,7 @@ func (s *Scheduler) due(subscription model.Subscription, now time.Time) bool {
 	if base.IsZero() {
 		return false
 	}
-	due, err := cronutil.Due(subscription.CronExpr, base, now, time.Duration(s.intervalNanos.Load()))
+	due, err := cronutil.Due(subscription.CronExpr, base, now)
 	if err != nil {
 		s.logger.Printf("scheduler: invalid cron for %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		return false

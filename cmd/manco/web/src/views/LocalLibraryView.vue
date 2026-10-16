@@ -684,8 +684,10 @@ function downloadReaderFile() {
           <span class="local-library-chapter-badge" :class="{ single: String(chapterCount(item)).length === 1 }">
             {{ chapterCount(item) }}
           </span>
-          <img v-if="coverUrl(item)" :src="coverUrl(item)" :alt="item.title" loading="lazy" decoding="async" />
-          <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
+          <span class="local-library-cover-frame">
+            <img v-if="coverUrl(item)" :src="coverUrl(item)" :alt="item.title" loading="lazy" decoding="async" />
+            <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
+          </span>
         </span>
         <span class="local-library-body">
           <strong class="local-library-title">{{ item.title }}</strong>

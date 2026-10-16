@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,4 +353,102 @@ func newProtocolTestManagerResult(t *testing.T, result map[string]any) (*Manager
 		plugins: []pluginRecord{{ID: "test"}},
 		process: process,
 	}, calls
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+func TestPrunePluginsRemovesUnreferencedExtensions(t *testing.T) {
+	configDir := t.TempDir()
+	pluginDir := filepath.Join(configDir, "plugins")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugins: %v", err)
+	}
+	keepPath := filepath.Join(pluginDir, "keep.jar")
+	dropPath := filepath.Join(pluginDir, "drop.jar")
+	for _, path := range []string{keepPath, dropPath} {
+		if err := os.WriteFile(path, []byte("jar"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	manager := &Manager{
+		configDir: configDir,
+		plugins: []pluginRecord{
+			{ID: "keep", Path: "plugins/keep.jar", Type: RuntimeKototoro},
+			{ID: "drop", Path: "plugins/drop.jar", Type: RuntimeKototoro},
+		},
+	}
+
+	removed, err := manager.PrunePlugins(map[string]struct{}{"keep": {}})
+	if err != nil {
+		t.Fatalf("PrunePlugins() error = %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if len(manager.plugins) != 1 || manager.plugins[0].ID != "keep" {
+		t.Fatalf("plugins = %#v", manager.plugins)
+	}
+	if _, err := os.Stat(keepPath); err != nil {
+		t.Fatalf("kept plugin file missing: %v", err)
+	}
+	if _, err := os.Stat(dropPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dropped plugin file still present: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(configDir, "kototoro-host.json"))
+	if err != nil {
+		t.Fatalf("read host config: %v", err)
+	}
+	if strings.Contains(string(raw), `"drop"`) || !strings.Contains(string(raw), `"keep"`) {
+		t.Fatalf("host config = %s", raw)
+	}
+}
+
+func TestPrunePluginsKeepsReferencedExtensions(t *testing.T) {
+	manager := &Manager{
+		configDir: t.TempDir(),
+		plugins:   []pluginRecord{{ID: "keep", Path: "plugins/keep.jar", Type: RuntimeKototoro}},
+	}
+
+	removed, err := manager.PrunePlugins(map[string]struct{}{"keep": {}})
+	if err != nil {
+		t.Fatalf("PrunePlugins() error = %v", err)
+	}
+	if removed != 0 || len(manager.plugins) != 1 {
+		t.Fatalf("removed = %d, plugins = %#v", removed, manager.plugins)
+	}
+}
+
+func TestEnsureWithRuntimeSkipsInstalledPlugin(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("download must not be attempted for an installed plugin")
+	})}
+	manager := &Manager{
+		configDir: t.TempDir(),
+		client:    client,
+		plugins:   []pluginRecord{{ID: "demo", Path: "plugins/demo.jar", Type: RuntimeKototoro}},
+	}
+
+	if err := manager.EnsureWithRuntime(context.Background(), "demo", "https://example.invalid/demo.jar", RuntimeKototoro); err != nil {
+		t.Fatalf("EnsureWithRuntime() error = %v", err)
+	}
+	if err := manager.EnsureWithRuntime(context.Background(), "bad id", "https://example.invalid/demo.jar", RuntimeKototoro); err == nil {
+		t.Fatal("EnsureWithRuntime() accepted an invalid plugin id")
+	}
+}
+
+func TestDiffSourcesReturnsOnlyNewNames(t *testing.T) {
+	before := map[string]struct{}{"old": {}}
+	all := []Source{
+		{Name: "old", Title: "旧来源"},
+		{Name: "New", Title: "新来源"},
+		{Name: " NEW ", Title: "带空白的重复"},
+		{Name: "", Title: "空名称"},
+	}
+
+	added := diffSources(before, all)
+	if len(added) != 1 || added[0].Name != "New" {
+		t.Fatalf("added = %#v", added)
+	}
 }

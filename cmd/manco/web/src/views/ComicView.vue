@@ -266,7 +266,7 @@ function openSubscribe() {
   }
   error.value = ''
   subForm.value = {
-    cronExpr: subForm.value.cronExpr || defaultCron(),
+    cronExpr: defaultCron(),
     downloadDir: sourceDefaultDownloadDir.value || subForm.value.downloadDir || lastSubscriptionDownloadDir(),
     seriesDir: '',
     convertToSimplified: true,
@@ -274,7 +274,18 @@ function openSubscribe() {
     coverBlur: false,
     allChapters: true,
   }
+  // 自动追更默认勾选；关掉后 Cron 留空，等于不启用定时检查。
+  autoDownload.value = true
   subscribeOpen.value = true
+}
+
+function toggleAutoUpdate() {
+  autoDownload.value = !autoDownload.value
+  if (autoDownload.value) {
+    if (!subForm.value.cronExpr.trim()) subForm.value.cronExpr = defaultCron()
+  } else {
+    subForm.value.cronExpr = ''
+  }
 }
 
 async function confirmSubscribe() {
@@ -283,8 +294,8 @@ async function confirmSubscribe() {
     notify('该作品已在订阅清单中', 'info')
     return
   }
-  if (!subForm.value.cronExpr.trim()) {
-    notify('Cron 表达式不能为空', 'warning')
+  if (autoDownload.value && !subForm.value.cronExpr.trim()) {
+    notify('自动追更需要填写 Cron 表达式', 'warning')
     return
   }
   if (!subForm.value.downloadDir.trim()) {
@@ -306,7 +317,7 @@ async function confirmSubscribe() {
       baseline: subForm.value.allChapters ? '' : last?.id || '',
       lastChapterOrder: subForm.value.allChapters ? 0 : last?.order || 0,
       allChapters: subForm.value.allChapters,
-      cronExpr: subForm.value.cronExpr.trim(),
+      cronExpr: autoDownload.value ? subForm.value.cronExpr.trim() : '',
       downloadDir: subForm.value.downloadDir.trim(),
       seriesDir: subForm.value.seriesDir.trim(),
       convertToSimplified: Boolean(subForm.value.convertToSimplified),
@@ -364,7 +375,8 @@ async function downloadSelected() {
       comicAuthor: comic.value.author,
       comicDescription: comic.value.description,
       comicTags: comic.value.tags || [],
-      autoDownload: autoDownload.value,
+      // 只下载，不订阅：订阅清单只应该收录显式订阅过的作品。
+      autoDownload: false,
       mergeChapters: Boolean(downloadForm.value.mergeChapters),
       chapters: picked,
       downloadDir: downloadForm.value.downloadDir.trim(),
@@ -514,8 +526,15 @@ async function downloadSelected() {
       <div class="modal-body">
         <label class="field">
           <span>Cron 表达式</span>
-          <input v-model="subForm.cronExpr" class="input" placeholder="0 21 * * 5" />
-          <span class="muted small">默认按当前整点生成每周检查周期，可改为任意 Cron 表达式。</span>
+          <input
+            v-model="subForm.cronExpr"
+            class="input"
+            placeholder="0 21 * * 5"
+            :disabled="!autoDownload"
+          />
+          <span class="muted small">
+            默认按当前整点生成每周检查周期，可改为任意 Cron 表达式；关掉「自动追更」会清空此项，留空即不启用定时检查。
+          </span>
         </label>
         <label class="field">
           <span>下载位置</span>
@@ -570,7 +589,7 @@ async function downloadSelected() {
             class="function-toggle"
             :class="{ active: autoDownload }"
             type="button"
-            @click="autoDownload = !autoDownload"
+            @click="toggleAutoUpdate"
           >
             <Rss :size="16" />
             <span>自动追更</span>
