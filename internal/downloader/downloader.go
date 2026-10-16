@@ -41,26 +41,30 @@ import (
 )
 
 type Engine struct {
-	registry              *sources.Registry
-	store                 Jobs
-	downloadDir           string
-	cacheDir              string
-	maxChapterConcurrency int
-	maxPageConcurrency    int
-	logger                *log.Logger
-	sourceConcurrency     map[string]int
-	sourcePageConcurrency map[string]int
-	sourceBatchSize       map[string]int
-	sourceBatchInterval   map[string]time.Duration
-	sourceBatchCompleted  map[string]int
-	sourceCooldownUntil   map[string]time.Time
-	batchSize             int
-	batchInterval         time.Duration
-	batchCompleted        int
-	cooldownUntil         time.Time
-	convertToSimplified   bool
-	activeTotal           int
-	activeBySource        map[string]int
+	registry    *sources.Registry
+	store       Jobs
+	downloadDir string
+	cacheDir    string
+	// maxChapterConcurrency 是**全局**同时下载章节数上限；单个内容源另有
+	// defaultSourceConcurrency（默认值）与 sourceConcurrency（显式覆盖）。
+	// 之前全局上限被写成「各来源上限之和」，来源一多就等于没有上限。
+	maxChapterConcurrency    int
+	defaultSourceConcurrency int
+	maxPageConcurrency       int
+	logger                   *log.Logger
+	sourceConcurrency        map[string]int
+	sourcePageConcurrency    map[string]int
+	sourceBatchSize          map[string]int
+	sourceBatchInterval      map[string]time.Duration
+	sourceBatchCompleted     map[string]int
+	sourceCooldownUntil      map[string]time.Time
+	batchSize                int
+	batchInterval            time.Duration
+	batchCompleted           int
+	cooldownUntil            time.Time
+	convertToSimplified      bool
+	activeTotal              int
+	activeBySource           map[string]int
 
 	mu      sync.Mutex
 	metaMu  sync.Mutex
@@ -80,10 +84,10 @@ func (e *Engine) SetConcurrency(chapters, pages int) {
 	}
 	e.mu.Lock()
 	e.maxPageConcurrency = pages
-	for sourceID := range e.sourceConcurrency {
-		e.sourceConcurrency[sourceID] = chapters
-	}
-	e.maxChapterConcurrency = chapters * len(e.sourceConcurrency)
+	// 全局上限就是设置里的章节并发数；单个来源默认也按这个值限流，
+	// 但每个来源可以单独覆盖，且不会再被乘上来源数量。
+	e.maxChapterConcurrency = chapters
+	e.defaultSourceConcurrency = chapters
 	e.mu.Unlock()
 	e.Notify()
 }
@@ -91,16 +95,11 @@ func (e *Engine) SetConcurrency(chapters, pages int) {
 // SetSourceConcurrency applies per-source chapter limits.
 func (e *Engine) SetSourceConcurrency(limits map[string]int) {
 	e.mu.Lock()
-	total := 0
 	for sourceID, limit := range limits {
 		if limit < 1 {
 			limit = 1
 		}
 		e.sourceConcurrency[sourceID] = limit
-		total += limit
-	}
-	if total > 0 {
-		e.maxChapterConcurrency = total
 	}
 	e.mu.Unlock()
 	e.Notify()
@@ -123,15 +122,6 @@ func (e *Engine) SetSourceSettings(settings map[string]model.SourceDownloadSetti
 		if value.BatchIntervalMinutes >= 0 {
 			e.sourceBatchInterval[sourceID] = time.Duration(value.BatchIntervalMinutes) * time.Minute
 		}
-	}
-	total := 0
-	for _, limit := range e.sourceConcurrency {
-		if limit > 0 {
-			total += limit
-		}
-	}
-	if total > 0 {
-		e.maxChapterConcurrency = total
 	}
 	e.mu.Unlock()
 	e.Notify()
@@ -182,12 +172,13 @@ func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxCh
 		downloadDir = "downloads"
 	}
 	return &Engine{
-		registry:              registry,
-		store:                 store,
-		downloadDir:           downloadDir,
-		cacheDir:              filepath.Join(os.TempDir(), "manco-download-cache"),
-		maxChapterConcurrency: maxChapterConcurrency,
-		maxPageConcurrency:    maxPageConcurrency,
+		registry:                 registry,
+		store:                    store,
+		downloadDir:              downloadDir,
+		cacheDir:                 filepath.Join(os.TempDir(), "manco-download-cache"),
+		maxChapterConcurrency:    maxChapterConcurrency,
+		defaultSourceConcurrency: maxChapterConcurrency,
+		maxPageConcurrency:       maxPageConcurrency,
 		sourceConcurrency: map[string]int{
 			"picacg":  maxChapterConcurrency,
 			"jmcomic": maxChapterConcurrency,
@@ -379,7 +370,13 @@ func (e *Engine) claim(job model.DownloadJob) bool {
 	if e.activeTotal >= e.maxChapterConcurrency {
 		return false
 	}
-	if limit := e.sourceConcurrency[job.SourceID]; limit > 0 && e.activeBySource[job.SourceID] >= limit {
+	// 单个来源的上限：显式覆盖优先，否则用全局默认值。这样即使某个来源
+	// 没有单独配置，也不会把全局并发吃满。
+	limit := e.sourceConcurrency[job.SourceID]
+	if limit <= 0 {
+		limit = e.defaultSourceConcurrency
+	}
+	if limit > 0 && e.activeBySource[job.SourceID] >= limit {
 		return false
 	}
 	e.active[job.ID] = func() {}

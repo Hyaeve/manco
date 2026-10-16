@@ -62,7 +62,10 @@ const form = ref({
   coverBlur: false,
 })
 
-const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 'paused'].includes(job.status)))
+// 有排队/进行中的章节时才轮询刷新；数量由 /api/subscriptions 的 jobStats 给出。
+const hasActive = computed(() =>
+  Object.values(jobStatsData.value || {}).some((value) => Number(value?.pending || 0) > 0),
+)
 
 function itemKind(item) {
   const kind = sources.value[item.sourceId]?.kind
@@ -232,7 +235,10 @@ async function load(silent = false) {
   try {
     const [subscriptions, downloads, sourcePayload] = await Promise.all([
       api.subscriptions(),
-      api.downloads(500),
+      // 统计信息由 /api/subscriptions 的 jobStats 直接给出，不再额外拉一次
+      // 几百条下载任务——那个请求服务端每条都要查本地封面与元数据，5 秒
+      // 轮询一次会把机器拖住。
+      Promise.resolve({ items: [] }),
       Object.keys(sources.value).length ? Promise.resolve({ items: [] }) : api.sources().catch(() => ({ items: [] })),
     ])
     for (const source of sourcePayload.items || []) {
@@ -393,9 +399,9 @@ async function remove(item) {
 }
 
 function cover(item) {
-  if (item.localCover) return api.localFileUrl(item.localCover)
+  if (item.localCover) return api.localFileUrl(item.localCover, false, 320)
   if (item.cachedCover) return item.cachedCover
-  return api.imageUrl(item.cover, item.sourceId)
+  return api.imageUrl(item.cover, item.sourceId, '', 320)
 }
 
 function sourceIcon(item) {

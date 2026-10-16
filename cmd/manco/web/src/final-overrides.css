@@ -4902,3 +4902,11 @@ svg.source-editor-icon {
 .local-selection-bar .btn:disabled {
   opacity: 0.45;
 }
+
+/* 任务列表 / 完成列表分页取数：滚到底或点按钮再补下一页。 */
+.download-load-more,
+.completed-load-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px 0 4px;
+}

@@ -583,3 +583,67 @@ func TestExtensionCandidatesCacheRoundTrip(t *testing.T) {
 		t.Fatalf("repository purge left entries: %v", err)
 	}
 }
+
+func TestDownloadJobPageFiltersAndCounts(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	first := createJob(t, repository, "1")
+	if err := repository.UpdateDownloadJob(ctx, first.ID, "completed", 1, 1, "/tmp/1.cbz", ""); err != nil {
+		t.Fatalf("complete job 1: %v", err)
+	}
+	second := createJob(t, repository, "2")
+	if err := repository.UpdateDownloadJob(ctx, second.ID, "completed", 1, 1, "/tmp/2.cbz", ""); err != nil {
+		t.Fatalf("complete job 2: %v", err)
+	}
+	failed := createJob(t, repository, "3")
+	if err := repository.UpdateDownloadJob(ctx, failed.ID, "failed", 1, 0, "", "boom"); err != nil {
+		t.Fatalf("fail job: %v", err)
+	}
+	_ = createJob(t, repository, "4") // 仍在排队
+
+	// active 页 = 未完成 + 失败，分页取且总数只算这一类。
+	page, total, err := repository.DownloadJobPage(ctx, "active", 1, 0)
+	if err != nil {
+		t.Fatalf("DownloadJobPage(active) error = %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("active total = %d, want 2", total)
+	}
+	if len(page) != 1 {
+		t.Fatalf("active page size = %d, want 1", len(page))
+	}
+	second1, total1, err := repository.DownloadJobPage(ctx, "active", 1, 1)
+	if err != nil {
+		t.Fatalf("DownloadJobPage(active, offset 1) error = %v", err)
+	}
+	if len(second1) != 1 || total1 != 2 {
+		t.Fatalf("active second page = %d rows, total %d", len(second1), total1)
+	}
+	if page[0].ID == second1[0].ID {
+		t.Fatalf("分页两页返回了同一条：%d", page[0].ID)
+	}
+
+	// completed 页只看已完成。
+	completedPage, completedTotal, err := repository.DownloadJobPage(ctx, "completed", 10, 0)
+	if err != nil {
+		t.Fatalf("DownloadJobPage(completed) error = %v", err)
+	}
+	if completedTotal != 2 || len(completedPage) != 2 {
+		t.Fatalf("completed page = %d rows, total %d, want 2/2", len(completedPage), completedTotal)
+	}
+	for _, job := range completedPage {
+		if job.Status != "completed" {
+			t.Fatalf("completed page 混入了状态 %q", job.Status)
+		}
+	}
+
+	// 越界 offset 返回空页但总数不变，虚拟列表据此保留滚动条高度。
+	emptyPage, emptyTotal, err := repository.DownloadJobPage(ctx, "completed", 10, 99)
+	if err != nil {
+		t.Fatalf("DownloadJobPage(completed, offset 99) error = %v", err)
+	}
+	if len(emptyPage) != 0 || emptyTotal != 2 {
+		t.Fatalf("越界分页 = %d rows, total %d", len(emptyPage), emptyTotal)
+	}
+}

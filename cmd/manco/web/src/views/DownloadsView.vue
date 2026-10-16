@@ -32,9 +32,13 @@ const TASK_ROW_HEIGHT = 76
 const TASK_ROW_GAP = 8
 const TASK_ROW_STEP = TASK_ROW_HEIGHT + TASK_ROW_GAP
 const TASK_VIRTUAL_OVERSCAN = 4
+// 每次从服务端取多少条；滚动到已加载末尾时继续追加。
+const TASK_PAGE_SIZE = 200
 const virtualViewport = ref(null)
 const virtualScrollTop = ref(0)
 const virtualViewportHeight = ref(720)
+const totalTasks = ref(0)
+const loadingMore = ref(false)
 let scrollContainer = null
 
 const filters = [
@@ -212,6 +216,10 @@ function measureVirtual() {
   virtualScrollTop.value = Math.max(0, scrollTop - top)
   const height = scrollContainer ? scrollContainer.clientHeight : window.innerHeight
   virtualViewportHeight.value = Math.max(320, height || 720)
+  // 默认视图（无筛选）滚到已加载末尾时静默补下一页。
+  if (filter.value === 'all' && !keyword.value.trim() && items.value.length < totalTasks.value) {
+    if (virtualRange.value.end >= visible.value.length - TASK_VIRTUAL_OVERSCAN * 2) loadMoreTasks()
+  }
 }
 
 function onPageScroll() {
@@ -270,13 +278,34 @@ onActivated(() => {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const payload = await api.downloads()
+    // 只取第一页：任务历史可能上万条，整表拉下来既慢又占内存。
+    // 静默轮询时按已加载条数取，避免把用户翻过的页缩回去。
+    const limit = silent ? Math.max(TASK_PAGE_SIZE, items.value.length) : TASK_PAGE_SIZE
+    const payload = await api.downloads(limit, 0, 'active')
     items.value = payload.items || []
+    totalTasks.value = Number(payload.total || items.value.length)
     if (silent) error.value = ''
   } catch (err) {
     if (!silent) error.value = err.message
   } finally {
     loading.value = false
+  }
+}
+
+// 虚拟列表滚到已加载数据末尾时再取下一页。
+async function loadMoreTasks() {
+  if (loadingMore.value || items.value.length >= totalTasks.value) return
+  loadingMore.value = true
+  try {
+    const payload = await api.downloads(TASK_PAGE_SIZE, items.value.length, 'active')
+    const next = payload.items || []
+    if (next.length) items.value = [...items.value, ...next]
+    totalTasks.value = Number(payload.total ?? totalTasks.value)
+    error.value = ''
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -557,6 +586,13 @@ async function remove(item, removeFile) {
             </div>
           </article>
         </div>
+      </div>
+      <div v-if="items.length < totalTasks" class="download-load-more">
+        <button class="btn secondary small" type="button" :disabled="loadingMore" @click="loadMoreTasks">
+          <Loader2 v-if="loadingMore" :size="14" class="spin" />
+          <RefreshCw v-else :size="14" />
+          加载更多（已加载 {{ items.length }} / {{ totalTasks }}）
+        </button>
       </div>
     </div>
 

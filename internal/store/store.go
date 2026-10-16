@@ -261,7 +261,8 @@ func (s *Store) DownloadJobStats(ctx context.Context) (map[string]model.Download
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT source_id, comic_id,
 			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
-			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN status IN ('queued', 'running', 'waiting', 'paused') THEN 1 ELSE 0 END) AS pending
 		FROM download_jobs
 		GROUP BY source_id, comic_id`)
 	if err != nil {
@@ -271,11 +272,11 @@ func (s *Store) DownloadJobStats(ctx context.Context) (map[string]model.Download
 	stats := map[string]model.DownloadJobStats{}
 	for rows.Next() {
 		var sourceID, comicID string
-		var succeeded, failed int
-		if err := rows.Scan(&sourceID, &comicID, &succeeded, &failed); err != nil {
+		var succeeded, failed, pending int
+		if err := rows.Scan(&sourceID, &comicID, &succeeded, &failed, &pending); err != nil {
 			return nil, err
 		}
-		stats[sourceID+"\x00"+comicID] = model.DownloadJobStats{Succeeded: succeeded, Failed: failed}
+		stats[sourceID+"\x00"+comicID] = model.DownloadJobStats{Succeeded: succeeded, Failed: failed, Pending: pending}
 	}
 	return stats, rows.Err()
 }
@@ -959,6 +960,47 @@ func (s *Store) DownloadJobByChapter(ctx context.Context, sourceID, comicID, cha
 
 func (s *Store) DownloadJob(ctx context.Context, id int64) (model.DownloadJob, error) {
 	return scanJob(s.db.QueryRowContext(ctx, jobSelect+` WHERE id = ?`, id))
+}
+
+// DownloadJobPage returns one page of the task list together with the total row
+// count of the same selection. status is "completed" for the finished list and
+// anything else for the unfinished list (queued/running/waiting/paused plus the
+// failures that still need attention).
+//
+// The task list used to load the whole download_jobs table in one response; on
+// a NAS with tens of thousands of finished chapters that dominated both the
+// query and the browser's parse time, so the UI now pages through it.
+func (s *Store) DownloadJobPage(ctx context.Context, status string, limit, offset int) ([]model.DownloadJob, int, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	where := `status <> 'completed'`
+	order := `CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id DESC`
+	if strings.EqualFold(strings.TrimSpace(status), "completed") {
+		where = `status = 'completed'`
+		order = `COALESCE(finished_at, updated_at, created_at) DESC, id DESC`
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE `+where).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	jobs := make([]model.DownloadJob, 0, limit)
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, total, rows.Err()
 }
 
 func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.DownloadJob, error) {

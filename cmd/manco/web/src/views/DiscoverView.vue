@@ -19,6 +19,7 @@ import ContentLink from '../components/ContentLink.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { notify } from '../stores/notices'
+import { rememberComicPreview } from '../stores/comicPreview'
 import {
   discoverPanelsExpired,
   markDiscoverPanelsLoaded,
@@ -451,7 +452,7 @@ function rememberPosition() {
 
 function cover(item) {
   if (item.cachedCover) return item.cachedCover
-  return api.imageUrl(item.cover, item.sourceId)
+    return api.imageUrl(item.cover, item.sourceId, '', 320)
 }
 
 function filterOptions(group) {
@@ -464,7 +465,9 @@ function sourceKindLabel(kind) {
   return { comic: '漫画源', book: '书籍源', other: '其他源' }[kind] || '来源'
 }
 
-function rememberOpenPosition() {
+// 进入详情前把列表卡片数据留下来，详情页可以立刻渲染首屏。
+function openComic(item) {
+  rememberComicPreview(item)
   rememberPosition()
 }
 
@@ -616,7 +619,7 @@ function latestLabel(item) {
           :key="`${item.sourceId}-${item.id}`"
           class="comic-card source-comic-card"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-          @click="rememberOpenPosition"
+          @click="openComic(item)"
         >
           <div class="comic-cover">
             <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
@@ -634,7 +637,7 @@ function latestLabel(item) {
           :key="`${item.sourceId}-${item.id}`"
           class="source-list-card"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-          @click="rememberOpenPosition"
+          @click="openComic(item)"
         >
           <div class="source-list-cover">
             <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />

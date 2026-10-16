@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   Archive,
   CheckCircle2,
+  Download,
   ExternalLink,
   Github,
   Languages,
@@ -39,6 +40,10 @@ const form = reactive({
   telegramEnabled: false,
   telegramToken: '',
   telegramChatIds: '',
+  maxChapterConcurrency: 2,
+  maxPageConcurrency: 4,
+  batchSize: 5,
+  batchIntervalMinutes: 5,
 })
 
 onMounted(async () => {
@@ -75,6 +80,10 @@ async function load() {
     form.telegramEnabled = Boolean(payload.telegramEnabled)
     form.telegramToken = payload.telegramToken || ''
     form.telegramChatIds = Array.isArray(payload.telegramChatIds) ? payload.telegramChatIds.join(', ') : ''
+    form.maxChapterConcurrency = Number(payload.maxChapterConcurrency) || 2
+    form.maxPageConcurrency = Number(payload.maxPageConcurrency) || 4
+    form.batchSize = Number(payload.batchSize) || 0
+    form.batchIntervalMinutes = Number(payload.batchIntervalMinutes) || 0
     currentVersion.value = versionPayload.version || ''
   } catch (err) {
     notify(`设置加载失败：${err.message}`, 'error')
@@ -136,6 +145,24 @@ async function saveConvertToSimplified() {
   try {
     await api.saveSettings({ convertToSimplified: form.convertToSimplified })
     notify(form.convertToSimplified ? '全局繁转简已开启' : '全局繁转简已关闭', 'success')
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    saving.value = ''
+  }
+}
+
+// 全局下载设置：章节并发是整台实例的上限，不受内容源数量影响。
+async function saveDownload() {
+  saving.value = 'download'
+  try {
+    await api.saveSettings({
+      maxChapterConcurrency: Number(form.maxChapterConcurrency) || 1,
+      maxPageConcurrency: Number(form.maxPageConcurrency) || 1,
+      batchSize: Number(form.batchSize) || 0,
+      batchIntervalMinutes: Number(form.batchIntervalMinutes) || 0,
+    })
+    notify('下载设置已保存', 'success')
   } catch (err) {
     notify(err.message, 'error')
   } finally {
@@ -303,6 +330,42 @@ async function checkUpdate() {
             <span>允许的 Chat ID</span>
             <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
           </label>
+        </div>
+      </section>
+    </div>
+
+    <div class="settings-pair settings-bottom-pair">
+      <section id="settings-download" class="card card-pad settings-compact-card">
+        <div class="settings-card-title">
+          <div class="inline">
+            <Download :size="17" />
+            <h2>下载设置</h2>
+          </div>
+          <button class="btn settings-save-button" type="button" :disabled="saving === 'download'" @click="saveDownload">
+            <Loader2 v-if="saving === 'download'" :size="15" class="spin" />
+            保存
+          </button>
+        </div>
+        <p class="muted small settings-card-help">
+          「全局同时下载章节数」是整台实例的上限：不管有多少内容源在排队，同时下载的章节都不会超过这个数。单个内容源可以在「资源拓展」里单独限制得更低。
+        </p>
+        <div class="settings-form-stack" @keydown.enter.prevent="saveDownload">
+          <label class="field">
+            <span>全局同时下载章节数</span>
+            <input v-model.number="form.maxChapterConcurrency" class="input" type="number" min="1" max="8" />
+          </label>
+          <label class="field">
+            <span>每章图片并发</span>
+            <input v-model.number="form.maxPageConcurrency" class="input" type="number" min="1" max="16" />
+          </label>
+          <div class="archive-number-row">
+            <span>每下载</span>
+            <input v-model.number="form.batchSize" class="input archive-number" type="number" min="0" max="1000" />
+            <span>章后暂停</span>
+            <input v-model.number="form.batchIntervalMinutes" class="input archive-number" type="number" min="0" max="1440" />
+            <span>分钟</span>
+          </div>
+          <p class="muted small">暂停按内容源全局生效，队列里其它内容源不受影响；填 0 表示不暂停。</p>
         </div>
       </section>
     </div>

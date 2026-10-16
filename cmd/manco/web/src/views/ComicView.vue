@@ -23,6 +23,7 @@ import timeSortDesc from '../assets/icons/time-sort-desc.png'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import { notify } from '../stores/notices'
+import { comicPreview } from '../stores/comicPreview'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 import { splitAuthors } from '../utils/metadata'
 
@@ -120,6 +121,12 @@ function defaultCron() {
 }
 
 onMounted(async () => {
+  // 从探索发现点进来时先用列表卡片数据渲染首屏，详情请求回来再覆盖。
+  const preview = comicPreview(sourceId, comicId)
+  if (preview) {
+    detail.value = { comic: { ...preview }, chapters: [] }
+    loading.value = false
+  }
   try {
     detail.value = await api.comic(sourceId, comicId)
   } catch (err) {

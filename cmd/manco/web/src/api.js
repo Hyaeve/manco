@@ -60,6 +60,8 @@ export const api = {
     request(`/api/custom-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   updateSource: (id, payload) =>
     request(`/api/sources/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  updateSourceOrder: (payload) =>
+    request('/api/sources/order', { method: 'PUT', body: JSON.stringify(payload) }),
   sourceIcons: () => request('/api/icons'),
   uploadIcon: (file) => {
     const form = new FormData()
@@ -122,7 +124,14 @@ export const api = {
   restoreSubscription: (id) => request(`/api/subscriptions/${id}/restore`, { method: 'POST' }),
   backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),
 
-  downloads: (limit = 0) => request(`/api/downloads?limit=${limit}`),
+  downloads: (limit = 0, offset = 0, status = '') => {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    if (status) params.set('status', status)
+    const query = params.toString()
+    return request(`/api/downloads${query ? `?${query}` : ''}`)
+  },
   createDownload: (payload) => request('/api/downloads', { method: 'POST', body: JSON.stringify(payload) }),
   retryDownload: (id) => request(`/api/downloads/${id}/retry`, { method: 'POST' }),
   retryDownloads: async (ids) => {
@@ -137,10 +146,11 @@ export const api = {
 
   library: () => request('/api/library'),
   localLibrary: () => request('/api/local'),
-  localFileUrl: (path, download = false) => {
+  localFileUrl: (path, download = false, width = 0) => {
     if (!path) return ''
     const params = new URLSearchParams({ path })
     if (download) params.set('download', '1')
+    if (width) params.set('w', String(width))
     return `/api/local/file?${params.toString()}`
   },
   localCBZ: (path) => request(`/api/local/cbz?path=${encodeURIComponent(path)}`),
@@ -179,11 +189,12 @@ export const api = {
       body: JSON.stringify({ title, convertToSimplified: Boolean(convertToSimplified) }),
     }),
 
-  imageUrl: (url, sourceId, referer) => {
+  imageUrl: (url, sourceId, referer, width = 0) => {
     if (!url) return ''
     const params = new URLSearchParams({ url })
     if (sourceId) params.set('sourceId', sourceId)
     if (referer) params.set('referer', referer)
+    if (width) params.set('w', String(width))
     return `/api/proxy/image?${params.toString()}`
   },
 }

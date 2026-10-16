@@ -3,6 +3,7 @@ package api
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -56,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.7"
+	appVersion    = "v0.5.8"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -99,6 +100,10 @@ type Server struct {
 	// filepath.Glob 在 NAS 上会被放大成「订阅数 × 轮询次数」次目录扫描。
 	coverCacheMu sync.Mutex
 	coverCache   map[string]coverCacheEntry
+
+	// 订阅快照：内容没变时不重复写盘（订阅页每 5 秒轮询一次）。
+	persistMu         sync.Mutex
+	subscriptionsHash [32]byte
 }
 
 type coverCacheEntry struct {
@@ -318,6 +323,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/custom-sources/{id}", s.requireAuth(s.handleUpdateCustomSource))
 	mux.HandleFunc("DELETE /api/custom-sources/{id}", s.requireAuth(s.handleDeleteCustomSource))
 	mux.HandleFunc("PATCH /api/sources/{id}", s.requireAuth(s.handleUpdateSource))
+	mux.HandleFunc("PUT /api/sources/order", s.requireAuth(s.handleSourceOrder))
 	mux.HandleFunc("PUT /api/sources/{id}/account", s.requireAuth(s.handleSaveAccount))
 	mux.HandleFunc("GET /api/sources/{id}/plugin-auth", s.requireAuth(s.handlePluginAuthCapabilities))
 	mux.HandleFunc("POST /api/sources/{id}/plugin-auth/login", s.requireAuth(s.handlePluginCredentialLogin))
@@ -1161,6 +1167,47 @@ func applyDisabledCategories(filters []model.FilterGroup, disabled []string) []m
 	return filters
 }
 
+// handleSourceOrder persists the drag-and-drop order of plugin sources. The
+// order is keyed by source kind and only ever contains plugin sources; built-in
+// sources keep their registry order and always stay in front.
+//
+// 之前前端是借「PATCH 某个内容源」来夹带 order 的，只要那个目标源查不到就整
+// 个请求 404，表现就是拖完没有任何效果。现在改成独立入口，前端显式传 kind。
+func (s *Server) handleSourceOrder(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Kind  string   `json:"kind"`
+		Order []string `json:"order"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	kind := source.KindOf(model.SourceInfo{Kind: payload.Kind})
+	normalized := make([]string, 0, len(payload.Order))
+	seen := map[string]bool{}
+	for _, value := range payload.Order {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	order := s.sourceOrder(r.Context())
+	order[kind] = normalized
+	raw, err := json.Marshal(order)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.SetSetting(r.Context(), "source_order", string(raw)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.configs.PersistSettings(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "order": normalized})
+}
+
 func (s *Server) sourceOrder(ctx context.Context) map[string][]string {
 	result := map[string][]string{}
 	value, err := s.store.Setting(ctx, "source_order")
@@ -1814,6 +1861,51 @@ func (s *Server) PruneUnusedPlugins(ctx context.Context) (int, error) {
 		s.logger.Printf("plugins: pruned %d unused extension(s)", removed)
 	}
 	return removed, nil
+}
+
+// RestorePluginSources re-installs plugin extensions that are referenced by an
+// added source but missing from the runtime — for example after a manual
+// cleanup or a plugin file that failed to download. Sources added through the
+// add-source dialog carry their install URL, so they can heal themselves
+// instead of silently turning into broken entries after a restart.
+func (s *Server) RestorePluginSources(ctx context.Context) (int, error) {
+	if s.runtime == nil {
+		return 0, nil
+	}
+	items, err := s.store.ListCustomSources(ctx)
+	if err != nil {
+		return 0, err
+	}
+	restored := 0
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		var config pluginruntime.Config
+		if err := json.Unmarshal(item.Config, &config); err != nil {
+			continue
+		}
+		if !isPluginRuntime(config.Runtime) {
+			continue
+		}
+		pluginID := strings.TrimSpace(config.PluginID)
+		installURL := strings.TrimSpace(config.InstallURL)
+		if pluginID == "" || installURL == "" {
+			continue
+		}
+		if _, ok := seen[pluginID]; ok {
+			continue
+		}
+		seen[pluginID] = struct{}{}
+		if s.runtime.HasPlugin(pluginID) {
+			continue
+		}
+		if err := s.runtime.EnsureWithRuntime(ctx, pluginID, installURL, config.Runtime); err != nil {
+			s.logger.Printf("plugins: restore %s: %v", pluginID, err)
+			continue
+		}
+		s.logger.Printf("plugins: restored %s for %s", pluginID, item.Name)
+		restored++
+	}
+	return restored, nil
 }
 
 func newConfigID(prefix, value string) string {
@@ -2712,7 +2804,7 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 		items[index] = s.subscriptionWithCovers(r.Context(), items[index])
 	}
 	// 启动时会用这份快照 Restore 回数据库，所以读取时也要保持它是最新的。
-	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
+	s.persistSubscriptionsIfChanged(r.Context(), items)
 	stats, err := s.store.DownloadJobStats(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -2723,6 +2815,26 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 		jobStats[key] = value
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "jobStats": jobStats})
+}
+
+// persistSubscriptionsIfChanged 只在内容变化时重写 configstore 的订阅快照。
+// 订阅页每 5 秒轮询一次，之前每次都要整份写盘。
+func (s *Server) persistSubscriptionsIfChanged(ctx context.Context, items []model.Subscription) {
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return
+	}
+	sum := sha256.Sum256(raw)
+	s.persistMu.Lock()
+	unchanged := s.subscriptionsHash == sum
+	if !unchanged {
+		s.subscriptionsHash = sum
+	}
+	s.persistMu.Unlock()
+	if unchanged {
+		return
+	}
+	_ = s.configs.PersistSubscriptions(ctx, s.store)
 }
 
 // handleListArchivedSubscriptions 返回归档集里的订阅卡片，供订阅清单的“归档集”窗口展示。
@@ -3516,7 +3628,17 @@ func (s *Server) requeueMissingFiles(ctx context.Context, subscription model.Sub
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 0))
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	paged := status == "active" || status == "completed"
+	var items []model.DownloadJob
+	total := 0
+	var err error
+	if paged {
+		items, total, err = s.store.DownloadJobPage(r.Context(), status, intParam(r, "limit", 200), intParam(r, "offset", 0))
+	} else {
+		items, err = s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 0))
+		total = len(items)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3528,6 +3650,9 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	// 都标记为 waiting，前端展示为“等待中”。
 	cooldowns := s.engine.SourceCooldowns()
 	annotated := map[string]model.Comic{}
+	// 同一部作品的多个章节共用一套本地元数据，按作品缓存一次即可，否则
+	// 每个章节都要读一次 ComicInfo.xml。
+	localMetadata := map[string]localJobMetadata{}
 	for index := range items {
 		if items[index].Status == "queued" {
 			if until, ok := cooldowns[items[index].SourceID]; ok && until.After(time.Now()) {
@@ -3568,7 +3693,12 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSpace(items[index].ComicAuthor) == "" ||
 			strings.TrimSpace(items[index].ComicDescription) == "" ||
 			len(items[index].ComicTags) == 0 {
-			local := s.localMetadataForJob(items[index])
+			metaKey := items[index].SourceID + "\x00" + items[index].ComicID
+			local, ok := localMetadata[metaKey]
+			if !ok {
+				local = s.localMetadataForJob(items[index])
+				localMetadata[metaKey] = local
+			}
 			if strings.TrimSpace(items[index].ComicAuthor) == "" {
 				items[index].ComicAuthor = local.Author
 			}
@@ -3580,7 +3710,7 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
 }
 
 func subscriptionSeriesDirName(value, title string, convertToSimplified bool) string {
@@ -5093,6 +5223,10 @@ func (s *Server) handleLocalFile(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("download") == "1" {
 		w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(target)+"\"")
 	}
+	// 本地封面可以要缩略图（/?w=320），原图只在详情大图时下发。
+	if width := requestedThumbWidth(r); width > 0 && s.serveThumbnail(w, r, target, width) {
+		return
+	}
 	http.ServeFile(w, r, target)
 }
 
@@ -5590,6 +5724,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	current := s.loadSettings(r.Context())
+	s.engine.SetConcurrency(current.MaxChapterConcurrency, current.MaxPageConcurrency)
 	s.engine.SetSourceConcurrency(current.SourceConcurrency)
 	s.engine.SetDownloadPolicy(current.BatchSize, current.BatchIntervalMinutes, current.ConvertToSimplified)
 	response := s.settingsResponse(r.Context(), responseUsername)
@@ -5730,6 +5865,19 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	contentType := response.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
+	}
+	// 列表封面按缩略图下发：封面原图常常几千像素，解码成本远高于网络。
+	if width := requestedThumbWidth(r); width > 0 {
+		if data, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<20)); readErr == nil {
+			if thumb, thumbErr := buildThumbnailFromReader(bytes.NewReader(data), width); thumbErr == nil {
+				writeThumbBytes(w, r, thumb)
+				return
+			}
+			w.Header().Set("Content-Type", contentType)
+			w.Header().Set("Cache-Control", "public, max-age=3600")
+			_, _ = w.Write(data)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=3600")

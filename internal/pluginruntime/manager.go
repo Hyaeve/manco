@@ -486,6 +486,57 @@ func (m *Manager) hasPluginLocked(id string) bool {
 	return false
 }
 
+// HasPlugin reports whether an extension is currently registered.
+func (m *Manager) HasPlugin(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasPluginLocked(id)
+}
+
+// CleanImageCache deletes materialised plugin images that have not been touched
+// for maxAge. The sidecar writes every plugin cover and page image into
+// <dataDir>/<host>/images as a content-addressed blob and never removes them, so
+// a busy instance accumulates tens of thousands of files. Images are only read
+// right after the host materialises them, so anything older than a day is dead
+// weight; the caller should run this while the sidecar is idle.
+func (m *Manager) CleanImageCache(maxAge time.Duration) (int, int64, error) {
+	if maxAge <= 0 {
+		return 0, 0, nil
+	}
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	var freed int64
+	for _, hostDirectory := range []string{"kototoro-host", "mihon-host"} {
+		directory := filepath.Join(m.dataDir, hostDirectory, "images")
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return removed, freed, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil {
+				continue
+			}
+			removed++
+			freed += info.Size()
+		}
+	}
+	return removed, freed, nil
+}
+
 func (m *Manager) Call(ctx context.Context, operation string, fields map[string]any) (map[string]any, error) {
 	return m.CallWithProxy(ctx, operation, fields, nil)
 }

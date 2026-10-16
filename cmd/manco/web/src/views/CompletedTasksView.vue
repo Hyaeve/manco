@@ -14,6 +14,10 @@ const error = ref('')
 const busy = ref(0)
 const expandedGroups = ref(new Set())
 const groupRenderLimit = ref(40)
+// 完成记录可能上万条，只取第一页，滚动/点按再补。
+const COMPLETED_PAGE_SIZE = 300
+const totalCompleted = ref(0)
+const loadingMore = ref(false)
 let pageScroller = null
 
 function queryText(value) {
@@ -106,13 +110,30 @@ function handlePageScroll() {
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
-    const payload = await api.downloads()
+    const payload = await api.downloads(COMPLETED_PAGE_SIZE, 0, 'completed')
     items.value = payload.items || []
+    totalCompleted.value = Number(payload.total || items.value.length)
     if (silent) error.value = ''
   } catch (err) {
     if (!silent) error.value = err.message
   } finally {
     loading.value = false
+  }
+}
+
+async function loadMoreCompleted() {
+  if (loadingMore.value || items.value.length >= totalCompleted.value) return
+  loadingMore.value = true
+  try {
+    const payload = await api.downloads(COMPLETED_PAGE_SIZE, items.value.length, 'completed')
+    const next = payload.items || []
+    if (next.length) items.value = [...items.value, ...next]
+    totalCompleted.value = Number(payload.total ?? totalCompleted.value)
+    error.value = ''
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -147,8 +168,8 @@ function formatTime(item) {
 }
 
 function groupCover(group) {
-  if (group.localCover && !group.localCoverFailed) return api.localFileUrl(group.localCover)
-  return api.imageUrl(group.sourceCover, group.sourceId)
+  if (group.localCover && !group.localCoverFailed) return api.localFileUrl(group.localCover, false, 320)
+  return api.imageUrl(group.sourceCover, group.sourceId, '', 320)
 }
 
 function handleGroupCoverError(group) {
@@ -280,6 +301,13 @@ async function remove(item) {
           </div>
         </div>
       </article>
+      <div v-if="items.length < totalCompleted" class="completed-load-more">
+        <button class="btn secondary small" type="button" :disabled="loadingMore" @click="loadMoreCompleted">
+          <Loader2 v-if="loadingMore" :size="14" class="spin" />
+          <RefreshCw v-else :size="14" />
+          加载更多（已加载 {{ items.length }} / {{ totalCompleted }}）
+        </button>
+      </div>
     </div>
   </div>
 </template>

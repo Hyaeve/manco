@@ -1576,3 +1576,48 @@ func assertEntries(t *testing.T, entries map[string][]byte, want []string) {
 		}
 	}
 }
+
+// 回归：全局章节并发一度被写成「各内容源上限之和」，来源一多就等于没有上限。
+func TestGlobalChapterConcurrencyIsNotMultipliedBySources(t *testing.T) {
+	engine := NewEngine(nil, nil, t.TempDir(), 2, 4, log.New(io.Discard, "", 0))
+	engine.SetSourceConcurrency(map[string]int{"a": 1, "b": 1, "c": 1})
+
+	claimed := 0
+	sources := []string{"a", "b", "c", "d"}
+	for index, sourceID := range sources {
+		if engine.claim(model.DownloadJob{ID: int64(index + 1), SourceID: sourceID}) {
+			claimed++
+		}
+	}
+	if claimed != 2 {
+		t.Fatalf("同时认领 %d 个章节，全局上限是 2，不应随内容源数量放大", claimed)
+	}
+}
+
+func TestSetConcurrencyUpdatesGlobalLimitImmediately(t *testing.T) {
+	engine := NewEngine(nil, nil, t.TempDir(), 1, 4, log.New(io.Discard, "", 0))
+	first := model.DownloadJob{ID: 1, SourceID: "a"}
+	second := model.DownloadJob{ID: 2, SourceID: "b"}
+
+	if !engine.claim(first) {
+		t.Fatal("第一个章节应该被认领")
+	}
+	if engine.claim(second) {
+		t.Fatal("全局上限为 1 时第二个章节不应被认领")
+	}
+
+	engine.SetConcurrency(3, 8)
+	if !engine.claim(second) {
+		t.Fatal("提高全局上限后第二个章节应被认领")
+	}
+	// 再提到上限：第三个章节仍然受全局上限约束。
+	if !engine.claim(model.DownloadJob{ID: 3, SourceID: "c"}) {
+		t.Fatal("全局上限为 3 时第三个章节应被认领")
+	}
+	if engine.claim(model.DownloadJob{ID: 4, SourceID: "d"}) {
+		t.Fatal("全局上限为 3 时第四个章节不应被认领")
+	}
+
+	engine.release(first)
+	engine.release(second)
+}

@@ -1364,7 +1364,9 @@ async function onDrop() {
   const ids = visibleSources.value.filter((item) => !item.builtin).map((item) => item.id)
   if (!ids.length) return
   try {
-    await api.updateSource(ids[0], { order: ids })
+    // 用独立入口保存顺序：以前借某个内容源的 PATCH 夹带 order，目标源一旦
+    // 查不到就整条请求 404，表现成「拖了但没生效」。
+    await api.updateSourceOrder({ kind: activeKind.value, order: ids })
     notify('来源顺序已保存', 'success')
   } catch (err) {
     notify(`保存排序失败：${err.message}`, 'error')

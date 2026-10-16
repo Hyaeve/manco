@@ -92,6 +92,8 @@ type DownloadJob struct {
 type DownloadJobStats struct {
 	Succeeded int `json:"succeeded"`
 	Failed    int `json:"failed"`
+	// Pending 是排队中/进行中的章节数，订阅页用它决定是否需要继续轮询。
+	Pending int `json:"pending"`
 }
 
 // SourceDownloadSettings stores per-source download limits in the source

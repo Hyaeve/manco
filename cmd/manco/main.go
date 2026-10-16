@@ -122,6 +122,33 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		if err := pluginManager.ConfigureProxy(rawProxy, proxyUsername, proxyPassword); err != nil {
 			logger.Printf("manco: configure Kototoro proxy: %v", err)
 		}
+		// 插件运行时把封面和章节图以内容寻址的方式落盘到
+		// <dataDir>/<host>/images，且从不主动清理，长时间运行会堆到几万个文件。
+		// 图片只在物化后立刻被读取，所以这里启动清一次、之后每 6 小时清一次，
+		// 只删 24 小时前的文件，不会碰到正在下载的图。
+		cleanPluginImages := func() {
+			removed, freed, err := pluginManager.CleanImageCache(24 * time.Hour)
+			if err != nil {
+				logger.Printf("manco: clean plugin image cache: %v", err)
+				return
+			}
+			if removed > 0 {
+				logger.Printf("manco: cleaned %d plugin image(s), freed %.1f MiB", removed, float64(freed)/(1<<20))
+			}
+		}
+		cleanPluginImages()
+		go func() {
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					cleanPluginImages()
+				}
+			}
+		}()
 	}
 	icons, err := iconcache.New(filepath.Join(cfg.DataDir, "icon"), client)
 	if err != nil {
@@ -164,11 +191,18 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	} else if removed > 0 {
 		logger.Printf("manco: pruned %d unused extension(s) on startup", removed)
 	}
+	// 已添加来源引用的插件如果丢了（手工清理、下载中断等）自动补装回来。
+	if restored, err := server.RestorePluginSources(ctx); err != nil {
+		logger.Printf("manco: restore plugin sources: %v", err)
+	} else if restored > 0 {
+		logger.Printf("manco: restored %d plugin source(s) on startup", restored)
+	}
 	scanner.SetNotifier(bot)
 	settings, err := server.Settings(ctx)
 	if err != nil {
 		logger.Printf("manco: load settings: %v", err)
 	} else {
+		engine.SetConcurrency(settings.MaxChapterConcurrency, settings.MaxPageConcurrency)
 		engine.SetSourceConcurrency(settings.SourceConcurrency)
 		engine.SetSourceSettings(server.SourceSettings(ctx))
 		engine.SetDownloadPolicy(settings.BatchSize, settings.BatchIntervalMinutes, settings.ConvertToSimplified)

@@ -452,3 +452,60 @@ func TestDiffSourcesReturnsOnlyNewNames(t *testing.T) {
 		t.Fatalf("added = %#v", added)
 	}
 }
+
+func TestHasPluginReportsRegisteredExtensions(t *testing.T) {
+	manager := &Manager{plugins: []pluginRecord{{ID: "demo"}}}
+
+	if !manager.HasPlugin("demo") {
+		t.Fatal("HasPlugin(demo) = false，已注册的插件应返回 true")
+	}
+	if manager.HasPlugin("other") {
+		t.Fatal("HasPlugin(other) = true，未注册的插件应返回 false")
+	}
+	if manager.HasPlugin("") {
+		t.Fatal("HasPlugin(\"\") = true，空 ID 应返回 false")
+	}
+}
+
+func TestCleanImageCacheRemovesStaleBlobs(t *testing.T) {
+	dataDir := t.TempDir()
+	images := filepath.Join(dataDir, "kototoro-host", "images")
+	if err := os.MkdirAll(images, 0o755); err != nil {
+		t.Fatalf("mkdir images: %v", err)
+	}
+	stale := filepath.Join(images, "stale.img")
+	fresh := filepath.Join(images, "fresh.img")
+	for _, path := range []string{stale, fresh} {
+		if err := os.WriteFile(path, make([]byte, 16), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("chtimes stale: %v", err)
+	}
+
+	manager := &Manager{dataDir: dataDir}
+	removed, freed, err := manager.CleanImageCache(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("CleanImageCache() error = %v", err)
+	}
+	if removed != 1 || freed != 16 {
+		t.Fatalf("removed = %d, freed = %d, want 1/16", removed, freed)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("48 小时前的图片没有被删除: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("新图片被误删: %v", err)
+	}
+
+	// 从没跑过插件运行时的实例（目录不存在）不应报错。
+	if _, _, err := (&Manager{dataDir: t.TempDir()}).CleanImageCache(time.Hour); err != nil {
+		t.Fatalf("CleanImageCache() on missing dir error = %v", err)
+	}
+	// maxAge <= 0 表示不清理。
+	if removed, _, err := manager.CleanImageCache(0); err != nil || removed != 0 {
+		t.Fatalf("CleanImageCache(0) = %d, %v", removed, err)
+	}
+}
