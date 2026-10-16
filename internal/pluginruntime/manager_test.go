@@ -43,6 +43,52 @@ func TestAdapterChaptersUsesAccountProxyPreference(t *testing.T) {
 	}
 }
 
+func TestAdapterDetailWithChaptersReturnsOneCombinedResult(t *testing.T) {
+	manager, calls := newProtocolTestManagerResult(t, map[string]any{
+		"content": map[string]any{
+			"id":          "book-1",
+			"title":       "测试书籍",
+			"description": "简介",
+			"chapters": []any{
+				map[string]any{"id": "chapter-1", "title": "第一章", "number": 1},
+			},
+		},
+	})
+	adapter, err := NewAdapter(manager, model.CustomSource{
+		ID:     "demo",
+		Name:   "Demo",
+		Config: json.RawMessage(`{"runtime":"kototoro-parser","pluginId":"demo","sourceName":"demo"}`),
+	})
+	if err != nil {
+		t.Fatalf("NewAdapter() error = %v", err)
+	}
+	comicID, err := encodeObject(map[string]any{"id": "book-1"})
+	if err != nil {
+		t.Fatalf("encodeObject() error = %v", err)
+	}
+	detail, err := adapter.DetailWithChapters(context.Background(), source.Account{}, comicID)
+	if err != nil {
+		t.Fatalf("DetailWithChapters() error = %v", err)
+	}
+	if detail.Comic.Title != "测试书籍" || len(detail.Chapters) != 1 || detail.Chapters[0].Title != "第一章" {
+		t.Fatalf("detail = %#v", detail)
+	}
+
+	select {
+	case call := <-calls:
+		if call["operation"] != "details" {
+			t.Fatalf("operation = %v, want details", call["operation"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for detail request")
+	}
+	select {
+	case call := <-calls:
+		t.Fatalf("unexpected second call: %v", call)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestCallWithProxyAddsPerCallPreference(t *testing.T) {
 	useProxy := false
 	tests := []struct {
@@ -249,6 +295,10 @@ func TestNormalizePreferenceValueSupportsMihonOperationDiscriminator(t *testing.
 }
 
 func newProtocolTestManager(t *testing.T) (*Manager, <-chan map[string]any) {
+	return newProtocolTestManagerResult(t, map[string]any{"content": map[string]any{}})
+}
+
+func newProtocolTestManagerResult(t *testing.T, result map[string]any) (*Manager, <-chan map[string]any) {
 	t.Helper()
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -266,7 +316,7 @@ func newProtocolTestManager(t *testing.T) (*Manager, <-chan map[string]any) {
 	}
 	go process.readLoop()
 
-	calls := make(chan map[string]any, 1)
+	calls := make(chan map[string]any, 8)
 	go func() {
 		line, err := bufio.NewReader(stdinReader).ReadString('\n')
 		if err != nil {
@@ -283,7 +333,7 @@ func newProtocolTestManager(t *testing.T) (*Manager, <-chan map[string]any) {
 		response, err := json.Marshal(map[string]any{
 			"version":   ProtocolVersion,
 			"requestId": envelope.RequestID,
-			"result":    map[string]any{"content": map[string]any{}},
+			"result":    result,
 		})
 		if err != nil {
 			return

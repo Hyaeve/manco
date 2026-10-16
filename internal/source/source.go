@@ -136,6 +136,14 @@ type Source interface {
 	Pages(ctx context.Context, account Account, comicID string, chapter model.Chapter) ([]model.Page, error)
 }
 
+// DetailWithChaptersSource is implemented by sources that can return the
+// comic details and chapter list from one upstream operation. This avoids a
+// second detail request for books and plugin sources whose detail endpoint is
+// rate-limited or comparatively expensive.
+type DetailWithChaptersSource interface {
+	DetailWithChapters(ctx context.Context, account Account, comicID string) (model.ComicDetail, error)
+}
+
 type LoginResult struct {
 	Token    string
 	Username string

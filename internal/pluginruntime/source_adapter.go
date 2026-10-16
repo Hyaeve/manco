@@ -36,6 +36,7 @@ type Adapter struct {
 }
 
 var _ source.ChapterArchiveSource = (*Adapter)(nil)
+var _ source.DetailWithChaptersSource = (*Adapter)(nil)
 
 func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 	if manager == nil {
@@ -162,18 +163,20 @@ func (a *Adapter) Detail(ctx context.Context, account source.Account, comicID st
 	return a.toComic(item), nil
 }
 
-func (a *Adapter) Chapters(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
+func (a *Adapter) DetailWithChapters(ctx context.Context, account source.Account, comicID string) (model.ComicDetail, error) {
 	comic, chapters, err := a.detailAndChapters(ctx, account, comicID)
-	_ = comic
-	if err == nil {
-		return chapters, nil
+	if err != nil {
+		return model.ComicDetail{}, err
 	}
-	detail, detailErr := a.Detail(ctx, account, comicID)
-	if detailErr != nil {
+	return model.ComicDetail{Comic: comic, Chapters: chapters}, nil
+}
+
+func (a *Adapter) Chapters(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
+	detail, err := a.DetailWithChapters(ctx, account, comicID)
+	if err != nil {
 		return nil, err
 	}
-	_ = detail
-	return nil, err
+	return detail.Chapters, nil
 }
 
 func (a *Adapter) Pages(ctx context.Context, account source.Account, _ string, chapter model.Chapter) ([]model.Page, error) {

@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.0"
+	appVersion    = "v0.5.1"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2253,66 +2253,66 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 	comicID := r.PathValue("comicId")
 	if s.discover != nil {
 		if cached, ok := s.discover.Get(sourceID, kind, comicID); ok {
-			if len(cached.Chapters) == 0 {
+			refreshNeeded := len(cached.Chapters) == 0 || strings.TrimSpace(cached.Comic.Description) == ""
+			if refreshNeeded {
 				ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-				chapters, chaptersErr := item.Chapters(ctx, account, cached.Comic.ID)
-				cancel()
-				if chaptersErr == nil && len(chapters) > 0 {
-					cached.Chapters = chapters
-					go func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-						defer cancel()
-						if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, cached); err != nil {
-							s.logger.Printf("api: cache discover chapters %s/%s: %v", sourceID, cached.Comic.ID, err)
-						}
-					}()
-				}
-			}
-			if strings.TrimSpace(cached.Comic.Description) == "" {
-				ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-				fresh, freshErr := item.Detail(ctx, account, cached.Comic.ID)
+				fresh, freshErr := s.loadComicDetail(ctx, item, account, cached.Comic.ID)
 				cancel()
 				if freshErr == nil {
-					fresh.SourceID = sourceID
-					if len(cached.Chapters) > 0 {
-						fresh.ChapterCount = len(cached.Chapters)
-					}
-					cached.Comic = fresh
+					fresh.Comic.SourceID = source.FirstNonEmpty(fresh.Comic.SourceID, sourceID)
+					cached = fresh
 					go func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 						defer cancel()
 						if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, cached); err != nil {
-							s.logger.Printf("api: refresh discover detail %s/%s: %v", sourceID, cached.Comic.ID, err)
+							s.logger.Printf("api: cache discover detail %s/%s: %v", sourceID, cached.Comic.ID, err)
 						}
 					}()
+				} else {
+					s.logger.Printf("api: load discover detail %s/%s: %v", sourceID, cached.Comic.ID, freshErr)
+					if len(cached.Chapters) == 0 {
+						writeError(w, http.StatusBadGateway, "加载章节失败："+freshErr.Error())
+						return
+					}
 				}
 			}
 			writeJSON(w, http.StatusOK, convertComicDetail(cached, s.loadSettings(r.Context()).ConvertToSimplified))
-			go s.refreshDiscoverDetail(sourceID, kind, comicID)
+			if !refreshNeeded {
+				go s.refreshDiscoverDetail(sourceID, kind, comicID)
+			}
 			return
 		}
 	}
-	comic, err := item.Detail(r.Context(), account, r.PathValue("comicId"))
+	detail, err := s.loadComicDetail(r.Context(), item, account, comicID)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	chapters, err := item.Chapters(r.Context(), account, comic.ID)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	detail := model.ComicDetail{Comic: comic, Chapters: chapters}
 	if s.discover != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := s.putDiscoverDetail(ctx, sourceID, item.Info().Name, kind, detail); err != nil {
-				s.logger.Printf("api: cache discover %s/%s: %v", sourceID, comic.ID, err)
+				s.logger.Printf("api: cache discover %s/%s: %v", sourceID, detail.Comic.ID, err)
 			}
 		}()
 	}
 	writeJSON(w, http.StatusOK, convertComicDetail(detail, s.loadSettings(r.Context()).ConvertToSimplified))
+}
+
+func (s *Server) loadComicDetail(ctx context.Context, item source.Source, account source.Account, comicID string) (model.ComicDetail, error) {
+	if combined, ok := item.(source.DetailWithChaptersSource); ok {
+		return combined.DetailWithChapters(ctx, account, comicID)
+	}
+	comic, err := item.Detail(ctx, account, comicID)
+	if err != nil {
+		return model.ComicDetail{}, err
+	}
+	chapters, err := item.Chapters(ctx, account, comic.ID)
+	if err != nil {
+		return model.ComicDetail{}, err
+	}
+	return model.ComicDetail{Comic: comic, Chapters: chapters}, nil
 }
 
 func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
@@ -2321,11 +2321,12 @@ func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	convert := s.loadSettings(r.Context()).ConvertToSimplified
-	chapters, err := item.Chapters(r.Context(), account, r.PathValue("comicId"))
+	detail, err := s.loadComicDetail(r.Context(), item, account, r.PathValue("comicId"))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	chapters := detail.Chapters
 	if convert {
 		for index := range chapters {
 			chapters[index].Title = downloader.SimplifiedText(chapters[index].Title)
@@ -2496,15 +2497,11 @@ func (s *Server) refreshDiscoverDetail(sourceID, kind, comicID string) {
 	if err != nil {
 		return
 	}
-	comic, err := adapter.Detail(ctx, account, comicID)
+	detail, err := s.loadComicDetail(ctx, adapter, account, comicID)
 	if err != nil {
 		return
 	}
-	chapters, err := adapter.Chapters(ctx, account, comic.ID)
-	if err != nil {
-		return
-	}
-	if err := s.putDiscoverDetail(ctx, sourceID, adapter.Info().Name, kind, model.ComicDetail{Comic: comic, Chapters: chapters}); err != nil {
+	if err := s.putDiscoverDetail(ctx, sourceID, adapter.Info().Name, kind, detail); err != nil {
 		s.logger.Printf("api: refresh discover %s/%s: %v", sourceID, comicID, err)
 	}
 }

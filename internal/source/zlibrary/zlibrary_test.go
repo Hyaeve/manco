@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -131,6 +132,46 @@ func TestChapterFileDownloadsOriginalExtension(t *testing.T) {
 	}
 	if !strings.HasSuffix(filename, ".epub") || !strings.Contains(filename, "Test Author") {
 		t.Fatalf("filename = %q", filename)
+	}
+}
+
+func TestDetailWithChaptersUsesSingleDetailRequest(t *testing.T) {
+	var detailRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/eapi/book/123/abc" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		detailRequests.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"book": map[string]any{
+				"id":          "123",
+				"hash":        "abc",
+				"name":        "测试电子书",
+				"author":      "测试作者",
+				"description": "简介",
+				"extension":   "epub",
+			},
+		})
+	}))
+	defer server.Close()
+
+	token, err := encodeSession("42", "key-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := New(server.Client()).DetailWithChapters(
+		t.Context(),
+		source.Account{HomeURL: server.URL, Token: token},
+		"123~abc",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailRequests.Load() != 1 {
+		t.Fatalf("detail requests = %d, want 1", detailRequests.Load())
+	}
+	if len(detail.Chapters) != 1 || detail.Chapters[0].ID != "123~abc" || detail.Chapters[0].Title != "测试电子书" {
+		t.Fatalf("chapters = %#v", detail.Chapters)
 	}
 }
 

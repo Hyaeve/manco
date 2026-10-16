@@ -44,6 +44,51 @@ func (f *lazyFilterFixture) Filters(context.Context) ([]model.FilterGroup, error
 	return f.filters, nil
 }
 
+type combinedDetailFixture struct {
+	detailCalls   int
+	chaptersCalls int
+}
+
+func (f *combinedDetailFixture) Info() model.SourceInfo { return model.SourceInfo{ID: "combined"} }
+func (f *combinedDetailFixture) Search(context.Context, source.Account, string, int) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
+}
+func (f *combinedDetailFixture) Browse(context.Context, source.Account, model.BrowseOptions, int) (model.SearchResult, error) {
+	return model.SearchResult{}, nil
+}
+func (f *combinedDetailFixture) Detail(context.Context, source.Account, string) (model.Comic, error) {
+	f.detailCalls++
+	return model.Comic{ID: "book-1", Title: "测试书籍"}, nil
+}
+func (f *combinedDetailFixture) Chapters(context.Context, source.Account, string) ([]model.Chapter, error) {
+	f.chaptersCalls++
+	return []model.Chapter{{ID: "chapter-1", Title: "第一章"}}, nil
+}
+func (f *combinedDetailFixture) Pages(context.Context, source.Account, string, model.Chapter) ([]model.Page, error) {
+	return nil, nil
+}
+func (f *combinedDetailFixture) DetailWithChapters(context.Context, source.Account, string) (model.ComicDetail, error) {
+	f.detailCalls++
+	return model.ComicDetail{
+		Comic:    model.Comic{ID: "book-1", Title: "测试书籍"},
+		Chapters: []model.Chapter{{ID: "chapter-1", Title: "第一章"}},
+	}, nil
+}
+
+func TestLoadComicDetailUsesCombinedSource(t *testing.T) {
+	fixture := &combinedDetailFixture{}
+	detail, err := (&Server{}).loadComicDetail(context.Background(), fixture, source.Account{}, "book-1")
+	if err != nil {
+		t.Fatalf("loadComicDetail: %v", err)
+	}
+	if detail.Comic.Title != "测试书籍" || len(detail.Chapters) != 1 {
+		t.Fatalf("detail = %#v", detail)
+	}
+	if fixture.detailCalls != 1 || fixture.chaptersCalls != 0 {
+		t.Fatalf("calls = detail %d, chapters %d; want 1 and 0", fixture.detailCalls, fixture.chaptersCalls)
+	}
+}
+
 func TestLazyPluginFiltersCanBeNormalizedAndMarkedDisabled(t *testing.T) {
 	item := &lazyFilterFixture{
 		info: model.SourceInfo{ID: "plugin-source"},

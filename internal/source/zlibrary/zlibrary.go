@@ -219,17 +219,28 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 }
 
 func (s *Source) Chapters(ctx context.Context, account source.Account, comicID string) ([]model.Chapter, error) {
-	book, err := s.Detail(ctx, account, comicID)
+	detail, err := s.DetailWithChapters(ctx, account, comicID)
 	if err != nil {
 		return nil, err
 	}
+	return detail.Chapters, nil
+}
+
+// DetailWithChapters reuses the detail response for the single-file ebook
+// chapter instead of issuing a second, easily rate-limited EAPI request.
+func (s *Source) DetailWithChapters(ctx context.Context, account source.Account, comicID string) (model.ComicDetail, error) {
+	book, err := s.Detail(ctx, account, comicID)
+	if err != nil {
+		return model.ComicDetail{}, err
+	}
 	title := source.FirstNonEmpty(book.Title, "电子书")
-	return []model.Chapter{{
+	chapters := []model.Chapter{{
 		ID:      comicID,
 		ComicID: comicID,
 		Title:   title,
 		Order:   1,
-	}}, nil
+	}}
+	return model.ComicDetail{Comic: book, Chapters: chapters}, nil
 }
 
 func (s *Source) Pages(context.Context, source.Account, string, model.Chapter) ([]model.Page, error) {
