@@ -5,7 +5,9 @@ import {
   BookOpen,
   CircleCheck,
   Download,
+  Languages,
   Loader2,
+  Merge,
   Rss,
   Search,
   Tag,
@@ -63,6 +65,7 @@ const downloadForm = ref({
   seriesDir: '',
   convertToSimplified: true,
   chapterMarker: false,
+  mergeChapters: false,
 })
 
 const existingSubscription = ref(null)
@@ -327,6 +330,7 @@ function openDownloadModal() {
     seriesDir: existingSubscription.value?.seriesDir || '',
     convertToSimplified: existingSubscription.value?.convertToSimplified ?? true,
     chapterMarker: existingSubscription.value?.chapterMarker ?? false,
+    mergeChapters: false,
   }
   downloadOpen.value = true
 }
@@ -347,7 +351,10 @@ async function downloadSelected() {
       comicTitle: comic.value.title,
       comicCover: comic.value.cover,
       comicAuthor: comic.value.author,
+      comicDescription: comic.value.description,
+      comicTags: comic.value.tags || [],
       autoDownload: autoDownload.value,
+      mergeChapters: Boolean(downloadForm.value.mergeChapters),
       chapters: picked,
       downloadDir: downloadForm.value.downloadDir.trim(),
       seriesDir: downloadForm.value.seriesDir.trim(),
@@ -525,14 +532,26 @@ async function downloadSelected() {
             <span>繁转简</span>
           </label>
         </div>
-        <label class="switch-row">
-          <input v-model="subForm.allChapters" type="checkbox" />
-          <span><BookOpen :size="14" /> 订阅全部章节（旧章节一并下载）</span>
-        </label>
-        <label class="switch-row">
-          <input v-model="autoDownload" type="checkbox" />
-          <span>开启自动追更</span>
-        </label>
+        <div class="subscription-action-toggles">
+          <button
+            class="function-toggle"
+            :class="{ active: subForm.allChapters }"
+            type="button"
+            @click="subForm.allChapters = !subForm.allChapters"
+          >
+            <BookOpen :size="16" />
+            <span>历史章节</span>
+          </button>
+          <button
+            class="function-toggle"
+            :class="{ active: autoDownload }"
+            type="button"
+            @click="autoDownload = !autoDownload"
+          >
+            <Rss :size="16" />
+            <span>自动追更</span>
+          </button>
+        </div>
       </div>
       <div class="modal-foot">
         <button class="btn secondary" type="button" @click="subscribeOpen = false">取消</button>
@@ -569,15 +588,34 @@ async function downloadSelected() {
             @change="rememberSubscriptionDownloadDir"
           />
         </label>
-        <div class="subscription-toggle-grid download-toggle-grid">
-          <label class="switch-row">
-            <input v-model="downloadForm.chapterMarker" type="checkbox" />
+        <div class="subscription-action-toggles download-action-toggles">
+          <button
+            class="function-toggle"
+            :class="{ active: downloadForm.chapterMarker }"
+            type="button"
+            @click="downloadForm.chapterMarker = !downloadForm.chapterMarker"
+          >
+            <BookOpen :size="16" />
             <span>章节标符</span>
-          </label>
-          <label class="switch-row">
-            <input v-model="downloadForm.convertToSimplified" type="checkbox" />
+          </button>
+          <button
+            class="function-toggle"
+            :class="{ active: downloadForm.convertToSimplified }"
+            type="button"
+            @click="downloadForm.convertToSimplified = !downloadForm.convertToSimplified"
+          >
+            <Languages :size="16" />
             <span>繁转简</span>
-          </label>
+          </button>
+          <button
+            class="function-toggle merge-download-toggle"
+            :class="{ active: downloadForm.mergeChapters }"
+            type="button"
+            @click="downloadForm.mergeChapters = !downloadForm.mergeChapters"
+          >
+            <Merge :size="16" />
+            <span>合并下载</span>
+          </button>
         </div>
       </div>
       <div class="modal-foot">

@@ -224,6 +224,18 @@ type resumableSource struct {
 	secondPage     []byte
 }
 
+type unsupportedMergedBookSource struct {
+	*staticSource
+}
+
+func (s *unsupportedMergedBookSource) Info() model.SourceInfo {
+	info := s.staticSource.Info()
+	info.ID = "plain-book"
+	info.Name = "普通书籍源"
+	info.Kind = source.KindBook
+	return info
+}
+
 func newResumableSource(base *staticSource, firstPage, secondPage []byte) *resumableSource {
 	source := &resumableSource{
 		staticSource: base,
@@ -284,6 +296,7 @@ func (s *resumableSource) requestCounts() (int, int) {
 type archiveBookSource struct {
 	detail      model.Comic
 	archive     source.ChapterArchive
+	archives    map[string]source.ChapterArchive
 	imageData   map[string][]byte
 	coverData   []byte
 	fallbackTxt string
@@ -313,7 +326,10 @@ func (s *archiveBookSource) Pages(context.Context, source.Account, string, model
 	return nil, nil
 }
 
-func (s *archiveBookSource) ChapterArchive(context.Context, source.Account, string, model.Chapter) (source.ChapterArchive, error) {
+func (s *archiveBookSource) ChapterArchive(_ context.Context, _ source.Account, _ string, chapter model.Chapter) (source.ChapterArchive, error) {
+	if archive, ok := s.archives[chapter.ID]; ok {
+		return archive, nil
+	}
 	return s.archive, nil
 }
 
@@ -537,6 +553,229 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(downloadDir, "测试作品", obsolete)); !os.IsNotExist(err) {
 			t.Fatalf("obsolete metadata sidecar %s should not exist: %v", obsolete, err)
 		}
+	}
+}
+
+func TestMergedComicDownloadWritesOneOrderedCBZ(t *testing.T) {
+	images := map[string][]byte{
+		"/cover.png":  pngImage(t, 0x10),
+		"/c1-p1.png":  pngImage(t, 0x21),
+		"/c1-p2.png":  pngImage(t, 0x22),
+		"/c2-p1.png":  pngImage(t, 0x31),
+		"/c3-p1.png":  pngImage(t, 0x41),
+		"/c3-p2.png":  pngImage(t, 0x42),
+		"/unused.png": pngImage(t, 0x55),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, ok := images[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	item := &staticSource{
+		detail: model.Comic{
+			SourceID:    "stub",
+			ID:          "merged-comic",
+			Title:       "合并漫画",
+			Author:      "测试作者",
+			Description: "合并下载测试",
+			Cover:       server.URL + "/cover.png",
+			Tags:        []string{"合并", "漫画"},
+		},
+		pages: map[string][]model.Page{
+			"1": {
+				{URL: server.URL + "/c1-p1.png"},
+				{URL: server.URL + "/c1-p2.png"},
+			},
+			"2": {
+				{URL: server.URL + "/c2-p1.png"},
+			},
+			"3": {
+				{URL: server.URL + "/c3-p1.png"},
+				{URL: server.URL + "/c3-p2.png"},
+			},
+		},
+	}
+	registry := sources.NewRegistry(server.Client(), nil, nil)
+	registry.Register(item)
+
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 1, 2, log.New(io.Discard, "", 0))
+	engine.SetCacheDir(t.TempDir())
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "stub",
+		ComicID:      "merged-comic",
+		ComicTitle:   "合并漫画",
+		ComicAuthor:  "测试作者",
+		ChapterID:    "merge-test",
+		ChapterTitle: "第1话 - 第3话",
+		ChapterOrder: 1,
+		DownloadDir:  downloadDir,
+		MergeChapters: []model.Chapter{
+			{ID: "1", Title: "第1话", Order: 1},
+			{ID: "2", Title: "第2话", Order: 2},
+			{ID: "3", Title: "第3话", Order: 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create merged comic job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download merged comic: %v", err)
+	}
+
+	archives := listCBZ(t, downloadDir)
+	if len(archives) != 1 {
+		t.Fatalf("merged comic produced %d CBZ files, want 1 (%v)", len(archives), archives)
+	}
+	archivePath := filepath.Join(downloadDir, "合并漫画", "第1话 - 第3话.cbz")
+	archive := readZip(t, archivePath)
+	assertEntries(t, archive, []string{
+		"001-0001.png",
+		"001-0002.png",
+		"002-0001.png",
+		"003-0001.png",
+		"003-0002.png",
+		"ComicInfo.xml",
+	})
+	order := []struct {
+		entry string
+		want  string
+	}{
+		{"001-0001.png", "/c1-p1.png"},
+		{"001-0002.png", "/c1-p2.png"},
+		{"002-0001.png", "/c2-p1.png"},
+		{"003-0001.png", "/c3-p1.png"},
+		{"003-0002.png", "/c3-p2.png"},
+	}
+	for _, check := range order {
+		if !bytes.Equal(archive[check.entry], images[check.want]) {
+			t.Fatalf("merged entry %s does not match %s", check.entry, check.want)
+		}
+	}
+	if !bytes.Contains(archive["ComicInfo.xml"], []byte("<PageCount>5</PageCount>")) {
+		t.Fatalf("merged ComicInfo.xml has wrong page count: %s", archive["ComicInfo.xml"])
+	}
+	completed, ok := store.find(job.ID)
+	if !ok || completed.Status != "completed" || completed.TotalPages != 5 || completed.CompletedPages != 5 {
+		t.Fatalf("merged comic job state = %+v", completed)
+	}
+}
+
+func TestMergedBookDownloadWritesHTMLImagesAndIndexInOneCBZ(t *testing.T) {
+	firstImage := pngImage(t, 0x61)
+	secondImage := pngImage(t, 0x72)
+	item := &archiveBookSource{
+		detail: model.Comic{
+			SourceID:    "archive-book",
+			ID:          "merged-book",
+			Title:       "合并小说",
+			Author:      "测试作者",
+			Description: "合并书籍测试",
+			Cover:       "cover",
+			Tags:        []string{"小说", "合并"},
+		},
+		archives: map[string]source.ChapterArchive{
+			"chapter-1": {
+				HTML:   `<p>第一章</p><img src="chapter-1-image">`,
+				Images: []model.Page{{URL: "chapter-1-image"}},
+			},
+			"chapter-2": {
+				HTML:   `<p>第二章</p><img src="chapter-2-image">`,
+				Images: []model.Page{{URL: "chapter-2-image"}},
+			},
+		},
+		imageData: map[string][]byte{
+			"chapter-1-image": firstImage,
+			"chapter-2-image": secondImage,
+		},
+		coverData: pngImage(t, 0x73),
+	}
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(item)
+
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	engine.SetCacheDir(t.TempDir())
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "archive-book",
+		ComicID:      "merged-book",
+		ComicTitle:   "合并小说",
+		ChapterID:    "merge-book-test",
+		ChapterTitle: "第1章 - 第2章",
+		ChapterOrder: 1,
+		DownloadDir:  downloadDir,
+		MergeChapters: []model.Chapter{
+			{ID: "chapter-1", Title: "第1章", Order: 1},
+			{ID: "chapter-2", Title: "第2章", Order: 2},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create merged book job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download merged book: %v", err)
+	}
+
+	if archives := listCBZ(t, downloadDir); len(archives) != 1 {
+		t.Fatalf("merged book produced %d CBZ files, want 1 (%v)", len(archives), archives)
+	}
+	archivePath := filepath.Join(downloadDir, "合并小说", "第1章 - 第2章.cbz")
+	archive := readZip(t, archivePath)
+	assertEntries(t, archive, []string{
+		"001-0001.html",
+		"001-0001.png",
+		"002-0001.html",
+		"002-0001.png",
+		"index.json",
+		"ComicInfo.xml",
+	})
+	if !bytes.Equal(archive["001-0001.png"], firstImage) || !bytes.Equal(archive["002-0001.png"], secondImage) {
+		t.Fatal("merged book image bytes mismatch")
+	}
+	if !strings.Contains(string(archive["001-0001.html"]), `src="001-0001.png"`) ||
+		!strings.Contains(string(archive["002-0001.html"]), `src="002-0001.png"`) {
+		t.Fatal("merged book HTML did not reference archive-local images")
+	}
+	var index chapterArchiveIndex
+	if err := json.Unmarshal(archive["index.json"], &index); err != nil {
+		t.Fatalf("decode merged book index: %v", err)
+	}
+	if len(index.Chapters) != 2 {
+		t.Fatalf("merged book index has %d chapters, want 2: %s", len(index.Chapters), archive["index.json"])
+	}
+	if !bytes.Contains(archive["ComicInfo.xml"], []byte("<PageCount>4</PageCount>")) {
+		t.Fatalf("merged book ComicInfo.xml has wrong page count: %s", archive["ComicInfo.xml"])
+	}
+}
+
+func TestMergedBookDownloadRejectsSourceWithoutChapterArchive(t *testing.T) {
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(&unsupportedMergedBookSource{
+		staticSource: &staticSource{detail: model.Comic{SourceID: "plain-book", ID: "book", Title: "普通书籍"}},
+	})
+	store := &memoryJobs{}
+	engine := NewEngine(registry, store, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+	if err := engine.download(context.Background(), model.DownloadJob{
+		SourceID:     "plain-book",
+		ComicID:      "book",
+		ComicTitle:   "普通书籍",
+		ChapterID:    "merge",
+		ChapterTitle: "第1章 - 第2章",
+		DownloadDir:  t.TempDir(),
+		MergeChapters: []model.Chapter{
+			{ID: "1", Title: "第1章", Order: 1},
+			{ID: "2", Title: "第2章", Order: 2},
+		},
+	}); err == nil || !strings.Contains(err.Error(), "不支持合并下载") {
+		t.Fatalf("unsupported merged book error = %v", err)
 	}
 }
 

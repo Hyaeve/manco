@@ -642,19 +642,47 @@ func (a *Adapter) searchResult(result map[string]any, page int) (model.SearchRes
 func (a *Adapter) toComic(item map[string]any) model.Comic {
 	id, _ := encodeObject(item)
 	comic := model.Comic{
-		SourceID:    a.info.ID,
-		ID:          id,
-		Title:       firstNonEmpty(stringValue(item["title"]), stringValue(item["name"])),
-		Cover:       firstNonEmpty(stringValue(item["largeCoverUrl"]), stringValue(item["coverUrl"])),
-		Description: stringValue(item["description"]),
-		Status:      stringValue(item["state"]),
-		Author:      joinStrings(item["authors"]),
-		Tags:        tagTitles(item["tags"]),
+		SourceID:           a.info.ID,
+		ID:                 id,
+		Title:              firstNonEmpty(stringValue(item["title"]), stringValue(item["name"])),
+		Cover:              firstNonEmpty(stringValue(item["largeCoverUrl"]), stringValue(item["coverUrl"])),
+		Description:        stringValue(item["description"]),
+		Status:             stringValue(item["state"]),
+		Author:             joinStrings(item["authors"]),
+		Tags:               tagTitles(item["tags"]),
+		LatestChapterTitle: firstNonEmpty(stringValue(item["latestChapterTitle"]), latestChapterTitle(item)),
 	}
 	if values, ok := item["chapters"].([]any); ok {
 		comic.ChapterCount = len(values)
 	}
 	return comic
+}
+
+func latestChapterTitle(item map[string]any) string {
+	values, ok := item["chapters"].([]any)
+	if !ok || len(values) == 0 {
+		return ""
+	}
+	selectedTitle := ""
+	selectedNumber := 0.0
+	hasNumber := false
+	for _, value := range values {
+		chapter, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		title := chapterTitle(chapter)
+		number := floatValue(chapter["number"])
+		if strings.TrimSpace(title) == "" {
+			continue
+		}
+		if !hasNumber || number >= selectedNumber {
+			selectedTitle = title
+			selectedNumber = number
+			hasNumber = hasNumber || number > 0
+		}
+	}
+	return selectedTitle
 }
 
 func (a *Adapter) readArtifact(result map[string]any) ([]byte, string, error) {

@@ -257,8 +257,11 @@ func TestTrimListResultDropsChaptersOnlyFromListPayloads(t *testing.T) {
 	result := map[string]any{
 		"content": []any{
 			map[string]any{
-				"title":    "示例作品",
-				"chapters": []any{map[string]any{"title": "第1话"}},
+				"title": "示例作品",
+				"chapters": []any{
+					map[string]any{"title": "第1话", "number": float64(1)},
+					map[string]any{"title": "第12话 新章", "number": float64(12)},
+				},
 			},
 		},
 	}
@@ -276,6 +279,9 @@ func TestTrimListResultDropsChaptersOnlyFromListPayloads(t *testing.T) {
 	}
 	if got := item["title"]; got != "示例作品" {
 		t.Fatalf("title = %#v", got)
+	}
+	if got := item["latestChapterTitle"]; got != "第12话 新章" {
+		t.Fatalf("latestChapterTitle = %#v", got)
 	}
 }
 

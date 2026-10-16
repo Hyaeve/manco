@@ -407,7 +407,7 @@ async function remove(item, removeFile) {
         <span class="segmented-count">{{ counts[item.value] }}</span>
       </button>
       <ContentLink class="completed-tab" to="/completed">
-        已完成
+        完成列表
       </ContentLink>
     </div>
     <span class="spacer" />

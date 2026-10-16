@@ -61,12 +61,15 @@ type DownloadJob struct {
 	DownloadDir         string     `json:"downloadDir"`
 	ConvertToSimplified bool       `json:"convertToSimplified"`
 	ChapterMarker       bool       `json:"chapterMarker"`
+	MergeChapters       []Chapter  `json:"mergeChapters,omitempty"`
 	ID                  int64      `json:"id"`
 	SourceID            string     `json:"sourceId"`
 	ComicID             string     `json:"comicId"`
 	ComicTitle          string     `json:"comicTitle"`
 	ComicCover          string     `json:"comicCover"`
 	ComicAuthor         string     `json:"comicAuthor,omitempty"`
+	ComicDescription    string     `json:"comicDescription,omitempty"`
+	ComicTags           []string   `json:"comicTags,omitempty"`
 	ChapterID           string     `json:"chapterId"`
 	ChapterTitle        string     `json:"chapterTitle"`
 	ChapterOrder        float64    `json:"chapterOrder"`
@@ -108,22 +111,23 @@ type Stats struct {
 }
 
 type SourceInfo struct {
-	Builtin      bool          `json:"builtin,omitempty"`
-	Editable     bool          `json:"editable,omitempty"`
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Kind         string        `json:"kind,omitempty"`
-	Description  string        `json:"description"`
-	Homepage     string        `json:"homepage"`
-	NeedsLogin   bool          `json:"needsLogin"`
-	CanSearch    bool          `json:"canSearch"`
-	CanBrowse    bool          `json:"canBrowse"`
-	Icon         string        `json:"icon,omitempty"`
-	Order        int           `json:"order,omitempty"`
-	Sites        []string      `json:"sites,omitempty"`
-	Filters      []FilterGroup `json:"filters,omitempty"`
-	Hidden       bool          `json:"hidden,omitempty"`
-	PluginSource bool          `json:"pluginSource,omitempty"`
+	Builtin        bool          `json:"builtin,omitempty"`
+	Editable       bool          `json:"editable,omitempty"`
+	ID             string        `json:"id"`
+	Name           string        `json:"name"`
+	Kind           string        `json:"kind,omitempty"`
+	Description    string        `json:"description"`
+	Homepage       string        `json:"homepage"`
+	NeedsLogin     bool          `json:"needsLogin"`
+	CanSearch      bool          `json:"canSearch"`
+	CanBrowse      bool          `json:"canBrowse"`
+	Icon           string        `json:"icon,omitempty"`
+	Order          int           `json:"order,omitempty"`
+	Sites          []string      `json:"sites,omitempty"`
+	Filters        []FilterGroup `json:"filters,omitempty"`
+	Hidden         bool          `json:"hidden,omitempty"`
+	PluginSource   bool          `json:"pluginSource,omitempty"`
+	RepositoryName string        `json:"repositoryName,omitempty"`
 }
 
 type FilterOption struct {
@@ -148,18 +152,19 @@ type BrowseOptions struct {
 }
 
 type Comic struct {
-	SourceID     string   `json:"sourceId"`
-	ID           string   `json:"id"`
-	Title        string   `json:"title"`
-	Cover        string   `json:"cover"`
-	CachedCover  string   `json:"cachedCover,omitempty"`
-	Cached       bool     `json:"cached,omitempty"`
-	Author       string   `json:"author,omitempty"`
-	Description  string   `json:"description,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
-	Status       string   `json:"status,omitempty"`
-	ChapterCount int      `json:"chapterCount,omitempty"`
-	UpdatedAt    string   `json:"updatedAt,omitempty"`
+	SourceID           string   `json:"sourceId"`
+	ID                 string   `json:"id"`
+	Title              string   `json:"title"`
+	Cover              string   `json:"cover"`
+	CachedCover        string   `json:"cachedCover,omitempty"`
+	Cached             bool     `json:"cached,omitempty"`
+	Author             string   `json:"author,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	Tags               []string `json:"tags,omitempty"`
+	Status             string   `json:"status,omitempty"`
+	ChapterCount       int      `json:"chapterCount,omitempty"`
+	LatestChapterTitle string   `json:"latestChapterTitle,omitempty"`
+	UpdatedAt          string   `json:"updatedAt,omitempty"`
 }
 
 type Chapter struct {
@@ -214,6 +219,7 @@ type CustomSource struct {
 type ExtensionRepository struct {
 	ID          string                `json:"id"`
 	Name        string                `json:"name"`
+	CustomName  string                `json:"customName,omitempty"`
 	Kind        string                `json:"kind"`
 	URL         string                `json:"url"`
 	Description string                `json:"description,omitempty"`

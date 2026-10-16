@@ -57,3 +57,21 @@ func TestSortFilterGroups(t *testing.T) {
 		}
 	}
 }
+
+func TestToComicExtractsLatestChapterTitleWithoutKeepingChapters(t *testing.T) {
+	adapter := &Adapter{info: model.SourceInfo{ID: "plugin-source"}}
+	comic := adapter.toComic(map[string]any{
+		"title": "示例作品",
+		"chapters": []any{
+			map[string]any{"title": "第2话", "number": float64(2)},
+			map[string]any{"title": "第10话 最终话", "number": float64(10)},
+			map[string]any{"title": "第1话", "number": float64(1)},
+		},
+	})
+	if comic.LatestChapterTitle != "第10话 最终话" {
+		t.Fatalf("latest chapter = %q", comic.LatestChapterTitle)
+	}
+	if comic.ChapterCount != 3 {
+		t.Fatalf("chapter count = %d, want 3", comic.ChapterCount)
+	}
+}

@@ -516,6 +516,12 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if err != nil {
 		return err
 	}
+	if len(job.MergeChapters) > 1 {
+		if source.KindOf(item.Info()) == source.KindBook {
+			return e.downloadMergedBook(ctx, item, account, job)
+		}
+		return e.downloadMergedComic(ctx, item, account, job)
+	}
 	if source.KindOf(item.Info()) == source.KindBook {
 		return e.downloadBook(ctx, item, account, job)
 	}
@@ -714,6 +720,369 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 	finished = true
 	return nil
+}
+
+// downloadMergedComic packages the selected chapters into one CBZ. Page names
+// are prefixed by chapter number so readers and archive tools show the exact
+// chapter-then-page order requested by the user.
+func (e *Engine) downloadMergedComic(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
+	chapters := append([]model.Chapter(nil), job.MergeChapters...)
+	SortChapters(chapters)
+	plans := make([]mergedChapterPlan, 0, len(chapters))
+	totalPages := 0
+	for _, chapter := range chapters {
+		pages, err := item.Pages(ctx, account, job.ComicID, chapter)
+		if err != nil {
+			return fmt.Errorf("章节 %s 读取图片失败: %w", chapter.Title, err)
+		}
+		if len(pages) == 0 {
+			return fmt.Errorf("章节 %s 没有可用图片", chapter.Title)
+		}
+		plans = append(plans, mergedChapterPlan{chapter: chapter, pages: pages})
+		totalPages += len(pages)
+	}
+
+	downloadRoot, err := e.jobDownloadDir(job)
+	if err != nil {
+		return err
+	}
+	tempDir := e.stagingDir(job)
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return err
+	}
+	removeStagingParts(tempDir)
+	completed := countMergedCachedPages(tempDir, plans)
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", totalPages, completed, "", ""); err != nil {
+		return err
+	}
+	finished := false
+	defer func() {
+		if finished {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	client := e.registry.ClientForAccount(account)
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	entries := make([]pageEntry, 0, totalPages)
+	for chapterIndex, plan := range plans {
+		for pageIndex, page := range plan.pages {
+			cachePath := mergedStagingPagePath(tempDir, chapterIndex, pageIndex)
+			if info, statErr := os.Stat(cachePath); statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+				data, materialized, fetchErr := fetchPageImage(ctx, client, account, item, job.ComicID, plan.chapter, page)
+				if fetchErr != nil {
+					return fmt.Errorf("章节 %s 第 %d 页下载失败: %w", plan.chapter.Title, pageIndex+1, fetchErr)
+				}
+				if page.DescrambleParts > 0 && !materialized {
+					data, fetchErr = Descramble(data, page.DescrambleParts)
+					if fetchErr != nil {
+						return fmt.Errorf("章节 %s 第 %d 页解扰失败: %w", plan.chapter.Title, pageIndex+1, fetchErr)
+					}
+				}
+				if len(data) == 0 {
+					return fmt.Errorf("章节 %s 第 %d 页为空", plan.chapter.Title, pageIndex+1)
+				}
+				if err := writeFileAtomic(cachePath, data); err != nil {
+					return err
+				}
+				completed++
+				if err := e.store.UpdateDownloadProgress(ctx, job.ID, completed); err != nil {
+					return err
+				}
+			}
+			extension, extensionErr := imageExtensionFromFile(cachePath, page.URL)
+			if extensionErr != nil {
+				return fmt.Errorf("章节 %s 第 %d 页缓存无效: %w", plan.chapter.Title, pageIndex+1, extensionErr)
+			}
+			entries = append(entries, pageEntry{
+				name: fmt.Sprintf("%03d-%04d%s", chapterIndex+1, pageIndex+1, extension),
+				path: cachePath,
+			})
+		}
+	}
+
+	metadata := model.Comic{
+		SourceID:    job.SourceID,
+		ID:          job.ComicID,
+		Title:       job.ComicTitle,
+		Cover:       job.ComicCover,
+		Author:      job.ComicAuthor,
+		Description: job.ComicDescription,
+		Tags:        append([]string(nil), job.ComicTags...),
+	}
+	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
+		metadata.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
+		if len(metadata.Tags) == 0 {
+			metadata.Tags = append([]string(nil), job.ComicTags...)
+		}
+	}
+	comicTitle := job.ComicTitle
+	chapterTitle := job.ChapterTitle
+	if job.ConvertToSimplified {
+		comicTitle = convertToSimplifiedText(comicTitle)
+		chapterTitle = convertToSimplifiedText(chapterTitle)
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+		metadata.Status = convertToSimplifiedText(metadata.Status)
+		for index := range metadata.Tags {
+			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
+		}
+	}
+	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
+	e.metaMu.Lock()
+	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, totalPages, countSeriesBookFiles(comicDir)+1)
+	e.metaMu.Unlock()
+	if metaErr != nil {
+		return fmt.Errorf("download merged metadata: %w", metaErr)
+	}
+	if len(infoPayload) > 0 {
+		infoPath := filepath.Join(tempDir, "ComicInfo.xml")
+		if err := writeFileAtomic(infoPath, infoPayload); err != nil {
+			return err
+		}
+		entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
+	}
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if err := writeZip(outputPath, entries); err != nil {
+		return err
+	}
+	e.metaMu.Lock()
+	seriesErr := writeSeriesMetadataFiles(metadata, item.Info(), comicDir)
+	e.metaMu.Unlock()
+	if seriesErr != nil {
+		e.logger.Printf("downloader: merged series metadata %s/%s: %v", job.SourceID, job.ComicID, seriesErr)
+	}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", totalPages, totalPages, outputPath, ""); err != nil {
+		return err
+	}
+	finished = true
+	return nil
+}
+
+// downloadMergedBook supports Kototoro-style archive books. HTML and images
+// from every selected chapter are packed into one CBZ in chapter order.
+func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
+	archiveSource, ok := item.(source.ChapterArchiveSource)
+	if !ok {
+		return errors.New("该书籍源不支持合并下载")
+	}
+	chapters := append([]model.Chapter(nil), job.MergeChapters...)
+	SortChapters(chapters)
+	downloadRoot, err := e.jobDownloadDir(job)
+	if err != nil {
+		return err
+	}
+	tempDir := e.stagingDir(job)
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return err
+	}
+	removeStagingParts(tempDir)
+	finished := false
+	defer func() {
+		if finished {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	client := e.registry.ClientForAccount(account)
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	metadata := model.Comic{
+		SourceID:    job.SourceID,
+		ID:          job.ComicID,
+		Title:       job.ComicTitle,
+		Cover:       job.ComicCover,
+		Author:      job.ComicAuthor,
+		Description: job.ComicDescription,
+		Tags:        append([]string(nil), job.ComicTags...),
+	}
+	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
+		metadata.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
+		if len(metadata.Tags) == 0 {
+			metadata.Tags = append([]string(nil), job.ComicTags...)
+		}
+	}
+	comicTitle := job.ComicTitle
+	chapterTitle := job.ChapterTitle
+	if job.ConvertToSimplified {
+		comicTitle = convertToSimplifiedText(comicTitle)
+		chapterTitle = convertToSimplifiedText(chapterTitle)
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+		metadata.Status = convertToSimplifiedText(metadata.Status)
+		for index := range metadata.Tags {
+			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
+		}
+	}
+	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+	entries := make([]pageEntry, 0, len(chapters)*8)
+	index := chapterArchiveIndex{
+		ID:          metadata.ID,
+		Title:       metadata.Title,
+		URL:         comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+		PublicURL:   comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+		Cover:       metadata.Cover,
+		Description: metadata.Description,
+		State:       metadata.Status,
+		Source:      job.SourceID,
+		Chapters:    map[string]chapterArchiveChapter{},
+	}
+	if strings.TrimSpace(metadata.Author) != "" {
+		index.Authors = []string{metadata.Author}
+	}
+	for _, tag := range metadata.Tags {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			index.Tags = append(index.Tags, chapterArchiveIndexTag{Key: tag, Title: tag})
+		}
+	}
+
+	totalPages := 0
+	completed := 0
+	for chapterIndex, chapter := range chapters {
+		content, fetchErr := archiveSource.ChapterArchive(ctx, account, job.ComicID, chapter)
+		if fetchErr != nil {
+			return fmt.Errorf("章节 %s 获取正文失败: %w", chapter.Title, fetchErr)
+		}
+		if strings.TrimSpace(content.HTML) == "" && len(content.Images) == 0 {
+			return fmt.Errorf("章节 %s 没有可用内容", chapter.Title)
+		}
+		imageNames := make(map[string]string, len(content.Images))
+		imageEntries := make([]pageEntry, 0, len(content.Images))
+		imageIndex := make([]chapterArchiveImage, 0, len(content.Images))
+		for pageIndex, page := range content.Images {
+			if strings.TrimSpace(page.URL) == "" {
+				continue
+			}
+			data, materialized, pageErr := fetchPageImage(ctx, client, account, item, job.ComicID, chapter, page)
+			if pageErr != nil {
+				return fmt.Errorf("章节 %s 第 %d 张插图下载失败: %w", chapter.Title, pageIndex+1, pageErr)
+			}
+			if page.DescrambleParts > 0 && !materialized {
+				data, pageErr = Descramble(data, page.DescrambleParts)
+				if pageErr != nil {
+					return fmt.Errorf("章节 %s 第 %d 张插图解扰失败: %w", chapter.Title, pageIndex+1, pageErr)
+				}
+			}
+			if len(data) == 0 {
+				return fmt.Errorf("章节 %s 第 %d 张插图为空", chapter.Title, pageIndex+1)
+			}
+			name := fmt.Sprintf("%03d-%04d%s", chapterIndex+1, pageIndex+1, imageExtension(data, page.URL))
+			path := filepath.Join(tempDir, name)
+			if err := writeFileAtomic(path, data); err != nil {
+				return err
+			}
+			imageEntries = append(imageEntries, pageEntry{name: name, path: path})
+			imageNames[page.URL] = name
+			imageIndex = append(imageIndex, chapterArchiveImage{Remote: page.URL, Local: name})
+			totalPages++
+			completed++
+			_ = e.store.UpdateDownloadProgress(ctx, job.ID, completed)
+		}
+		html, rewriteErr := rewriteChapterArchiveHTML(content.HTML, imageNames)
+		if rewriteErr != nil {
+			return fmt.Errorf("章节 %s 正文处理失败: %w", chapter.Title, rewriteErr)
+		}
+		htmlName := fmt.Sprintf("%03d-%04d.html", chapterIndex+1, 1)
+		htmlPath := filepath.Join(tempDir, htmlName)
+		if err := writeFileAtomic(htmlPath, []byte(html)); err != nil {
+			return err
+		}
+		entries = append(entries, pageEntry{name: htmlName, path: htmlPath})
+		entries = append(entries, imageEntries...)
+		totalPages++
+		completed++
+		index.Chapters[chapter.ID] = chapterArchiveChapter{
+			Number:  chapter.Order,
+			Order:   chapterIndex + 1,
+			Name:    chapter.Title,
+			Source:  job.SourceID,
+			Entries: fmt.Sprintf("^%03d-", chapterIndex+1),
+			File:    filepath.Base(outputPath),
+			Images:  imageIndex,
+		}
+	}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", totalPages, completed, "", ""); err != nil {
+		return err
+	}
+	indexPayload, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return err
+	}
+	indexPath := filepath.Join(tempDir, "index.json")
+	if err := writeFileAtomic(indexPath, indexPayload); err != nil {
+		return err
+	}
+	entries = append(entries, pageEntry{name: "index.json", path: indexPath})
+	infoPayload, err := marshalComicInfo(chapterComicInfo(item, metadata, chapterTitle, job.ChapterOrder, totalPages))
+	if err != nil {
+		return err
+	}
+	infoPath := filepath.Join(tempDir, "ComicInfo.xml")
+	if err := writeFileAtomic(infoPath, infoPayload); err != nil {
+		return err
+	}
+	entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if err := writeZip(outputPath, entries); err != nil {
+		return err
+	}
+	e.metaMu.Lock()
+	metaErr := writeBookMetadata(ctx, client, account, item, metadata, comicDir)
+	e.metaMu.Unlock()
+	if metaErr != nil {
+		e.logger.Printf("downloader: merged book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
+	}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", totalPages, totalPages, outputPath, ""); err != nil {
+		return err
+	}
+	finished = true
+	return nil
+}
+
+func mergedStagingPagePath(dir string, chapterIndex, pageIndex int) string {
+	return filepath.Join(dir, fmt.Sprintf("%03d-%04d.bin", chapterIndex+1, pageIndex+1))
+}
+
+type mergedChapterPlan struct {
+	chapter model.Chapter
+	pages   []model.Page
+}
+
+func countMergedCachedPages(dir string, plans []mergedChapterPlan) int {
+	count := 0
+	for chapterIndex := range plans {
+		for pageIndex := range plans[chapterIndex].pages {
+			info, err := os.Stat(mergedStagingPagePath(dir, chapterIndex, pageIndex))
+			if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 type pageEntry struct {

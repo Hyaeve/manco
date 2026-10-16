@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw, RotateCcw, X } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
@@ -25,6 +25,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
 })
+
+onDeactivated(clearSelection)
 
 function onKeydown(event) {
   if (event.key === 'Escape' && selectionMode.value) clearSelection()
@@ -54,6 +56,7 @@ function enterSelection(item, index, event) {
 }
 
 function handleCardClick(item, index, event) {
+  if (event?.shiftKey) event.preventDefault()
   const next = new Set(selected.value)
   if (event?.shiftKey && selectAnchor >= 0) {
     const from = Math.min(selectAnchor, index)

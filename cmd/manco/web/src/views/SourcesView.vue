@@ -857,7 +857,7 @@ function openRepository() {
 
 function openRepositoryEdit(item) {
   editingRepositoryId.value = item.id
-  Object.assign(repositoryForm, { name: item.name || '', url: item.url || '', kind: item.kind || 'json' })
+  Object.assign(repositoryForm, { name: item.customName || '', url: item.url || '', kind: item.kind || 'json' })
   repositoryOpen.value = true
 }
 
@@ -1626,7 +1626,12 @@ function onDragEnd() {
           />
           <div>
             <h2>{{ editorSource.name }}</h2>
-            <p class="muted small">{{ sourceStatus(editorSource).label }}</p>
+            <p class="muted small">
+              {{ sourceStatus(editorSource).label }}
+              <template v-if="isPluginSource(editorSource) && editorSource.repositoryName">
+                · 来自 {{ editorSource.repositoryName }}
+              </template>
+            </p>
           </div>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭" @click="editorOpen = false">
@@ -1959,7 +1964,7 @@ function onDragEnd() {
       <div class="modal-body">
         <label class="field">
           <span>仓库名称（留空自动获取）</span>
-          <input v-model="repositoryForm.name" class="input" placeholder="留空由仓库清单自动命名" />
+          <input v-model="repositoryForm.name" class="input" placeholder="留空由仓库清单自动命名；填写后显示自定义名称" />
         </label>
         <label class="field">
           <span>仓库地址</span>

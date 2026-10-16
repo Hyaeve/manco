@@ -71,6 +71,7 @@ const searchQuery = ref('')
 const searchInput = ref(null)
 const SEARCH_HISTORY_KEY = 'manco.search.history.v1'
 let sessionCheckTimer = 0
+let activityTimer = 0
 
 const theme = ref(localStorage.getItem('manco-theme') || 'system')
 const themeOptions = [
@@ -189,6 +190,10 @@ onMounted(() => {
   window.addEventListener('manco:unauthorized', handleUnauthorized)
   document.addEventListener('visibilitychange', checkSessionOnVisible)
   sessionCheckTimer = window.setInterval(checkSession, 30000)
+  activityTimer = window.setInterval(() => {
+    if (route.name !== 'login') loadActivity(true)
+  }, 15000)
+  if (route.name !== 'login') loadActivity(true)
 })
 
 onUnmounted(() => {
@@ -202,6 +207,7 @@ onUnmounted(() => {
   window.removeEventListener('manco:unauthorized', handleUnauthorized)
   document.removeEventListener('visibilitychange', checkSessionOnVisible)
   if (sessionCheckTimer) window.clearInterval(sessionCheckTimer)
+  if (activityTimer) window.clearInterval(activityTimer)
   if (pendingScrollRestore) cancelAnimationFrame(pendingScrollRestore)
 })
 
@@ -245,20 +251,23 @@ function clearGlobalSearch() {
   if (route.name === 'search') router.push({ name: 'discover' })
 }
 
-async function toggleActivity(event) {
-  event.stopPropagation()
-  activityOpen.value = !activityOpen.value
-  openMenu.value = ''
-  if (!activityOpen.value) return
-  activityLoading.value = true
+async function loadActivity(silent = false) {
+  if (!silent) activityLoading.value = true
   try {
     const payload = await api.activity()
     activityItems.value = payload.items || []
   } catch {
-    activityItems.value = []
+    if (!silent) activityItems.value = []
   } finally {
     activityLoading.value = false
   }
+}
+
+function toggleActivity(event) {
+  event.stopPropagation()
+  activityOpen.value = !activityOpen.value
+  openMenu.value = ''
+  if (activityOpen.value) loadActivity()
 }
 
 function toggleMenu(name, event) {

@@ -469,12 +469,11 @@ function rememberOpenPosition() {
 }
 
 function latestLabel(item) {
-  const updated = String(item.updatedAt || '').trim()
-  const chapters = Number(item.chapterCount || 0)
+  const latest = String(item.latestChapterTitle || '').trim()
   if (/完结|完結|已完|completed|finished/i.test(String(item.status || ''))) {
-    return `完结至 ${updated || (chapters ? `第 ${chapters} 话` : '最后章节')}`
+    return `完结至 ${latest || '最后章节'}`
   }
-  return `更新至 ${updated || (chapters ? `第 ${chapters} 话` : '最新章节')}`
+  return `更新至 ${latest || '最新章节'}`
 }
 </script>
 

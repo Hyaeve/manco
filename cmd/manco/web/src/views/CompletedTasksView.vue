@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, BookOpen, ChevronDown, ChevronRight, CircleCheck, Loader2, RefreshCw, Search, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, BookOpen, ChevronDown, ChevronRight, CircleCheck, Loader2, RefreshCw, Search, Tag, Trash2, UserRound, X } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
@@ -13,6 +13,8 @@ const loading = ref(true)
 const error = ref('')
 const busy = ref(0)
 const expandedGroups = ref(new Set())
+const groupRenderLimit = ref(40)
+let pageScroller = null
 
 function queryText(value) {
   return typeof value === 'string' ? value : ''
@@ -42,6 +44,8 @@ const groups = computed(() => {
         key,
         title: item.comicTitle || '未命名作品',
         author: item.comicAuthor || '未知作者',
+        description: item.comicDescription || '',
+        tags: Array.isArray(item.comicTags) ? [...item.comicTags] : [],
         localCover: '',
         sourceCover: item.comicCover || '',
         sourceId: item.sourceId || '',
@@ -52,6 +56,8 @@ const groups = computed(() => {
     }
     if (!group.localCover && item.localCover) group.localCover = item.localCover
     if (!group.sourceCover && item.comicCover) group.sourceCover = item.comicCover
+    if (!group.description && item.comicDescription) group.description = item.comicDescription
+    if (!group.tags.length && item.comicTags?.length) group.tags = [...item.comicTags]
     group.items.push(item)
   }
   return [...map.values()].map((group) => {
@@ -63,6 +69,7 @@ const groups = computed(() => {
     return group
   })
 })
+const renderedGroups = computed(() => groups.value.slice(0, groupRenderLimit.value))
 
 watch(
   () => route.query.q,
@@ -73,9 +80,28 @@ watch(
   },
 )
 
-onMounted(async () => {
-  await load()
+watch(groups, () => {
+  groupRenderLimit.value = 40
 })
+
+onMounted(async () => {
+  pageScroller = document.querySelector('.content-scroll')
+  pageScroller?.addEventListener('scroll', handlePageScroll, { passive: true })
+  await load()
+  await nextTick()
+})
+
+onUnmounted(() => {
+  pageScroller?.removeEventListener('scroll', handlePageScroll)
+})
+
+function handlePageScroll() {
+  const element = pageScroller
+  if (!element || groupRenderLimit.value >= groups.value.length) return
+  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 320) {
+    groupRenderLimit.value += 40
+  }
+}
 
 async function load(silent = false) {
   if (!silent) loading.value = true
@@ -160,10 +186,11 @@ async function remove(item) {
 
     <div class="toolbar completed-toolbar">
       <div class="inline">
-        <ContentLink class="btn ghost icon" to="/downloads" aria-label="返回任务列表">
+        <ContentLink class="btn secondary small completed-back" to="/downloads" aria-label="返回任务列表">
           <ArrowLeft :size="17" />
+          <span>返回任务列表</span>
         </ContentLink>
-        <strong>已完成</strong>
+        <strong>完成列表</strong>
         <span class="badge success">{{ completedItems.length }}</span>
       </div>
       <span class="spacer" />
@@ -201,7 +228,7 @@ async function remove(item) {
       <p>没有匹配“{{ keyword }}”的已完成记录。</p>
     </div>
     <div v-else class="completed-task-groups">
-      <article v-for="group in groups" :key="group.key" class="completed-task-group">
+      <article v-for="group in renderedGroups" :key="group.key" class="completed-task-group">
         <button
           class="completed-task-head"
           type="button"
@@ -220,7 +247,21 @@ async function remove(item) {
           </span>
           <span class="completed-task-title">
             <strong>{{ group.title }}</strong>
-            <small>{{ group.author }}</small>
+            <span class="completed-task-detail-line">
+              <span class="author-pill completed-author-pill">
+                <UserRound :size="12" :stroke-width="1.8" />
+                {{ group.author }}
+              </span>
+              <span class="completed-task-description" :title="group.description">
+                {{ group.description || '暂无简介' }}
+              </span>
+              <span v-if="group.tags.length" class="completed-task-tags">
+                <span v-for="tag in group.tags.slice(0, 3)" :key="tag" class="badge tag-pill">
+                  <Tag :size="11" />{{ tag }}
+                </span>
+                <span v-if="group.tags.length > 3" class="muted small">+{{ group.tags.length - 3 }}</span>
+              </span>
+            </span>
           </span>
           <span class="completed-task-summary">
             <span class="badge success">已完成 {{ group.items.length }} 章</span>

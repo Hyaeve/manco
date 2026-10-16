@@ -263,7 +263,14 @@ private fun trimListChapters(response: String): String = try {
                 if (item == null) {
                     add(element)
                 } else {
-                    add(JsonObject(item.filterKeys { key -> key != "chapters" }))
+                    val trimmed = item.toMutableMap()
+                    if (trimmed["latestChapterTitle"] !is JsonPrimitive) {
+                        latestChapterTitle(item)?.let { title ->
+                            trimmed["latestChapterTitle"] = JsonPrimitive(title)
+                        }
+                    }
+                    trimmed.remove("chapters")
+                    add(JsonObject(trimmed))
                 }
             }
         }
@@ -273,6 +280,32 @@ private fun trimListChapters(response: String): String = try {
     }
 } catch (_: Exception) {
     response
+}
+
+private fun latestChapterTitle(item: JsonObject): String? {
+    val chapters = item["chapters"] as? JsonArray ?: return null
+    var selectedTitle: String? = null
+    var selectedNumber = 0.0
+    var hasNumber = false
+    chapters.forEach { value ->
+        val chapter = value as? JsonObject ?: return@forEach
+        val title = (chapter["title"] as? JsonPrimitive)
+            ?.content
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return@forEach
+        val number = (chapter["number"] as? JsonPrimitive)
+            ?.content
+            ?.toDoubleOrNull()
+        if (!hasNumber || (number != null && number >= selectedNumber)) {
+            selectedTitle = title
+            if (number != null && number > 0) {
+                selectedNumber = number
+                hasNumber = true
+            }
+        }
+    }
+    return selectedTitle
 }
 
 /**

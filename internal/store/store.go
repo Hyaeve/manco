@@ -96,9 +96,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			comic_title TEXT NOT NULL,
 			comic_cover TEXT NOT NULL DEFAULT '',
 			comic_author TEXT NOT NULL DEFAULT '',
+			comic_description TEXT NOT NULL DEFAULT '',
+			comic_tags_json TEXT NOT NULL DEFAULT '[]',
 			chapter_id TEXT NOT NULL,
 			chapter_title TEXT NOT NULL,
 			chapter_order REAL NOT NULL DEFAULT 0,
+			merge_chapters_json TEXT NOT NULL DEFAULT '[]',
 			status TEXT NOT NULL DEFAULT 'queued',
 			total_pages INTEGER NOT NULL DEFAULT 0,
 			completed_pages INTEGER NOT NULL DEFAULT 0,
@@ -130,6 +133,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS extension_repositories (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
+            custom_name TEXT NOT NULL DEFAULT '',
             kind TEXT NOT NULL DEFAULT 'json',
             url TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -191,6 +195,15 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "download_jobs", "comic_author", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "download_jobs", "comic_description", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "download_jobs", "comic_tags_json", `TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "download_jobs", "merge_chapters_json", `TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE download_jobs
 		SET comic_author = COALESCE((
@@ -217,6 +230,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "download_jobs", "chapter_marker", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "extension_repositories", "custom_name", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "source_accounts", "user_agent_cipher", `TEXT NOT NULL DEFAULT ''`); err != nil {
@@ -552,10 +568,11 @@ func (s *Store) UpsertExtensionRepository(ctx context.Context, item model.Extens
 		item.Catalog = json.RawMessage(`[]`)
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO extension_repositories(id, name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO extension_repositories(id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
+			custom_name = excluded.custom_name,
 			kind = excluded.kind,
 			url = excluded.url,
 			description = excluded.description,
@@ -565,7 +582,7 @@ func (s *Store) UpsertExtensionRepository(ctx context.Context, item model.Extens
 			last_sync_at = excluded.last_sync_at,
 			last_error = excluded.last_error,
 			updated_at = CURRENT_TIMESTAMP`,
-		item.ID, item.Name, item.Kind, item.URL, item.Description, item.Icon, item.Enabled, string(item.Catalog), item.LastSyncAt, item.LastError)
+		item.ID, item.Name, item.CustomName, item.Kind, item.URL, item.Description, item.Icon, item.Enabled, string(item.Catalog), item.LastSyncAt, item.LastError)
 	if err != nil {
 		return model.ExtensionRepository{}, err
 	}
@@ -573,11 +590,11 @@ func (s *Store) UpsertExtensionRepository(ctx context.Context, item model.Extens
 }
 
 func (s *Store) ExtensionRepository(ctx context.Context, id string) (model.ExtensionRepository, error) {
-	return scanExtensionRepository(s.db.QueryRowContext(ctx, `SELECT id, name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories WHERE id = ?`, id))
+	return scanExtensionRepository(s.db.QueryRowContext(ctx, `SELECT id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories WHERE id = ?`, id))
 }
 
 func (s *Store) ListExtensionRepositories(ctx context.Context) ([]model.ExtensionRepository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories ORDER BY created_at ASC, id ASC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -596,7 +613,7 @@ func (s *Store) ListExtensionRepositories(ctx context.Context) ([]model.Extensio
 func scanExtensionRepository(row rowScanner) (model.ExtensionRepository, error) {
 	var item model.ExtensionRepository
 	var catalog string
-	err := row.Scan(&item.ID, &item.Name, &item.Kind, &item.URL, &item.Description, &item.Icon, &item.Enabled, &catalog, &item.LastSyncAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
+	err := row.Scan(&item.ID, &item.Name, &item.CustomName, &item.Kind, &item.URL, &item.Description, &item.Icon, &item.Enabled, &catalog, &item.LastSyncAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.ExtensionRepository{}, ErrNotFound
 	}
@@ -852,15 +869,26 @@ func (s *Store) DeleteSubscription(ctx context.Context, id int64) error {
 }
 
 func (s *Store) CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error) {
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, download_dir, convert_to_simplified, chapter_marker, status)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
+	mergeChapters, err := json.Marshal(job.MergeChapters)
+	if err != nil {
+		return model.DownloadJob{}, err
+	}
+	comicTags, err := json.Marshal(job.ComicTags)
+	if err != nil {
+		return model.DownloadJob{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, download_dir, convert_to_simplified, chapter_marker, status)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 		ON CONFLICT(source_id, comic_id, chapter_id) DO UPDATE SET
 			comic_title = excluded.comic_title,
 			comic_cover = excluded.comic_cover,
 			comic_author = excluded.comic_author,
+			comic_description = excluded.comic_description,
+			comic_tags_json = excluded.comic_tags_json,
 			chapter_title = excluded.chapter_title,
 			chapter_order = excluded.chapter_order,
+			merge_chapters_json = excluded.merge_chapters_json,
 			download_dir = excluded.download_dir,
 			convert_to_simplified = excluded.convert_to_simplified,
 			status = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.status ELSE 'queued' END,
@@ -868,7 +896,7 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 			retry_count = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.retry_count ELSE 0 END,
 			next_retry_at = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.next_retry_at ELSE NULL END,
 			updated_at = CURRENT_TIMESTAMP`,
-		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ChapterID, job.ChapterTitle, job.ChapterOrder, job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker)
+		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ComicDescription, string(comicTags), job.ChapterID, job.ChapterTitle, job.ChapterOrder, string(mergeChapters), job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker)
 	if err != nil {
 		return model.DownloadJob{}, err
 	}
@@ -892,21 +920,21 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	// 排队任务挤出结果集，因此三类记录各自使用独立的 LIMIT。
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT * FROM (
-			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status NOT IN ('completed', 'failed', 'canceled')
 			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id DESC
 			LIMIT ?
 		)
 		UNION ALL
 		SELECT * FROM (
-			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status IN ('failed', 'canceled')
 			ORDER BY id DESC
 			LIMIT ?
 		)
 		UNION ALL
 		SELECT * FROM (
-			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status = 'completed'
 			ORDER BY COALESCE(finished_at, updated_at, created_at) DESC, id DESC
 			LIMIT ?
@@ -956,13 +984,22 @@ func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
 	return jobs, rows.Err()
 }
 
-const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, chapter_id, chapter_title, chapter_order, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at FROM download_jobs`
+const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at FROM download_jobs`
 
 func scanJob(row rowScanner) (model.DownloadJob, error) {
 	var job model.DownloadJob
-	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ComicAuthor, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.DownloadDir, &job.ConvertToSimplified, &job.ChapterMarker, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
+	var mergeChapters, comicTags string
+	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ComicAuthor, &job.ComicDescription, &comicTags, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &mergeChapters, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.DownloadDir, &job.ConvertToSimplified, &job.ChapterMarker, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.DownloadJob{}, ErrNotFound
+	}
+	if err == nil {
+		if strings.TrimSpace(mergeChapters) != "" {
+			_ = json.Unmarshal([]byte(mergeChapters), &job.MergeChapters)
+		}
+		if strings.TrimSpace(comicTags) != "" {
+			_ = json.Unmarshal([]byte(comicTags), &job.ComicTags)
+		}
 	}
 	return job, err
 }
@@ -1135,4 +1172,3 @@ func (s *Store) FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID
 	}
 	return jobs, rows.Err()
 }
-

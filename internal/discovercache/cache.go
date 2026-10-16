@@ -55,6 +55,7 @@ type indexedEntry struct {
 	Status       string
 	Tags         []string
 	ChapterCount int
+	LatestTitle  string
 	UpdatedAt    time.Time
 }
 
@@ -197,6 +198,9 @@ func (c *Cache) AnnotateKind(kind string, comic model.Comic) model.Comic {
 	}
 	if comic.ChapterCount == 0 && entry.ChapterCount > 0 {
 		comic.ChapterCount = entry.ChapterCount
+	}
+	if strings.TrimSpace(comic.LatestChapterTitle) == "" {
+		comic.LatestChapterTitle = entry.LatestTitle
 	}
 	c.touch(entry.Path, time.Now(), entry.UpdatedAt)
 	return comic
@@ -535,6 +539,7 @@ func makeIndexedEntry(path string, entry storedDetail) indexedEntry {
 		Status:       entry.Comic.Status,
 		Tags:         append([]string(nil), entry.Comic.Tags...),
 		ChapterCount: chapterCount,
+		LatestTitle:  entry.Comic.LatestChapterTitle,
 		UpdatedAt:    entry.UpdatedAt,
 	}
 }
@@ -570,6 +575,9 @@ func mergeComic(previous, current model.Comic) model.Comic {
 	}
 	if current.ChapterCount == 0 {
 		current.ChapterCount = previous.ChapterCount
+	}
+	if strings.TrimSpace(current.LatestChapterTitle) == "" {
+		current.LatestChapterTitle = previous.LatestChapterTitle
 	}
 	if strings.TrimSpace(current.CachedCover) == "" {
 		current.CachedCover = previous.CachedCover

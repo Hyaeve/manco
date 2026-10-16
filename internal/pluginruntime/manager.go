@@ -755,6 +755,11 @@ func trimListResult(result map[string]any) map[string]any {
 		if !ok {
 			continue
 		}
+		if stringValue(item["latestChapterTitle"]) == "" {
+			if latest := latestChapterTitle(item); latest != "" {
+				item["latestChapterTitle"] = latest
+			}
+		}
 		delete(item, "chapters")
 		values[index] = item
 	}

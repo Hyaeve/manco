@@ -53,7 +53,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.1"
+	appVersion    = "v0.5.2"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -966,12 +966,29 @@ func (s *Server) SourceSettings(ctx context.Context) map[string]model.SourceDown
 func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string][]string) []model.SourceInfo {
 	items := s.registry.List()
 	orderSetting := s.sourceOrder(context.Background())
+	customRepositories := map[string]string{}
+	if customSources, err := s.store.ListCustomSources(context.Background()); err == nil {
+		repositoriesByName := map[string]string{}
+		if repositories, repoErr := s.store.ListExtensionRepositories(context.Background()); repoErr == nil {
+			for _, repository := range repositories {
+				repositoriesByName[repository.URL] = repository.Name
+			}
+		}
+		for _, custom := range customSources {
+			if repositoryName := repositoriesByName[custom.RepoURL]; repositoryName != "" {
+				customRepositories[custom.ID] = repositoryName
+			}
+		}
+	}
 	for index := range items {
 		// 内置来源始终使用本地 /data/icon 缓存；其他来源仅在用户
 		// 自定义过图标时（缓存里已有文件）才覆盖清单自带图标。
 		_, builtin := sourceIconSources[items[index].ID]
 		if s.icons != nil && (builtin || s.icons.Has(items[index].ID)) {
 			items[index].Icon = s.icons.URL(items[index].ID)
+		}
+		if repositoryName := customRepositories[items[index].ID]; repositoryName != "" {
+			items[index].RepositoryName = repositoryName
 		}
 		items[index].Hidden = hidden[items[index].ID]
 		blocked := map[string]bool{}
@@ -1466,13 +1483,16 @@ func (s *Server) handleCreateRepository(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "仓库地址不能为空")
 		return
 	}
-	name := strings.TrimSpace(payload.Name)
-	if name == "" {
-		name = "拓展仓库"
+	customName := strings.TrimSpace(payload.Name)
+	name := source.FirstNonEmpty(customName, "拓展仓库")
+	idSeed := payload.URL
+	if customName != "" {
+		idSeed = customName + payload.URL
 	}
 	item := model.ExtensionRepository{
-		ID:          newConfigID("repo", name+payload.URL),
+		ID:          newConfigID("repo", idSeed),
 		Name:        name,
+		CustomName:  customName,
 		Kind:        repository.NormalizeKind(payload.Kind),
 		URL:         payload.URL,
 		Description: strings.TrimSpace(payload.Description),
@@ -1519,10 +1539,8 @@ func (s *Server) handleUpdateRepository(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "仓库地址不能为空")
 		return
 	}
-	existing.Name = strings.TrimSpace(payload.Name)
-	if existing.Name == "" {
-		existing.Name = "拓展仓库"
-	}
+	existing.CustomName = strings.TrimSpace(payload.Name)
+	existing.Name = source.FirstNonEmpty(existing.CustomName, "拓展仓库")
 	existing.Kind = repository.NormalizeKind(payload.Kind)
 	existing.URL = payload.URL
 	existing.Description = strings.TrimSpace(payload.Description)
@@ -1569,8 +1587,10 @@ func (s *Server) syncRepository(ctx context.Context, item model.ExtensionReposit
 		return model.ExtensionRepository{}, err
 	}
 	items := metadata.Extensions
-	if metadata.Name != "" {
+	if metadata.Name != "" && strings.TrimSpace(item.CustomName) == "" {
 		item.Name = metadata.Name
+	} else if strings.TrimSpace(item.CustomName) != "" {
+		item.Name = strings.TrimSpace(item.CustomName)
 	}
 	raw, err := json.Marshal(items)
 	if err != nil {
@@ -2301,18 +2321,32 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) loadComicDetail(ctx context.Context, item source.Source, account source.Account, comicID string) (model.ComicDetail, error) {
+	var detail model.ComicDetail
 	if combined, ok := item.(source.DetailWithChaptersSource); ok {
-		return combined.DetailWithChapters(ctx, account, comicID)
+		loaded, err := combined.DetailWithChapters(ctx, account, comicID)
+		if err != nil {
+			return model.ComicDetail{}, err
+		}
+		detail = loaded
+	} else {
+		comic, err := item.Detail(ctx, account, comicID)
+		if err != nil {
+			return model.ComicDetail{}, err
+		}
+		chapters, err := item.Chapters(ctx, account, comic.ID)
+		if err != nil {
+			return model.ComicDetail{}, err
+		}
+		detail = model.ComicDetail{Comic: comic, Chapters: chapters}
 	}
-	comic, err := item.Detail(ctx, account, comicID)
-	if err != nil {
-		return model.ComicDetail{}, err
+	if len(detail.Chapters) > 0 {
+		downloader.SortChapters(detail.Chapters)
+		if strings.TrimSpace(detail.Comic.LatestChapterTitle) == "" {
+			last := detail.Chapters[len(detail.Chapters)-1]
+			detail.Comic.LatestChapterTitle = source.FirstNonEmpty(last.Title, last.ID)
+		}
 	}
-	chapters, err := item.Chapters(ctx, account, comic.ID)
-	if err != nil {
-		return model.ComicDetail{}, err
-	}
-	return model.ComicDetail{Comic: comic, Chapters: chapters}, nil
+	return detail, nil
 }
 
 func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
@@ -2390,6 +2424,7 @@ func convertComicText(comic model.Comic) model.Comic {
 	comic.Author = downloader.SimplifiedText(comic.Author)
 	comic.Description = downloader.SimplifiedText(comic.Description)
 	comic.Status = downloader.SimplifiedText(comic.Status)
+	comic.LatestChapterTitle = downloader.SimplifiedText(comic.LatestChapterTitle)
 	for index := range comic.Tags {
 		comic.Tags[index] = downloader.SimplifiedText(comic.Tags[index])
 	}
@@ -3100,6 +3135,9 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]activityItem, 0, len(items))
 	for _, job := range items {
+		if job.Status != "completed" && job.Status != "failed" && job.Status != "canceled" {
+			continue
+		}
 		level := "info"
 		switch job.Status {
 		case "completed":
@@ -3113,12 +3151,8 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			message += " 下载完成"
 		case "failed":
 			message += " 下载失败"
-		case "running":
-			message += " 下载中"
-		case "queued":
-			message += " 等待下载"
-		case "paused":
-			message += " 已暂停"
+		case "canceled":
+			message += " 已取消"
 		}
 		stamp := job.UpdatedAt
 		if job.FinishedAt != nil {
@@ -3244,6 +3278,7 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	// 批量暂停是按内容源全局生效的：冷却期间该来源下所有排队的章节
 	// 都标记为 waiting，前端展示为“等待中”。
 	cooldowns := s.engine.SourceCooldowns()
+	annotated := map[string]model.Comic{}
 	for index := range items {
 		if items[index].Status == "queued" {
 			if until, ok := cooldowns[items[index].SourceID]; ok && until.After(time.Now()) {
@@ -3251,11 +3286,30 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if strings.TrimSpace(items[index].FilePath) == "" {
-			continue
+			items[index].LocalCover = s.localCoverForJob(items[index])
+		} else {
+			items[index].LocalCover = s.localCoverForJob(items[index])
+			if info, statErr := os.Stat(items[index].FilePath); statErr == nil && !info.IsDir() {
+				items[index].Size = info.Size()
+			}
 		}
-		items[index].LocalCover = s.localCoverForJob(items[index])
-		if info, statErr := os.Stat(items[index].FilePath); statErr == nil && !info.IsDir() {
-			items[index].Size = info.Size()
+		key := items[index].SourceID + "\x00" + items[index].ComicID
+		annotatedComic, ok := annotated[key]
+		if !ok {
+			annotatedComic = s.annotateDiscover(items[index].SourceID, "", model.Comic{
+				SourceID: items[index].SourceID,
+				ID:       items[index].ComicID,
+				Title:    items[index].ComicTitle,
+				Cover:    items[index].ComicCover,
+				Author:   items[index].ComicAuthor,
+			})
+			annotated[key] = annotatedComic
+		}
+		if strings.TrimSpace(items[index].ComicDescription) == "" {
+			items[index].ComicDescription = annotatedComic.Description
+		}
+		if len(items[index].ComicTags) == 0 {
+			items[index].ComicTags = append([]string(nil), annotatedComic.Tags...)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -3445,12 +3499,15 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 		ComicTitle          string          `json:"comicTitle"`
 		ComicCover          string          `json:"comicCover"`
 		ComicAuthor         string          `json:"comicAuthor"`
+		ComicDescription    string          `json:"comicDescription"`
+		ComicTags           []string        `json:"comicTags"`
 		SeriesDir           string          `json:"seriesDir"`
 		DownloadDir         string          `json:"downloadDir"`
 		ConvertToSimplified *bool           `json:"convertToSimplified"`
 		ChapterMarker       *bool           `json:"chapterMarker"`
 		CoverBlur           *bool           `json:"coverBlur"`
 		AutoDownload        bool            `json:"autoDownload"`
+		MergeChapters       bool            `json:"mergeChapters"`
 		Chapters            []model.Chapter `json:"chapters"`
 		Chapter             *model.Chapter  `json:"chapter"`
 	}
@@ -3485,19 +3542,43 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 	created := make([]model.DownloadJob, 0, len(chapters))
 	queuedCount := 0
 	skippedCount := 0
+	normalizedChapters := make([]model.Chapter, 0, len(chapters))
 	for _, chapter := range chapters {
-		if strings.TrimSpace(chapter.ID) == "" {
-			continue
+		if strings.TrimSpace(chapter.ID) != "" {
+			normalizedChapters = append(normalizedChapters, chapter)
 		}
+	}
+	sort.SliceStable(normalizedChapters, func(i, j int) bool {
+		if normalizedChapters[i].Order == normalizedChapters[j].Order {
+			return normalizedChapters[i].ID < normalizedChapters[j].ID
+		}
+		return normalizedChapters[i].Order < normalizedChapters[j].Order
+	})
+	if len(normalizedChapters) == 0 {
+		writeError(w, http.StatusBadRequest, "缺少可下载章节")
+		return
+	}
+	if payload.MergeChapters && len(normalizedChapters) > 1 {
+		hashInput := make([]string, 0, len(normalizedChapters))
+		for _, chapter := range normalizedChapters {
+			hashInput = append(hashInput, chapter.ID)
+		}
+		sum := sha256.Sum256([]byte(strings.Join(hashInput, "\x00")))
+		first := normalizedChapters[0]
+		last := normalizedChapters[len(normalizedChapters)-1]
+		chapterTitle := fmt.Sprintf("%s - %s", source.FirstNonEmpty(first.Title, first.ID), source.FirstNonEmpty(last.Title, last.ID))
 		saved, err := s.store.CreateDownloadJob(r.Context(), model.DownloadJob{
 			SourceID:            payload.SourceID,
 			ComicID:             payload.ComicID,
 			ComicTitle:          seriesDir,
 			ComicCover:          payload.ComicCover,
 			ComicAuthor:         strings.TrimSpace(payload.ComicAuthor),
-			ChapterID:           chapter.ID,
-			ChapterTitle:        source.FirstNonEmpty(chapter.Title, chapter.ID),
-			ChapterOrder:        chapter.Order,
+			ComicDescription:    strings.TrimSpace(payload.ComicDescription),
+			ComicTags:           append([]string(nil), payload.ComicTags...),
+			ChapterID:           "merge-" + hex.EncodeToString(sum[:6]),
+			ChapterTitle:        chapterTitle,
+			ChapterOrder:        first.Order,
+			MergeChapters:       normalizedChapters,
 			DownloadDir:         downloadDir,
 			ConvertToSimplified: convertToSimplified,
 			ChapterMarker:       chapterMarker,
@@ -3512,8 +3593,37 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			queuedCount++
 		}
 		created = append(created, saved)
+	} else {
+		for _, chapter := range normalizedChapters {
+			saved, err := s.store.CreateDownloadJob(r.Context(), model.DownloadJob{
+				SourceID:            payload.SourceID,
+				ComicID:             payload.ComicID,
+				ComicTitle:          seriesDir,
+				ComicCover:          payload.ComicCover,
+				ComicAuthor:         strings.TrimSpace(payload.ComicAuthor),
+				ComicDescription:    strings.TrimSpace(payload.ComicDescription),
+				ComicTags:           append([]string(nil), payload.ComicTags...),
+				ChapterID:           chapter.ID,
+				ChapterTitle:        source.FirstNonEmpty(chapter.Title, chapter.ID),
+				ChapterOrder:        chapter.Order,
+				DownloadDir:         downloadDir,
+				ConvertToSimplified: convertToSimplified,
+				ChapterMarker:       chapterMarker,
+			})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if saved.Status == "completed" {
+				skippedCount++
+			} else {
+				queuedCount++
+			}
+			created = append(created, saved)
+		}
 	}
 	if payload.AutoDownload && len(created) > 0 {
+		lastChapter := normalizedChapters[len(normalizedChapters)-1]
 		if _, err := s.store.UpsertSubscription(r.Context(), model.Subscription{
 			SourceID:            payload.SourceID,
 			ComicID:             payload.ComicID,
@@ -3528,9 +3638,9 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			ConvertToSimplified: convertToSimplified,
 			ChapterMarker:       chapterMarker,
 			CoverBlur:           coverBlur,
-			LastChapterID:       created[len(created)-1].ChapterID,
-			LastChapterTitle:    created[len(created)-1].ChapterTitle,
-			LastChapterOrder:    created[len(created)-1].ChapterOrder,
+			LastChapterID:       lastChapter.ID,
+			LastChapterTitle:    source.FirstNonEmpty(lastChapter.Title, lastChapter.ID),
+			LastChapterOrder:    lastChapter.Order,
 		}); err != nil {
 			s.logger.Printf("api: auto subscribe: %v", err)
 		}

@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
   ArrowUp,
   BookOpen,
+  Boxes,
   Check,
   Download,
   Film,
@@ -26,6 +27,7 @@ import { notify } from '../stores/notices'
 import { dirBasename, splitAuthors } from '../utils/metadata'
 
 const items = ref([])
+const sourceKinds = ref({})
 const loading = ref(true)
 const query = ref('')
 const kind = ref('all')
@@ -50,7 +52,7 @@ const heroTint = ref('')
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   return items.value.filter((item) => {
-    if (kind.value !== 'all' && item.kind !== kind.value) return false
+    if (kind.value !== 'all' && itemKind(item) !== kind.value) return false
     if (activeRoot.value && rootOf(item) !== activeRoot.value) return false
     if (!keyword) return true
     return (
@@ -87,8 +89,15 @@ const libraryRoots = computed(() => {
   return ordered
 })
 
-const comicCount = computed(() => items.value.filter((item) => item.kind !== 'book').length)
-const bookCount = computed(() => items.value.filter((item) => item.kind === 'book').length)
+function itemKind(item) {
+  const sourceKind = sourceKinds.value[item.sourceId]
+  if (sourceKind === 'book' || sourceKind === 'other') return sourceKind
+  return item.kind === 'book' || item.kind === 'other' ? item.kind : 'comic'
+}
+
+const comicCount = computed(() => items.value.filter((item) => itemKind(item) === 'comic').length)
+const bookCount = computed(() => items.value.filter((item) => itemKind(item) === 'book').length)
+const otherCount = computed(() => items.value.filter((item) => itemKind(item) === 'other').length)
 
 const activeFiles = computed(() => active.value?.files || [])
 const activeAuthors = computed(() => splitAuthors(active.value?.author))
@@ -142,8 +151,12 @@ onUnmounted(() => {
 async function load() {
   loading.value = true
   try {
-    const payload = await api.localLibrary()
+    const [payload, sourcePayload] = await Promise.all([
+      api.localLibrary(),
+      api.sources().catch(() => ({ items: [] })),
+    ])
     items.value = payload.items || []
+    sourceKinds.value = Object.fromEntries((sourcePayload.items || []).map((source) => [source.id, source.kind || 'comic']))
     rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : []
     const availableRoots = new Set(rootOrder.value)
     if (activeRoot.value && !availableRoots.has(activeRoot.value)) activeRoot.value = ''
@@ -373,6 +386,9 @@ function chooseChapterSortDirection(descending) {
 
 async function openDetail(item) {
   active.value = item
+  await nextTick()
+  const scroller = document.querySelector('.content-scroll')
+  if (scroller) scroller.scrollTop = 0
   heroTint.value = ''
   if (item.cover) extractTint(coverUrl(item))
   chapterQuery.value = ''
@@ -586,6 +602,11 @@ function downloadReaderFile() {
           <Film :size="16" />
           书籍
           <span class="segmented-count">{{ bookCount }}</span>
+        </button>
+        <button type="button" :class="{ active: kind === 'other' }" @click="kind = 'other'">
+          <Boxes :size="16" />
+          其他源
+          <span class="segmented-count">{{ otherCount }}</span>
         </button>
       </div>
       <span class="spacer" />

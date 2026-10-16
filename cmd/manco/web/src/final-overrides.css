@@ -2361,14 +2361,14 @@
 /* 章节排序：纯图标按钮（全选按钮保持图标+文字一体横排） */
 .detail-chapter-head .btn.ghost.small.sort-btn {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   place-items: center;
   padding: 0;
 }
 .chapter-time-sort-icon {
-  width: 18px;
-  height: 18px;
+  width: 23px;
+  height: 23px;
   object-fit: contain;
 }
 [data-theme='dark'] .chapter-time-sort-icon {
@@ -2787,9 +2787,15 @@
   padding: 8px 10px 8px 16px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--surface);
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(12px) saturate(1.08);
+  -webkit-backdrop-filter: blur(12px) saturate(1.08);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
   transform: translateX(-50%);
+}
+
+[data-theme='dark'] .selection-pill {
+  background: rgba(31, 36, 28, 0.82);
 }
 
 .selection-count {
@@ -2825,6 +2831,31 @@
 .subscription-card.selecting,
 .archive-card.selecting {
   cursor: pointer;
+}
+
+.subscription-card,
+.archive-card {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.subscription-card .subscription-cover,
+.archive-card .archive-cover {
+  overflow: hidden;
+}
+
+.subscription-card .subscription-cover img,
+.archive-card .archive-cover img {
+  transform: scale(1);
+  transition: transform 0.28s ease, filter 0.28s ease;
+}
+
+.subscription-card:hover .subscription-cover img,
+.subscription-card:focus-within .subscription-cover img,
+.archive-card:hover .archive-cover img,
+.archive-card:focus-within .archive-cover img {
+  transform: scale(1.06);
+  filter: brightness(1.09) saturate(1.03);
 }
 
 .subscription-card.selected,
@@ -3331,7 +3362,7 @@
   overflow: hidden;
   color: var(--text);
   font-size: 14px;
-  font-weight: 400;
+  font-weight: 550;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4157,6 +4188,18 @@ svg.source-editor-icon {
 /* v0.1.27：内容源编辑窗口加宽；网站地址/UA/Cookie 一行自适应，单独一项时整行撑满。 */
 .source-editor-modal {
   width: min(1040px, 100%);
+  height: min(820px, calc(100dvh - 48px));
+  max-height: calc(100dvh - 48px);
+}
+
+.source-editor-modal .modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.source-editor-modal .modal-body::-webkit-scrollbar {
+  display: none;
 }
 .source-editor-modal .source-editor-pair {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -4278,6 +4321,76 @@ svg.source-editor-icon {
 
 .completed-page .completed-task-group {
   background: var(--surface);
+}
+
+.completed-page .completed-back {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+}
+
+.completed-task-title {
+  max-height: 120px;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.completed-task-title > strong {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.completed-task-detail-line {
+  display: flex;
+  min-width: 0;
+  max-height: 84px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.completed-page .completed-author-pill {
+  display: inline-flex;
+  max-width: 45%;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.completed-task-description {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.completed-task-tags {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.completed-task-tags .tag-pill {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 归档集进入详情页：已下载章节正常显示，未下载章节标灰。 */
@@ -4409,4 +4522,28 @@ svg.source-editor-icon {
   .download-virtual-inner .download-actions {
     display: none;
   }
+}
+
+.completed-tab {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, #c79238 42%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, #f3d58d 54%, var(--surface));
+  color: color-mix(in srgb, #79551a 88%, var(--text));
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.completed-tab:hover {
+  background: color-mix(in srgb, #eec66e 68%, var(--surface));
+}
+
+[data-theme='dark'] .completed-tab {
+  border-color: color-mix(in srgb, #c79238 34%, var(--border));
+  background: color-mix(in srgb, #c79238 26%, var(--surface));
+  color: #f2d99b;
 }

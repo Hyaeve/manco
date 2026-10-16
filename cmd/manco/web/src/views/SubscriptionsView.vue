@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import {
   Archive,
   BookOpen,
@@ -111,6 +111,7 @@ function enterSelection(item, index, event) {
 }
 
 function handleCardClick(item, index, event) {
+  if (event?.shiftKey) event.preventDefault()
   const next = new Set(selected.value)
   if (event?.shiftKey && selectAnchor >= 0) {
     const from = Math.min(selectAnchor, index)
@@ -165,6 +166,8 @@ onUnmounted(() => {
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', onKeydown)
 })
+
+onDeactivated(clearSubscriptionSelection)
 
 function onKeydown(event) {
   if (event.key === 'Escape' && selectionMode.value) clearSubscriptionSelection()
