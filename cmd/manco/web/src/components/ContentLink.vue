@@ -6,12 +6,22 @@ const props = defineProps({
     type: [String, Object],
     required: true,
   },
+  // 可选守卫：返回 false 时阻止本次跳转（用于“先解锁再进入”之类的交互）。
+  beforeNavigate: {
+    type: Function,
+    default: null,
+  },
 })
 
 const router = useRouter()
 
 function navigate() {
   router.push(props.to)
+}
+
+function guard(event) {
+  if (typeof props.beforeNavigate !== 'function') return true
+  return props.beforeNavigate(event) !== false
 }
 
 function handleClick(event) {
@@ -25,6 +35,12 @@ function handleClick(event) {
   ) {
     return
   }
+  if (!guard(event)) return
+  navigate()
+}
+
+function handleKeydown(event) {
+  if (!guard(event)) return
   navigate()
 }
 </script>
@@ -35,8 +51,8 @@ function handleClick(event) {
     role="link"
     tabindex="0"
     @click="handleClick"
-    @keydown.enter.prevent="navigate"
-    @keydown.space.prevent="navigate"
+    @keydown.enter.prevent="handleKeydown"
+    @keydown.space.prevent="handleKeydown"
   >
     <slot />
   </div>

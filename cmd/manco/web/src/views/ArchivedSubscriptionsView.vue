@@ -252,7 +252,7 @@ function jobStats(item) {
         @click.capture="captureCardClick(item, index, $event)"
       >
         <ContentLink class="archive-cover" :to="archiveComicLink(item)" :title="item.title">
-          <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" />
+          <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
           <BookOpen v-else :size="22" />
         </ContentLink>
         <div class="archive-meta">

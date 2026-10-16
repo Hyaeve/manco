@@ -34,16 +34,34 @@ func TestScrambleParts(t *testing.T) {
 		{name: "no scramble", scrambleID: 0, albumID: 100, fileName: "001.jpg", want: 0},
 		{name: "album below scramble", scrambleID: 220980, albumID: 100, fileName: "001.jpg", want: 0},
 		{name: "legacy ten", scrambleID: 220980, albumID: 230000, fileName: "001.jpg", want: 10},
-		{name: "base ten", scrambleID: 220980, albumID: 300000, fileName: "00001.jpg", want: 2},
-		{name: "segment count varies per file", scrambleID: 220980, albumID: 300000, fileName: "00002.jpg", want: 16},
-		{name: "extension is ignored", scrambleID: 220980, albumID: 300000, fileName: "00002", want: 16},
-		{name: "base eight above 421926", scrambleID: 220980, albumID: 500000, fileName: "00001.jpg", want: 12},
+		// md5("30000000001") = 66c98784b31c6c76cf9e6d4f837ea0ca
+		// ord('a')=97 -> 97%10=7 -> 7*2+2 = 16
+		{name: "base ten uses ascii of last hex char", scrambleID: 220980, albumID: 300000, fileName: "00001.jpg", want: 16},
+		// 若把扩展名一起参与 md5，最后一位是 'd'，会得到 2，说明扩展名必须剥离。
+		{name: "extension is stripped before hashing", scrambleID: 220980, albumID: 300000, fileName: "00001", want: 16},
+		// md5("30000000002") = 28d85d6a77bddf5b818802b90ceb5467 -> ord('7')=55 -> 5 -> 12
+		{name: "segment count varies per file", scrambleID: 220980, albumID: 300000, fileName: "00002.jpg", want: 12},
+		// md5("50000000001") = 5b9c0f3d861bb4669a3c404f8a054925 -> ord('5')=53 -> 53%8=5 -> 12
+		{name: "base eight at or above 421926", scrambleID: 220980, albumID: 500000, fileName: "00001.jpg", want: 12},
 	}
 	for _, item := range cases {
 		got := scrambleParts(item.scrambleID, item.albumID, item.fileName)
 		if got != item.want {
 			t.Fatalf("%s: got %d, want %d", item.name, got, item.want)
 		}
+	}
+}
+
+func TestScrambleTargetPrefersPhotoID(t *testing.T) {
+	// 章节 photo id 决定阈值与 md5 输入，相册 id 只是回退。
+	if got := scrambleTargetID("412540", 999999); got != 412540 {
+		t.Fatalf("scrambleTargetID with numeric photo id = %d, want 412540", got)
+	}
+	if got := scrambleTargetID("", 123456); got != 123456 {
+		t.Fatalf("scrambleTargetID fallback = %d, want 123456", got)
+	}
+	if got := scrambleTargetID("not-a-number", 777); got != 777 {
+		t.Fatalf("scrambleTargetID non-numeric fallback = %d, want 777", got)
 	}
 }
 

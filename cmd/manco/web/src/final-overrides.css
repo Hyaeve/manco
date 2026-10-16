@@ -4627,3 +4627,190 @@ svg.source-editor-icon {
   background: color-mix(in srgb, #c79238 26%, var(--surface));
   color: #f2d99b;
 }
+
+/* ===== 品牌横条 logo ===== */
+/* 浅色侧栏用抠底原色横条；深色侧栏换成奶油底板横条，保证黑字可读。 */
+.sidebar .brand {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 2px 8px 16px;
+}
+
+.sidebar .brand-lockup {
+  display: block;
+  width: 100%;
+  max-width: 208px;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.sidebar .brand-lockup-dark {
+  display: none;
+}
+
+[data-theme='dark'] .sidebar .brand-lockup-light {
+  display: none;
+}
+
+[data-theme='dark'] .sidebar .brand-lockup-dark {
+  display: block;
+}
+
+.sidebar .brand-tagline {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ===== 活动通知窗口 ===== */
+/* 淡黄底、统一字体；标题加粗，成功/失败/待处理汇总行保持常规字号、不做斜体。 */
+.notification-dropdown {
+  border-color: color-mix(in srgb, #dcbb6e 40%, var(--border));
+  background: #fffaea;
+}
+
+.notification-list strong {
+  font-weight: 650;
+}
+
+.notification-summary {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: color-mix(in srgb, #8a7440 76%, var(--text-muted));
+}
+
+[data-theme='dark'] .notification-dropdown {
+  border-color: color-mix(in srgb, #dcbb6e 26%, var(--border));
+  background: #241f14;
+}
+
+[data-theme='dark'] .notification-list strong {
+  color: #f3e6c9;
+}
+
+[data-theme='dark'] .notification-summary {
+  color: #bfae82;
+}
+
+/* ===== 功能开关按钮（订阅/下载任务设置） ===== */
+/* 圆角框 + 淡黄底；启用时更亮，未启用偏灰，点击切换。 */
+.function-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border: 1px solid color-mix(in srgb, #d9c48a 54%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, #fdf3d6 60%, var(--surface));
+  color: color-mix(in srgb, #6f6a5c 84%, var(--text-muted));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.function-toggle:hover {
+  border-color: color-mix(in srgb, #d9a83c 62%, var(--border));
+  color: color-mix(in srgb, #6b5a2e 88%, var(--text));
+}
+
+.function-toggle.active {
+  border-color: color-mix(in srgb, #d69b26 74%, var(--border));
+  background: linear-gradient(180deg, #ffe9a8, #fbd97e);
+  color: #6b4c10;
+  font-weight: 600;
+}
+
+.function-toggle svg {
+  flex: 0 0 auto;
+}
+
+[data-theme='dark'] .function-toggle {
+  border-color: color-mix(in srgb, #b99b52 40%, var(--border));
+  background: color-mix(in srgb, #b99b52 15%, var(--surface));
+  color: #a8a294;
+}
+
+[data-theme='dark'] .function-toggle.active {
+  border-color: color-mix(in srgb, #e0b866 55%, var(--border));
+  background: color-mix(in srgb, #e0b866 32%, var(--surface));
+  color: #f4dda2;
+}
+
+/* ===== 探索发现页工具条 ===== */
+/* 视图切换移到搜索栏右侧，只保留图标本身，不再嵌套圆角框。 */
+.discover-head {
+  flex-wrap: nowrap;
+  gap: 10px;
+}
+
+.discover-head .view-mode-control {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+}
+
+.discover-head .view-mode-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.discover-head .view-mode-button:hover {
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.discover-head .view-mode-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 60%, transparent);
+  outline-offset: 1px;
+}
+
+/* 筛选栏只保留一行：放不下时横向滚动，不再换行。 */
+.source-column-tools {
+  min-width: 0;
+}
+
+.source-filter-grid {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-bottom: 3px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.source-filter-grid .spacer {
+  display: none;
+}
+
+.source-filter-grid .filter-chip {
+  flex: 0 0 auto;
+  min-width: 132px;
+  max-width: none;
+}
+
+.source-filter-grid .sort-chip {
+  flex: 0 0 150px;
+  max-width: none;
+}

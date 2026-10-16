@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Archive,
   BookOpen,
@@ -41,6 +41,16 @@ const editorOpen = ref(false)
 const editing = ref(null)
 const selectionMode = ref(false)
 const selected = ref(new Set())
+// 封面模糊的卡片需要点一下才显示清晰封面；这里只在内存里记住已解锁的卡片，
+// 切换页面或刷新浏览器都会回到模糊状态。
+const revealedCovers = ref(new Set())
+// 订阅很多时逐个渲染所有卡片会把主线程拖到无响应，这里分批渲染。
+const renderLimit = ref(60)
+let scrollEl = null
+// 5 秒轮询时如果内容没变就不替换响应式数据，避免整页卡片反复重渲染。
+let lastItemsSignature = ''
+let lastStatsSignature = ''
+let lastJobsSignature = ''
 let selectAnchor = -1
 let timer = 0
 
@@ -58,6 +68,24 @@ const hasActive = computed(() => jobs.value.some((job) => ['queued', 'running', 
 function itemKind(item) {
   const kind = sources.value[item.sourceId]?.kind
   return kind === 'book' || kind === 'other' ? kind : 'comic'
+}
+
+function coverRevealed(item) {
+  return revealedCovers.value.has(item.id)
+}
+
+// 返回 true 表示允许跳转；首次点击模糊封面时只解锁并拦住跳转，
+// 再点一次清晰封面才进入作品详情页。
+function revealCover(item) {
+  if (!item.coverBlur || revealedCovers.value.has(item.id)) return true
+  const next = new Set(revealedCovers.value)
+  next.add(item.id)
+  revealedCovers.value = next
+  return false
+}
+
+function clearRevealedCovers() {
+  if (revealedCovers.value.size) revealedCovers.value = new Set()
 }
 
 const downloadDirs = computed(() => {
@@ -85,8 +113,43 @@ const filteredItems = computed(() => {
   return rows
 })
 
+const renderedItems = computed(() => filteredItems.value.slice(0, renderLimit.value))
+
+watch([kindFilter, activeDir], () => {
+  renderLimit.value = 60
+})
+
+function handlePageScroll() {
+  if (!scrollEl || renderLimit.value >= filteredItems.value.length) return
+  if (scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 360) {
+    renderLimit.value += 60
+  }
+}
+
 const selectedItems = computed(() => items.value.filter((item) => selected.value.has(item.id)))
 const selectedCount = computed(() => selectedItems.value.length)
+
+// 任务统计预先聚合成 map：模板里每张卡片只做一次 O(1) 查表，避免
+// “卡片数 × 任务数”的重复扫描把主线程拖死。
+const statsByComic = computed(() => {
+  const map = new Map()
+  for (const [key, value] of Object.entries(jobStatsData.value || {})) {
+    map.set(key, {
+      success: Number(value?.succeeded || 0),
+      failed: Number(value?.failed || 0),
+    })
+  }
+  if (!map.size) {
+    for (const job of jobs.value) {
+      const key = `${job.sourceId}\u0000${job.comicId}`
+      const entry = map.get(key) || { success: 0, failed: 0 }
+      if (job.status === 'completed') entry.success += 1
+      else if (job.status === 'failed') entry.failed += 1
+      map.set(key, entry)
+    }
+  }
+  return map
+})
 const allSelected = computed(
   () => filteredItems.value.length > 0 && filteredItems.value.every((item) => selected.value.has(item.id)),
 )
@@ -154,6 +217,8 @@ function kindCount(kind) {
 
 onMounted(async () => {
   await load()
+  scrollEl = document.querySelector('.content-scroll')
+  scrollEl?.addEventListener('scroll', handlePageScroll, { passive: true })
   timer = window.setInterval(() => {
     if (hasActive.value) load(true)
   }, 5000)
@@ -163,11 +228,15 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  scrollEl?.removeEventListener('scroll', handlePageScroll)
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', onKeydown)
 })
 
-onDeactivated(clearSubscriptionSelection)
+onDeactivated(() => {
+  clearSubscriptionSelection()
+  clearRevealedCovers()
+})
 
 function onKeydown(event) {
   if (event.key === 'Escape' && selectionMode.value) clearSubscriptionSelection()
@@ -189,9 +258,35 @@ async function load(silent = false) {
     for (const source of sourcePayload.items || []) {
       sources.value = { ...sources.value, [source.id]: source }
     }
-    items.value = subscriptions.items || []
-    jobs.value = downloads.items || []
-    jobStatsData.value = subscriptions.jobStats || {}
+    const nextItems = subscriptions.items || []
+    const itemsSignature = JSON.stringify(
+      nextItems.map((item) => [
+        item.id,
+        item.enabled,
+        item.coverBlur,
+        item.lastChapterTitle,
+        item.cronExpr,
+        item.downloadDir,
+        item.seriesDir,
+        item.autoDownload,
+      ]),
+    )
+    if (!silent || itemsSignature !== lastItemsSignature) {
+      items.value = nextItems
+      lastItemsSignature = itemsSignature
+    }
+    const nextStats = subscriptions.jobStats || {}
+    const statsSignature = JSON.stringify(nextStats)
+    if (!silent || statsSignature !== lastStatsSignature) {
+      jobStatsData.value = nextStats
+      lastStatsSignature = statsSignature
+    }
+    const nextJobs = downloads.items || []
+    const jobsSignature = JSON.stringify(nextJobs.map((job) => [job.id, job.status]))
+    if (!silent || jobsSignature !== lastJobsSignature) {
+      jobs.value = nextJobs
+      lastJobsSignature = jobsSignature
+    }
     const available = new Set(items.value.map((item) => item.id))
     if ([...selected.value].some((id) => !available.has(id))) {
       selected.value = new Set([...selected.value].filter((id) => available.has(id)))
@@ -342,18 +437,7 @@ function cardTitle(item) {
 
 function jobStats(item) {
   const key = `${item.sourceId}\u0000${item.comicId}`
-  const aggregated = jobStatsData.value[key]
-  if (aggregated) {
-    return {
-      success: Number(aggregated.succeeded || 0),
-      failed: Number(aggregated.failed || 0),
-    }
-  }
-  const related = jobs.value.filter((job) => job.sourceId === item.sourceId && job.comicId === item.comicId)
-  return {
-    success: related.filter((job) => job.status === 'completed').length,
-    failed: related.filter((job) => job.status === 'failed').length,
-  }
+  return statsByComic.value.get(key) || { success: 0, failed: 0 }
 }
 
 function downloadTaskLink(item, filter) {
@@ -569,7 +653,7 @@ function batchDelete() {
 
   <div v-else class="subscription-grid">
     <article
-      v-for="(item, index) in filteredItems"
+      v-for="(item, index) in renderedItems"
       :key="item.id"
       class="subscription-card"
       :class="{
@@ -594,10 +678,11 @@ function batchDelete() {
       <div class="subscription-main">
         <ContentLink
           class="subscription-cover"
-          :class="{ blurred: item.coverBlur }"
+          :class="{ blurred: item.coverBlur && !coverRevealed(item) }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+          :before-navigate="() => revealCover(item)"
         >
-          <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" />
+          <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
           <BookOpen v-else :size="24" />
         </ContentLink>
         <div class="subscription-meta">

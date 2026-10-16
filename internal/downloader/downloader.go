@@ -33,6 +33,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/liuzl/gocc"
 	"golang.org/x/image/webp"
+	nethtml "golang.org/x/net/html"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
@@ -1599,7 +1600,10 @@ func writeSeriesMetadataFilesWithCount(comic model.Comic, info model.SourceInfo,
 	description := strings.TrimSpace(comic.Description)
 	descriptionFormatted := ""
 	if description != "" {
-		descriptionFormatted = "<p>" + htmlEscape(description) + "</p>"
+		description = plainMetadataText(description)
+		// KMRS 把 description_formatted 当普通文本展示，套 <p> 会把标签一起
+		// 显示出来，所以这里保持纯文本。
+		descriptionFormatted = description
 	}
 	year := metadataYear(comic.UpdatedAt)
 	status := mylarStatus(comic.Status)
@@ -1673,6 +1677,49 @@ func localCoverName(comicDir string) string {
 	}
 	sort.Strings(covers)
 	return filepath.Base(covers[0])
+}
+
+// plainMetadataText converts a source description into plain text so metadata
+// consumers (KMRS, Komga) never show stray HTML such as a leading "<p>".
+// Block-level tags become line breaks; inline tags are dropped and their text
+// kept; character entities are decoded by the HTML parser.
+func plainMetadataText(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	document, err := nethtml.Parse(strings.NewReader(value))
+	if err != nil {
+		return strings.Join(strings.Fields(value), " ")
+	}
+	var builder strings.Builder
+	var walk func(node *nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		if node.Type == nethtml.ElementNode {
+			switch strings.ToLower(node.Data) {
+			case "script", "style":
+				return
+			case "br", "p", "div", "li", "tr", "section", "article",
+				"h1", "h2", "h3", "h4", "h5", "h6":
+				builder.WriteString("\n")
+			}
+		}
+		if node.Type == nethtml.TextNode {
+			builder.WriteString(node.Data)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(document)
+	lines := strings.Split(builder.String(), "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if text := strings.Join(strings.Fields(line), " "); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func htmlEscape(value string) string {
@@ -1889,12 +1936,47 @@ func seriesMetadataCurrent(comicDir string) bool {
 	if !validMylarSeriesJSON(filepath.Join(comicDir, "series.json")) {
 		return false
 	}
+	// 旧版本会把简介包成 <p>…</p>，KMRS/Komga 会把标签原样显示出来。
+	if metadataDescriptionHasHTML(comicDir) {
+		return false
+	}
 	for _, name := range obsoleteMetadataFiles {
 		if _, err := os.Stat(filepath.Join(comicDir, name)); err == nil {
 			return false
 		}
 	}
 	return true
+}
+
+var metadataHTMLTagPattern = regexp.MustCompile(`(?i)</?(p|div|br|span|b|i|strong|em|ul|ol|li|h[1-6])(\s|/|>)`)
+
+func hasHTMLTag(value string) bool {
+	return metadataHTMLTagPattern.MatchString(value)
+}
+
+// metadataDescriptionHasHTML reports whether stored sidecars still carry an
+// HTML-wrapped description, so the next metadata check rewrites them.
+func metadataDescriptionHasHTML(comicDir string) bool {
+	if raw, err := os.ReadFile(filepath.Join(comicDir, "series.json")); err == nil {
+		var payload struct {
+			Metadata struct {
+				DescriptionText      string `json:"description_text"`
+				DescriptionFormatted string `json:"description_formatted"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(raw, &payload) == nil {
+			if hasHTMLTag(payload.Metadata.DescriptionFormatted) || hasHTMLTag(payload.Metadata.DescriptionText) {
+				return true
+			}
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(comicDir, "ComicInfo.xml")); err == nil {
+		var info ComicInfo
+		if xml.Unmarshal(raw, &info) == nil && hasHTMLTag(info.Summary) {
+			return true
+		}
+	}
+	return false
 }
 
 // validMylarSeriesJSON mirrors the required fields in KMRS's MylarMetadata
@@ -2036,7 +2118,7 @@ func chapterComicInfo(item source.Source, comic model.Comic, chapterTitle string
 		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
 		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
 		Number:      comicNumber(chapterOrder),
-		Summary:     comic.Description,
+		Summary:     plainMetadataText(comic.Description),
 		Notes:       notes,
 		Year:        metadataYear(comic.UpdatedAt),
 		Writer:      comic.Author,

@@ -24,7 +24,6 @@ import {
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from './components/ConfirmDialog.vue'
-import MancoLogo from './components/MancoLogo.vue'
 import { api } from './api'
 import { useAuthStore } from './stores/auth'
 import { dismissNotice, notices } from './stores/notices'
@@ -322,11 +321,9 @@ function activityIcon(level) {
     <div v-if="menuOpen" class="nav-overlay" @click="menuOpen = false" />
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
-        <MancoLogo class="brand-logo" :size="38" />
-        <span class="brand-text">
-          <strong>Manco</strong>
-          <small>漫画书籍 · 订阅下载</small>
-        </span>
+        <img class="brand-lockup brand-lockup-light" src="/brand-lockup.png" alt="Manco 漫画书籍订阅下载" />
+        <img class="brand-lockup brand-lockup-dark" src="/brand-lockup-plate.png" alt="Manco 漫画书籍订阅下载" />
+        <small class="brand-tagline">漫画书籍 · 订阅下载</small>
       </div>
       <nav aria-label="主导航">
         <div class="nav-group">
@@ -416,11 +413,11 @@ function activityIcon(level) {
                   />
                   <span>
                     <strong>{{ entry.comicTitle || '未命名作品' }}</strong>
-                    <em class="notification-summary">
+                    <span class="notification-summary">
                       成功 {{ entry.succeeded || 0 }}
                       <template v-if="entry.failed"> · 失败 {{ entry.failed }}</template>
                       <template v-if="entry.pending"> · 待处理 {{ entry.pending }}</template>
-                    </em>
+                    </span>
                     <small>{{ entry.time ? new Date(entry.time).toLocaleString() : '' }}</small>
                   </span>
                 </li>

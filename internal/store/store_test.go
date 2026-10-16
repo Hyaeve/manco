@@ -37,6 +37,58 @@ func createJob(t *testing.T, repository *Store, chapterID string) model.Download
 	return job
 }
 
+func TestDownloadJobActivityAggregatesPerWork(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	done := createJob(t, repository, "1")
+	if err := repository.UpdateDownloadJob(ctx, done.ID, "completed", 1, 1, "/tmp/1.cbz", ""); err != nil {
+		t.Fatalf("complete job: %v", err)
+	}
+	failed := createJob(t, repository, "2")
+	if err := repository.UpdateDownloadJob(ctx, failed.ID, "failed", 1, 0, "", "boom"); err != nil {
+		t.Fatalf("fail job: %v", err)
+	}
+	// 同一作品下还有一章在排队，会计入 pending。
+	_ = createJob(t, repository, "3")
+	// 只有排队任务的其它作品不应出现在活动聚合里。
+	other := createJobForComic(t, repository, "other", "1")
+	_ = other
+
+	groups, err := repository.DownloadJobActivity(ctx, 50)
+	if err != nil {
+		t.Fatalf("DownloadJobActivity: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("groups = %+v, want a single work", groups)
+	}
+	group := groups[0]
+	if group.SourceID != "jmcomic" || group.ComicID != "123" || group.Title != "测试作品" {
+		t.Fatalf("group identity = %+v", group)
+	}
+	if group.Succeeded != 1 || group.Failed != 1 || group.Pending != 1 {
+		t.Fatalf("group counts = %+v", group)
+	}
+	if group.LastAt.IsZero() {
+		t.Fatalf("last_at did not parse: %+v", group)
+	}
+}
+
+func createJobForComic(t *testing.T, repository *Store, comicID, chapterID string) model.DownloadJob {
+	t.Helper()
+	job, err := repository.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "jmcomic",
+		ComicID:      comicID,
+		ComicTitle:   "作品" + comicID,
+		ChapterID:    chapterID,
+		ChapterTitle: "第" + chapterID + "话",
+	})
+	if err != nil {
+		t.Fatalf("create job %s/%s: %v", comicID, chapterID, err)
+	}
+	return job
+}
+
 func TestDownloadJobPersistsComicAuthor(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

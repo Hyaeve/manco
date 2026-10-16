@@ -1063,6 +1063,82 @@ func (s *Store) DeleteDownloadJob(ctx context.Context, id int64) error {
 	return err
 }
 
+// ActivityGroup is one work-level summary for the activity feed.
+type ActivityGroup struct {
+	SourceID  string
+	ComicID   string
+	Title     string
+	Succeeded int
+	Failed    int
+	Pending   int
+	LastAt    time.Time
+}
+
+// DownloadJobActivity aggregates download tasks per work in SQLite so the cost
+// stays bounded by the number of works rather than the whole task history.
+// Queued/running-only works are excluded: the activity feed shows finished
+// results, with pending chapters counted only for works that already finished.
+func (s *Store) DownloadJobActivity(ctx context.Context, limit int) ([]ActivityGroup, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT source_id, comic_id, MAX(comic_title) AS title,
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
+			SUM(CASE WHEN status IN ('failed', 'canceled') THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN status IN ('queued', 'running', 'waiting', 'paused') THEN 1 ELSE 0 END) AS pending,
+			MAX(COALESCE(finished_at, updated_at, created_at)) AS last_at
+		FROM download_jobs
+		GROUP BY source_id, comic_id
+		HAVING succeeded > 0 OR failed > 0
+		ORDER BY last_at DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]ActivityGroup, 0, limit)
+	for rows.Next() {
+		var (
+			item      ActivityGroup
+			succeeded sql.NullInt64
+			failed    sql.NullInt64
+			pending   sql.NullInt64
+			lastAt    sql.NullString
+		)
+		if err := rows.Scan(&item.SourceID, &item.ComicID, &item.Title, &succeeded, &failed, &pending, &lastAt); err != nil {
+			return nil, err
+		}
+		item.Succeeded = int(succeeded.Int64)
+		item.Failed = int(failed.Int64)
+		item.Pending = int(pending.Int64)
+		item.LastAt = parseSQLiteTime(lastAt.String)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// parseSQLiteTime accepts the timestamp shapes SQLite and the driver produce.
+func parseSQLiteTime(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02T15:04:05.999999999Z07:00",
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	} {
+		if parsed, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
+}
+
 // DownloadJobsByComic returns every chapter task for one work, including
 // completed and failed records, so a full refresh can clear them before
 // re-queuing the chapters from the source.

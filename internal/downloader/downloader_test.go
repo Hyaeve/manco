@@ -120,6 +120,163 @@ func referenceDescrambleImage(source image.Image, parts int) image.Image {
 	return result
 }
 
+// referenceDecodePython is a line-by-line transcription of
+// JMComic-Crawler-Python's JmImageTool.decode_and_save, which is the canonical
+// reference for the 18comic strip layout.
+func referenceDecodePython(source image.Image, parts int) image.Image {
+	bounds := source.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	result := image.NewRGBA(image.Rect(0, 0, w, h))
+	if parts <= 0 {
+		draw.Draw(result, result.Bounds(), source, bounds.Min, draw.Src)
+		return result
+	}
+	over := h % parts
+	for i := 0; i < parts; i++ {
+		move := h / parts
+		ySrc := h - move*(i+1) - over
+		yDst := move * i
+		if i == 0 {
+			move += over
+		} else {
+			yDst += over
+		}
+		if move <= 0 {
+			continue
+		}
+		draw.Draw(
+			result,
+			image.Rect(0, yDst, w, yDst+move),
+			source,
+			image.Pt(bounds.Min.X, bounds.Min.Y+ySrc),
+			draw.Src,
+		)
+	}
+	return result
+}
+
+func TestDescrambleMatchesPythonReference(t *testing.T) {
+	for _, height := range []int{2, 3, 5, 10, 11, 64, 99, 100, 101, 733, 1000, 1005, 2051} {
+		for _, parts := range []int{2, 4, 6, 8, 10, 12, 14, 16, 18, 20} {
+			if parts > height {
+				continue
+			}
+			source := image.NewRGBA(image.Rect(0, 0, 3, height))
+			for y := 0; y < height; y++ {
+				for x := 0; x < 3; x++ {
+					source.Set(x, y, color.RGBA{R: uint8(y % 251), G: uint8((y * 5) % 251), B: 3, A: 255})
+				}
+			}
+			buffer := &bytes.Buffer{}
+			if err := png.Encode(buffer, source); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := Descramble(buffer.Bytes(), parts)
+			if err != nil {
+				t.Fatalf("height=%d parts=%d: %v", height, parts, err)
+			}
+			decoded, err := decodeImage(restored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := referenceDecodePython(source, parts)
+			for y := 0; y < height; y++ {
+				for x := 0; x < 3; x++ {
+					wantR, wantG, wantB, _ := want.At(x, y).RGBA()
+					gotR, gotG, gotB, _ := decoded.At(x, y).RGBA()
+					if wantR != gotR || wantG != gotG || wantB != gotB {
+						t.Fatalf("height=%d parts=%d pixel (%d,%d) got %d,%d,%d want %d,%d,%d", height, parts, x, y, gotR, gotG, gotB, wantR, wantG, wantB)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPlainMetadataTextStripsHTML(t *testing.T) {
+	cases := map[string]string{
+		"<p>简介内容</p>":                   "简介内容",
+		"<p>第一段</p><p>第二段</p>":          "第一段\n第二段",
+		"普通文本":                          "普通文本",
+		"<div>带 <b>加粗</b> 的文本</div>":    "带 加粗 的文本",
+		"a &amp; b &lt;tag&gt;":         "a & b <tag>",
+		"<script>x()</script><p>正文</p>": "正文",
+		"   ":                           "",
+	}
+	for input, want := range cases {
+		if got := plainMetadataText(input); got != want {
+			t.Fatalf("plainMetadataText(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestSeriesMetadataTreatsHTMLDescriptionAsStale(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{"version":"1.0.1","metadata":{"type":"comicSeries","publisher":"","name":"作品",` +
+		`"comicid":"1","year":0,"booktype":"comic","age_rating":"","comic_image":"cover.png",` +
+		`"total_issues":1,"publication_run":"","status":"Continuing",` +
+		`"description_text":"简介","description_formatted":"<p>简介</p>"}}`
+	if err := os.WriteFile(filepath.Join(dir, "series.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacyInfo := `<ComicInfo><Series>作品</Series><Summary>&lt;p&gt;简介&lt;/p&gt;</Summary></ComicInfo>`
+	if err := os.WriteFile(filepath.Join(dir, "ComicInfo.xml"), []byte(legacyInfo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if seriesMetadataCurrent(dir) {
+		t.Fatal("metadata with HTML description should be treated as stale")
+	}
+
+	comic := model.Comic{SourceID: "stub", ID: "1", Title: "作品", Description: "<p>简介</p>"}
+	item := &staticSource{detail: comic}
+	if err := writeSeriesMetadataFiles(comic, item.Info(), dir); err != nil {
+		t.Fatalf("writeSeriesMetadataFiles: %v", err)
+	}
+	if _, err := writeSeriesComicInfo(item, comic, dir); err != nil {
+		t.Fatalf("writeSeriesComicInfo: %v", err)
+	}
+	if !seriesMetadataCurrent(dir) {
+		t.Fatal("metadata should be current after the rewrite")
+	}
+}
+
+func TestMetadataWritersStripHTMLFromDescription(t *testing.T) {
+	comic := model.Comic{
+		SourceID:    "stub",
+		ID:          "1",
+		Title:       "测试作品",
+		Description: "<p>第一段简介</p><p>第二段简介</p>",
+	}
+	item := &staticSource{detail: comic}
+	dir := t.TempDir()
+	if err := writeSeriesMetadataFiles(comic, item.Info(), dir); err != nil {
+		t.Fatalf("writeSeriesMetadataFiles: %v", err)
+	}
+	seriesRaw, err := os.ReadFile(filepath.Join(dir, "series.json"))
+	if err != nil {
+		t.Fatalf("read series.json: %v", err)
+	}
+	if bytes.Contains(seriesRaw, []byte("<p>")) {
+		t.Fatalf("series.json description still contains <p>: %s", seriesRaw)
+	}
+	if !bytes.Contains(seriesRaw, []byte("第一段简介")) {
+		t.Fatalf("series.json lost the description text: %s", seriesRaw)
+	}
+
+	infoRaw, err := marshalComicInfo(seriesComicInfoDoc(item, comic))
+	if err != nil {
+		t.Fatalf("marshalComicInfo: %v", err)
+	}
+	for _, bad := range []string{"<p>", "&lt;p&gt;", "</p>"} {
+		if bytes.Contains(infoRaw, []byte(bad)) {
+			t.Fatalf("ComicInfo.xml summary still contains %q: %s", bad, infoRaw)
+		}
+	}
+	if !bytes.Contains(infoRaw, []byte("第一段简介")) {
+		t.Fatalf("ComicInfo.xml lost the description text: %s", infoRaw)
+	}
+}
+
 func TestBookFileExtension(t *testing.T) {
 	cases := map[string]string{
 		"Test Book.epub":     ".epub",

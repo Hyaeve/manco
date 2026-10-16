@@ -513,6 +513,17 @@ function latestLabel(item) {
           </button>
         </label>
       </div>
+      <div v-if="activeSource && activePanel" class="view-mode-control" role="group" aria-label="视图模式">
+        <button
+          class="view-mode-button"
+          type="button"
+          :aria-label="viewMode === 'grid' ? '当前是网格视图，点击切换列表' : '当前是列表视图，点击切换网格'"
+          :title="viewMode === 'grid' ? '切换为列表视图' : '切换为网格视图'"
+          @click="viewMode = viewMode === 'grid' ? 'list' : 'grid'"
+        >
+          <component :is="viewMode === 'grid' ? Grid2X2 : List" :size="19" />
+        </button>
+      </div>
     </div>
 
     <div v-if="sources.length && !loadingSources" class="discover-source-row">
@@ -587,16 +598,6 @@ function latestLabel(item) {
               @change="changeFilter"
             />
           </div>
-          <div class="view-mode-control" role="group" aria-label="视图模式">
-            <button
-              class="icon-btn view-mode-button"
-              type="button"
-              :aria-label="viewMode === 'grid' ? '当前是网格视图，点击切换列表' : '当前是列表视图，点击切换网格'"
-              @click="viewMode = viewMode === 'grid' ? 'list' : 'grid'"
-            >
-              <component :is="viewMode === 'grid' ? Grid2X2 : List" :size="17" />
-            </button>
-          </div>
         </div>
       </div>
 
@@ -636,7 +637,7 @@ function latestLabel(item) {
           @click="rememberOpenPosition"
         >
           <div class="source-list-cover">
-            <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" />
+            <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
             <span v-else class="cover-fallback"><BookOpen :size="24" /></span>
           </div>
           <div class="source-list-body">

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
   ArrowUp,
@@ -152,6 +152,11 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('pointerdown', closeChapterSortOnOutside)
+})
+
+// 切走页面时退出多选。
+onDeactivated(() => {
+  clearSelection()
 })
 
 async function load() {
@@ -600,7 +605,7 @@ function downloadReaderFile() {
           @click="openReader(file)"
         >
           <span class="local-chapter-poster-cover">
-            <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" />
+            <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" decoding="async" />
           </span>
           <span class="local-chapter-poster-name">{{ chapterName(file) }}</span>
         </button>
@@ -679,7 +684,7 @@ function downloadReaderFile() {
           <span class="local-library-chapter-badge" :class="{ single: String(chapterCount(item)).length === 1 }">
             {{ chapterCount(item) }}
           </span>
-          <img v-if="coverUrl(item)" :src="coverUrl(item)" :alt="item.title" loading="lazy" />
+          <img v-if="coverUrl(item)" :src="coverUrl(item)" :alt="item.title" loading="lazy" decoding="async" />
           <span v-else class="cover-fallback"><BookOpen :size="30" /></span>
         </span>
         <span class="local-library-body">
@@ -744,6 +749,7 @@ function downloadReaderFile() {
             :src="readerImageUrl(entry)"
             :alt="`第 ${index + 1} 张`"
             loading="lazy"
+            decoding="async"
           />
         </div>
         <article v-else-if="readerEpubChapters.length" class="epub-reader">

@@ -442,6 +442,10 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		albumID = intValue(photoID)
 	}
 	scrambleID := s.scrambleID(ctx, account, photoID, strconv.Itoa(albumID))
+	// 哈希与阈值用的是章节 photo id（也就是图片 URL 里的那一段），不是相册 id。
+	// JMComic-Crawler-Python 的 JmImageDetail.of 把 aid 设为 photo_id，
+	// Kototoro/Kotatsu 也从 /media/photos/{id}/ 路径段取 epId。
+	scrambleNumber := scrambleTargetID(photoID, albumID)
 	referer := source.BuildURL(base, "/", nil)
 	headers := map[string]string{
 		"X-Requested-With": "com.JMComic3.app",
@@ -453,11 +457,9 @@ func (s *Source) Pages(ctx context.Context, account source.Account, comicID stri
 		if name == "" {
 			continue
 		}
-		// The scramble segment count is derived per image from the album id and
-		// the file name without its extension, matching Kototoro/Kotatsu JM
-		// parsers. Using one shared value (or an extension-suffixed name)
-		// scrambles every page in modern albums.
-		parts := scrambleParts(scrambleID, albumID, name)
+		// 段数逐图计算：md5(章节 id + 不含扩展名的文件名)。共用一个值、
+		// 或者把扩展名带进哈希，都会让整章的图片错层。
+		parts := scrambleParts(scrambleID, scrambleNumber, name)
 		addresses := make([]string, 0, len(imageDomains))
 		for _, domain := range imageDomains {
 			addresses = append(addresses, fmt.Sprintf("%s/media/photos/%s/%s", strings.TrimRight(domain, "/"), photoID, name))
@@ -929,6 +931,16 @@ func snippet(body []byte) string {
 	return text
 }
 
+// scrambleTargetID picks the id used for scramble math. JM derives both the
+// threshold and the md5 input from the chapter photo id (the "/media/photos/{id}/"
+// path segment), not the album id.
+func scrambleTargetID(photoID string, albumID int) int {
+	if value := intValue(photoID); value != 0 {
+		return value
+	}
+	return albumID
+}
+
 func scrambleParts(scrambleID, albumID int, fileName string) int {
 	if scrambleID == 0 || albumID == 0 || albumID < scrambleID {
 		return 0
@@ -943,18 +955,18 @@ func scrambleParts(scrambleID, albumID int, fileName string) int {
 	if albumID < 268850 {
 		return 10
 	}
+	// 对齐 JMComic-Crawler-Python 的 JmImageTool.get_num：
+	// x = 10 (aid < 421926) / 8 (aid >= 421926)，
+	// num = ord(md5(f"{aid}{filename}")[-1]) % x * 2 + 2。
+	// 注意取模用的是十六进制字符的 ASCII 码，不是它的数值。
 	base := 10
-	if albumID > 421926 {
+	if albumID >= 421926 {
 		base = 8
 	}
 	digest := md5.Sum([]byte(strconv.Itoa(albumID) + fileName))
 	encoded := hex.EncodeToString(digest[:])
-	last := encoded[len(encoded)-1]
-	value, err := strconv.ParseInt(string(last), 16, 32)
-	if err != nil {
-		return 0
-	}
-	return int(value)%base*2 + 2
+	value := int(encoded[len(encoded)-1])
+	return value%base*2 + 2
 }
 
 func normalizeComicID(value string) string {

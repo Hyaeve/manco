@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -258,6 +258,15 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
 })
 
+// 切走页面时退出多选，避免回到列表还停留在选中态。
+onDeactivated(() => {
+  clearSelection()
+})
+
+onActivated(() => {
+  measureVirtual()
+})
+
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
@@ -358,6 +367,36 @@ async function retrySelected() {
     await load(true)
   } catch (err) {
     error.value = err.message
+  } finally {
+    busy.value = 0
+  }
+}
+
+// 批量删除：连同已下载的文件一起删除。
+async function removeSelected() {
+  const ids = [...selected.value]
+  if (!ids.length || busy.value) return
+  const confirmed = await askConfirm({
+    title: '删除任务和文件',
+    message: `确定删除所选 ${ids.length} 个任务记录，并删除它们已下载的文件吗？删除后无法恢复。`,
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
+  busy.value = -2
+  error.value = ''
+  let failed = 0
+  try {
+    for (const id of ids) {
+      try {
+        await api.deleteDownload(id, true)
+      } catch {
+        failed += 1
+      }
+    }
+    if (failed) error.value = `有 ${failed} 个任务删除失败，请查看运行日志`
+    clearSelection()
+    await load(true)
   } finally {
     busy.value = 0
   }
@@ -528,6 +567,10 @@ async function remove(item, removeFile) {
     <button class="btn secondary small" type="button" @click="toggleSelectAll">
       {{ allSelected ? '取消全选' : '全选' }}
     </button>
+    <button class="btn secondary small" type="button" @click="clearSelection">
+      <X :size="14" />
+      清除
+    </button>
     <button
       class="btn primary small"
       type="button"
@@ -538,9 +581,15 @@ async function remove(item, removeFile) {
       <RotateCcw v-else :size="14" />
       重试
     </button>
-    <button class="btn secondary small" type="button" @click="clearSelection">
-      <X :size="14" />
-      清除
+    <button
+      class="btn danger small"
+      type="button"
+      :disabled="!selected.size || busy !== 0"
+      @click="removeSelected"
+    >
+      <Loader2 v-if="busy === -2" :size="14" class="spin" />
+      <Trash2 v-else :size="14" />
+      删除
     </button>
   </div>
 </template>

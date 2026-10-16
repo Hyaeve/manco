@@ -563,6 +563,10 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	if series.Metadata.Name != "测试作品" || series.Metadata.DescriptionText != "测试简介" {
 		t.Fatalf("unexpected series metadata: %+v", series.Metadata)
 	}
+	// description_formatted 必须和纯文本一致，不能包 <p>，否则 KMRS 会把标签一起显示。
+	if series.Metadata.DescriptionFormatted != "测试简介" {
+		t.Fatalf("description_formatted should stay plain text: %q", series.Metadata.DescriptionFormatted)
+	}
 	if series.Metadata.Status != "Continuing" || series.Metadata.TotalIssues != 2 || series.Metadata.ComicImage != "cover.png" {
 		t.Fatalf("series identity/status mismatch: %+v", series.Metadata)
 	}

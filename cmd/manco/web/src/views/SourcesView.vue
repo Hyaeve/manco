@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   Boxes,
   Check,
@@ -195,6 +195,11 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onSourceKeydown)
   window.removeEventListener('resize', updateAllStripBounds)
+})
+
+// 切走页面时退出多选。
+onDeactivated(() => {
+  clearSourceSelection()
 })
 
 function onSourceKeydown(event) {

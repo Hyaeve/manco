@@ -241,6 +241,7 @@ async function remove(item) {
               :src="groupCover(group)"
               :alt="group.title"
               loading="lazy"
+              decoding="async"
               @error="handleGroupCoverError(group)"
             />
             <BookOpen v-else :size="22" />

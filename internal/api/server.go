@@ -56,7 +56,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.5"
+	appVersion    = "v0.5.6"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -3247,90 +3247,48 @@ func unescapeMountPath(value string) string {
 }
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListDownloadJobs(r.Context(), 0)
+	groups, err := s.store.DownloadJobActivity(r.Context(), 50)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	type activityItem struct {
-		ID             string    `json:"id"`
-		ComicTitle     string    `json:"comicTitle"`
-		ChapterTitle   string    `json:"chapterTitle,omitempty"`
-		Succeeded      int       `json:"succeeded"`
-		Failed         int       `json:"failed"`
-		Total          int       `json:"total"`
-		Level          string    `json:"level"`
-		Time           time.Time `json:"time"`
-		Ongoing        bool      `json:"ongoing,omitempty"`
-		SourceID       string    `json:"sourceId,omitempty"`
-		ComicID        string    `json:"comicId,omitempty"`
-		Pending        int       `json:"pending,omitempty"`
+		ID         string    `json:"id"`
+		ComicTitle string    `json:"comicTitle"`
+		Succeeded  int       `json:"succeeded"`
+		Failed     int       `json:"failed"`
+		Total      int       `json:"total"`
+		Level      string    `json:"level"`
+		Time       time.Time `json:"time"`
+		Ongoing    bool      `json:"ongoing,omitempty"`
+		SourceID   string    `json:"sourceId,omitempty"`
+		ComicID    string    `json:"comicId,omitempty"`
+		Pending    int       `json:"pending,omitempty"`
 	}
-	// 通知按作品聚合：一章一条太碎，改为每个作品一条汇总，带上成功/失败
-	// 章节数与该作品最近一次任务时间。
-	type group struct {
-		item      activityItem
-		lastIndex int
-	}
-	groups := map[string]*group{}
-	order := make([]string, 0, len(items))
-	for _, job := range items {
-		key := job.SourceID + "\x00" + job.ComicID
-		entry, ok := groups[key]
-		if !ok {
-			entry = &group{
-				item: activityItem{
-					ID:         key,
-					ComicTitle: job.ComicTitle,
-					Level:      "info",
-					Time:       job.UpdatedAt,
-					SourceID:   job.SourceID,
-					ComicID:    job.ComicID,
-				},
-				lastIndex: -1,
-			}
-			groups[key] = entry
-			order = append(order, key)
-		}
-		stamp := job.UpdatedAt
-		if job.FinishedAt != nil {
-			stamp = *job.FinishedAt
-		}
-		if stamp.After(entry.item.Time) {
-			entry.item.Time = stamp
-		}
-		switch job.Status {
-		case "completed":
-			entry.item.Succeeded++
-		case "failed", "canceled":
-			entry.item.Failed++
-			if entry.item.ChapterTitle == "" {
-				entry.item.ChapterTitle = job.ChapterTitle
-			}
-		case "queued", "running", "waiting", "paused":
-			entry.item.Pending++
-		}
-	}
-	result := make([]activityItem, 0, len(order))
-	for _, key := range order {
-		entry := groups[key].item
-		entry.Total = entry.Succeeded + entry.Failed
+	// 通知按作品聚合：一章一条太碎，改为每个作品一条汇总。聚合下推到
+	// SQLite，开销只跟作品数相关，不再把整张任务表读进内存。
+	result := make([]activityItem, 0, len(groups))
+	for _, group := range groups {
+		level := "info"
 		switch {
-		case entry.Failed > 0:
-			entry.Level = "error"
-		case entry.Succeeded > 0:
-			entry.Level = "success"
-		default:
-			entry.Level = "info"
+		case group.Failed > 0:
+			level = "error"
+		case group.Succeeded > 0:
+			level = "success"
 		}
-		entry.Ongoing = entry.Pending > 0
-		result = append(result, entry)
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		return result[i].Time.After(result[j].Time)
-	})
-	if len(result) > 50 {
-		result = result[:50]
+		result = append(result, activityItem{
+			ID:         group.SourceID + "\x00" + group.ComicID,
+			ComicTitle: group.Title,
+			Succeeded:  group.Succeeded,
+			Failed:     group.Failed,
+			Pending:    group.Pending,
+			Total:      group.Succeeded + group.Failed,
+			Level:      level,
+			Time:       group.LastAt,
+			Ongoing:    group.Pending > 0,
+			SourceID:   group.SourceID,
+			ComicID:    group.ComicID,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
