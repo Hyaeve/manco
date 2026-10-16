@@ -356,6 +356,19 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		if err != nil {
 			return
 		}
+		// 打开详情时先收起搜索结果，聊天里同时只留一个消息框。
+		s.mu.RLock()
+		resultsMessageID := int64(0)
+		if current := s.sessions[chatID]; current != nil {
+			resultsMessageID = current.resultsMessageID
+		}
+		s.mu.RUnlock()
+		s.deleteMessage(ctx, chat, resultsMessageID)
+		s.mu.Lock()
+		if current := s.sessions[chatID]; current != nil {
+			current.resultsMessageID = 0
+		}
+		s.mu.Unlock()
 		s.replyResultDetail(ctx, chatID, chat, index)
 	case strings.HasPrefix(data, "subscribe:"):
 		index, err := strconv.Atoi(strings.TrimPrefix(data, "subscribe:"))
@@ -364,8 +377,29 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		}
 		s.replySubscribe(ctx, chatID, chat, index, query.Message.MessageID)
 	case data == "back":
-		// 收起作品详情即可；原来的搜索结果消息还在上面，可以继续点其它项。
+		// 收起详情，并把搜索结果重新发一份，供用户重新选择。
 		s.deleteMessage(ctx, chat, query.Message.MessageID)
+		results := s.sessionResults(chatID)
+		if len(results) == 0 {
+			s.sendMessage(ctx, chat, "没有可返回的搜索结果。", nil)
+			return
+		}
+		messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
+			"chat_id":      chat,
+			"text":         renderResults("", results),
+			"parse_mode":   "HTML",
+			"reply_markup": resultKeyboard(results),
+		})
+		if err != nil {
+			s.logger.Printf("telegram: resend search results: %v", err)
+			return
+		}
+		s.mu.Lock()
+		if current := s.sessions[chatID]; current != nil {
+			current.resultsMessageID = messageID
+			current.detailMessageID = 0
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -386,6 +420,23 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 		return
 	}
 	entry := results[index]
+	// 列表结果通常不带作者/简介，这里再拉一次详情补齐（和网页端同一条链路）。
+	if detail, err := s.app.BotComicDetail(ctx, entry.SourceID, entry.ComicID); err == nil {
+		if strings.TrimSpace(detail.Author) != "" {
+			entry.Author = detail.Author
+		}
+		if strings.TrimSpace(detail.Description) != "" {
+			entry.Summary = detail.Description
+		}
+		if strings.TrimSpace(detail.LatestChapterTitle) != "" {
+			entry.Latest = detail.LatestChapterTitle
+		}
+		if strings.TrimSpace(entry.Cover) == "" && strings.TrimSpace(detail.Cover) != "" {
+			entry.Cover = detail.Cover
+		}
+	} else if err != nil {
+		s.logger.Printf("telegram: comic detail %s/%s: %v", entry.SourceID, entry.ComicID, err)
+	}
 	lines := []string{
 		fmt.Sprintf("<b>%s</b>（%s）", entry.Title, entry.SourceName),
 		"作者：" + fallback(entry.Author, "未知"),
@@ -404,18 +455,33 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 		caption += "\n\n" + truncate(summary, summaryLimit)
 	}
 	// 有封面就带图发送；没有则退回纯文本。始终是新消息，搜索结果原样保留。
+	messageID := int64(0)
 	if cover := strings.TrimSpace(entry.Cover); cover != "" {
-		if _, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+		if id, err := s.callMethod(ctx, "sendPhoto", map[string]any{
 			"chat_id":      chat,
 			"photo":        cover,
 			"caption":      caption,
 			"parse_mode":   "HTML",
 			"reply_markup": keyboard,
 		}); err == nil {
-			return
+			messageID = id
 		}
 	}
-	s.sendMessage(ctx, chat, caption, keyboard)
+	if messageID == 0 {
+		if id, err := s.callMethod(ctx, "sendMessage", map[string]any{
+			"chat_id":      chat,
+			"text":         caption,
+			"parse_mode":   "HTML",
+			"reply_markup": keyboard,
+		}); err == nil {
+			messageID = id
+		}
+	}
+	s.mu.Lock()
+	if current := s.sessions[chatID]; current != nil {
+		current.detailMessageID = messageID
+	}
+	s.mu.Unlock()
 }
 
 func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string, index int, detailMessageID int64) {

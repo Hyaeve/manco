@@ -2038,11 +2038,11 @@ function onDragEnd() {
           <div class="settings-grid settings-grid-4">
             <label class="field">
               <span>章节线程</span>
-              <input v-model.number="forms[editorSource.id].chapterConcurrency" class="input" type="number" min="1" max="8" />
+          <input v-model.number="forms[editorSource.id].chapterConcurrency" class="input" type="number" min="1" max="32" />
             </label>
             <label class="field">
               <span>图片线程</span>
-              <input v-model.number="forms[editorSource.id].pageConcurrency" class="input" type="number" min="1" max="16" />
+          <input v-model.number="forms[editorSource.id].pageConcurrency" class="input" type="number" min="1" max="32" />
             </label>
             <label class="field">
               <span>每下载 N 章暂停</span>

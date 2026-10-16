@@ -13,7 +13,6 @@ import {
   Loader2,
   MoreVertical,
   Pencil,
-  Power,
   RefreshCcw,
   RefreshCw,
   Rss,
@@ -40,6 +39,8 @@ const loading = ref(true)
 const busy = ref(0)
 const batchBusy = ref(false)
 const openMenu = ref(0)
+// 三点菜单的弹出方向：上方空间够就向上，否则向下。
+const menuPlacement = ref('up')
 const editorOpen = ref(false)
 const editing = ref(null)
 const selectionMode = ref(false)
@@ -288,7 +289,15 @@ async function load(silent = false) {
 
 function toggleMenu(item, event) {
   event.stopPropagation()
-  openMenu.value = openMenu.value === item.id ? 0 : item.id
+  if (openMenu.value === item.id) {
+    openMenu.value = 0
+    return
+  }
+  // 菜单大约 240px 高：三点上方空间够就向上弹，否则向下弹，避免被页面顶部裁掉。
+  const trigger = event?.currentTarget?.getBoundingClientRect?.()
+  const spaceAbove = trigger ? trigger.top : window.innerHeight
+  menuPlacement.value = spaceAbove > 260 ? 'up' : 'down'
+  openMenu.value = item.id
 }
 
 function openEditor(item) {
@@ -407,6 +416,10 @@ function cover(item) {
 
 function sourceIcon(item) {
   return sources.value[item.sourceId]?.icon || ''
+}
+
+function sourceLabel(item) {
+  return sources.value[item.sourceId]?.name || item.sourceId
 }
 
 function chapterCount(item) {
@@ -565,19 +578,6 @@ function batchFill() {
 }
 
 // 刮削：重新拉取订阅源的元数据，覆盖本地已有的 ComicInfo.xml / series.json / cover。
-// 批量启用/禁用：选中的里只要还有禁用的就统一启用，否则统一禁用。
-function batchToggleEnabled() {
-  const rows = selectedItems.value.slice()
-  const enable = rows.some((item) => !item.enabled)
-  return runBatch({
-    title: enable ? '启用订阅' : '禁用订阅',
-    message: `确定${enable ? '启用' : '禁用'}所选 ${rows.length} 个订阅吗？${enable ? '' : '禁用后不再检查更新与自动下载。'}`,
-    confirmText: enable ? '启用' : '禁用',
-    action: (item) => api.updateSubscription(item.id, { enabled: enable }),
-    successText: enable ? '启用完成' : '禁用完成',
-  })
-}
-
 function batchScrape() {
   return runBatch({
     title: '刮削元数据',
@@ -702,13 +702,19 @@ function batchDelete() {
           <BookOpen v-else :size="24" />
         </ContentLink>
         <div class="subscription-meta">
-          <ContentLink
-            class="subscription-title"
-            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
-            :title="item.title"
-          >
-            {{ cardTitle(item) }}
-          </ContentLink>
+          <div class="subscription-title-row">
+            <ContentLink
+              class="subscription-title"
+              :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+              :title="item.title"
+            >
+              {{ cardTitle(item) }}
+            </ContentLink>
+            <!-- 内容源放在这一行最右边，括号里跟在来源名后面的是启用状态圆点。 -->
+            <span class="subscription-source-name">
+              （{{ sourceLabel(item) }}<i class="subscription-status-dot" :class="{ off: !item.enabled }"></i>）
+            </span>
+          </div>
           <span class="subscription-sub">{{ item.author || '未知作者' }}</span>
           <span class="subscription-sub">
             {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}
@@ -744,7 +750,12 @@ function batchDelete() {
           <button class="btn ghost icon subscription-more" type="button" aria-label="更多操作" @click="toggleMenu(item, $event)">
             <MoreVertical :size="19" />
           </button>
-          <div v-if="openMenu === item.id" class="dropdown-panel subscription-actions" @click.stop>
+          <div
+            v-if="openMenu === item.id"
+            class="dropdown-panel subscription-actions"
+            :class="{ 'opens-down': menuPlacement === 'down' }"
+            @click.stop
+          >
             <button class="dropdown-item" type="button" @click="openEditor(item)">
               <Pencil :size="15" /> 编辑
             </button>
@@ -753,9 +764,6 @@ function batchDelete() {
             </button>
             <button class="dropdown-item" type="button" @click="fillMissing(item)">
               <ListChecks :size="15" /> 补全
-            </button>
-            <button class="dropdown-item" type="button" @click="toggleEnabled(item)">
-              <Power :size="15" /> {{ item.enabled ? '禁用' : '启用' }}
             </button>
             <button class="dropdown-item" type="button" @click="archive(item)">
               <Archive :size="15" /> 归档
@@ -847,10 +855,6 @@ function batchDelete() {
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchScrape">
       <Sparkles :size="14" />
       刮削
-    </button>
-    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchToggleEnabled">
-      <Power :size="14" />
-      启用/禁用
     </button>
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchArchive">
       <Archive :size="14" />

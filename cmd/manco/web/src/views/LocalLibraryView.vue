@@ -147,11 +147,15 @@ onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('pointerdown', closeChapterSortOnOutside)
+  scrollContainer = document.querySelector('.content-scroll')
+  scrollContainer?.addEventListener('scroll', handleLibraryScroll, { passive: true })
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('pointerdown', closeChapterSortOnOutside)
+  scrollContainer?.removeEventListener('scroll', handleLibraryScroll)
+  scrollContainer = null
 })
 
 // 切走页面时退出多选。
@@ -159,14 +163,42 @@ onDeactivated(() => {
   clearSelection()
 })
 
+// 本地仓库分页：首屏只取一页，滚到末尾或点按钮再补下一页。
+const LIBRARY_PAGE_SIZE = 60
+const totalItems = ref(0)
+const loadingMore = ref(false)
+let scrollContainer = null
+
+async function loadMoreLibrary() {
+  if (loadingMore.value || items.value.length >= totalItems.value) return
+  loadingMore.value = true
+  try {
+    const payload = await api.localLibrary(LIBRARY_PAGE_SIZE, items.value.length)
+    const next = payload.items || []
+    if (next.length) items.value = [...items.value, ...next]
+    totalItems.value = Number(payload.total ?? totalItems.value)
+  } catch (err) {
+    notify(`加载更多失败：${err.message}`, true)
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+function handleLibraryScroll() {
+  const element = scrollContainer
+  if (!element || loadingMore.value || items.value.length >= totalItems.value) return
+  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 400) loadMoreLibrary()
+}
+
 async function load() {
   loading.value = true
   try {
     const [payload, sourcePayload] = await Promise.all([
-      api.localLibrary(),
+      api.localLibrary(LIBRARY_PAGE_SIZE, 0),
       api.sources().catch(() => ({ items: [] })),
     ])
     items.value = payload.items || []
+    totalItems.value = Number(payload.total || items.value.length)
     sourceKinds.value = Object.fromEntries((sourcePayload.items || []).map((source) => [source.id, source.kind || 'comic']))
     rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : []
     const availableRoots = new Set(rootOrder.value)
@@ -695,6 +727,13 @@ function downloadReaderFile() {
             <span>{{ item.author || '未知作者' }}</span>
           </span>
         </span>
+      </button>
+    </div>
+    <div v-if="items.length < totalItems" class="download-load-more">
+      <button class="btn secondary small" type="button" :disabled="loadingMore" @click="loadMoreLibrary">
+        <Loader2 v-if="loadingMore" :size="14" class="spin" />
+        <ArrowDown v-else :size="14" />
+        加载更多（已加载 {{ items.length }} / {{ totalItems }}）
       </button>
     </div>
     <div v-if="selectionMode" class="local-selection-bar">

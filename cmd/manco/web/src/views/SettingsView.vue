@@ -42,7 +42,7 @@ const form = reactive({
   telegramChatIds: '',
   maxChapterConcurrency: 10,
   maxPageConcurrency: 2,
-  batchSize: 5,
+  batchSize: 30,
   batchIntervalMinutes: 5,
 })
 
@@ -318,11 +318,11 @@ async function checkUpdate() {
         <div class="settings-form-stack" @keydown.enter.prevent="saveDownload">
           <label class="field">
             <span>全局同时下载章节数</span>
-            <input v-model.number="form.maxChapterConcurrency" class="input" type="number" min="1" max="8" />
+            <input v-model.number="form.maxChapterConcurrency" class="input" type="number" min="1" max="32" />
           </label>
           <label class="field">
             <span>每章图片并发</span>
-            <input v-model.number="form.maxPageConcurrency" class="input" type="number" min="1" max="16" />
+            <input v-model.number="form.maxPageConcurrency" class="input" type="number" min="1" max="32" />
           </label>
           <div class="archive-number-row">
             <span>每下载</span>

@@ -80,6 +80,15 @@ const isSubscribed = computed(() => Boolean(existingSubscription.value))
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
 const lastUpdated = computed(() => String(comic.value?.updatedAt || '').trim())
+// 详情页只显示到年月日：2026-10-18。
+const updatedDateLabel = computed(() => {
+  const raw = lastUpdated.value
+  if (!raw) return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+})
 const chapters = computed(() => detail.value?.chapters || [])
 const displayChapters = computed(() => {
   const keyword = appliedQuery.value.trim().toLowerCase()
@@ -486,7 +495,10 @@ async function downloadSelected() {
           <img class="chapter-time-sort-icon" :src="sortDesc ? timeSortDesc : timeSortAsc" alt="" />
         </button>
         <span v-if="archiveMode" class="muted small">已下载 {{ downloadedCount }} / 共 {{ chapters.length }} 章</span>
-        <span v-else class="muted small">共 {{ chapters.length }} 章</span>
+        <span v-else class="muted small">
+          共 {{ chapters.length }} 章
+          <template v-if="updatedDateLabel"> · 最后更新：{{ updatedDateLabel }}</template>
+        </span>
         <span class="spacer" />
         <form class="chapter-search" @submit.prevent="applyChapterSearch">
           <Search :size="15" />

@@ -4988,10 +4988,59 @@ svg.source-editor-icon {
 }
 
 .subscription-card.disabled {
-  opacity: 0.58;
-  filter: grayscale(0.85);
+  /* 只是「较灰」，不要压到发黑：低透明度 + 中等去色。 */
+  opacity: 0.82;
+  filter: grayscale(0.55);
 }
 
 .subscription-card.disabled:hover {
-  opacity: 0.75;
+  opacity: 0.92;
+}
+
+/* 三点菜单：默认向上弹；上方空间不够时加 .opens-down 改为向下弹。 */
+/* 标题行：作品名占满剩余宽度，内容源名 + 状态圆点贴在这一行最右边。 */
+.subscription-card .subscription-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.subscription-card .subscription-title-row .subscription-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.subscription-card .subscription-source-name {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.subscription-card .subscription-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2e9e4f;
+}
+
+.subscription-card .subscription-status-dot.off {
+  background: #d64545;
+}
+
+.subscription-tools .subscription-actions {
+  top: auto;
+  bottom: calc(100% + 7px);
+  right: 0;
+}
+
+.subscription-tools .subscription-actions.opens-down {
+  top: calc(100% + 7px);
+  bottom: auto;
 }

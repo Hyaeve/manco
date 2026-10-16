@@ -404,11 +404,72 @@ func (e *Engine) release(job model.DownloadJob) {
 func (e *Engine) inCooldown(sourceID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	// 全局批量暂停：所有内容源加起来每下载 N 章整体停 M 分钟。
+	if e.batchSize > 0 && time.Now().Before(e.cooldownUntil) {
+		return true
+	}
 	batchSize := e.batchSize
 	if limit, ok := e.sourceBatchSize[sourceID]; ok {
 		batchSize = limit
 	}
 	return batchSize > 0 && time.Now().Before(e.sourceCooldownUntil[sourceID])
+}
+
+// GlobalCooldown 返回全局批量暂停的截止时间（未暂停时为零值）。任务列表用它
+// 把排队中的章节显示成「等待中」。
+func (e *Engine) GlobalCooldown() time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.batchSize <= 0 {
+		return time.Time{}
+	}
+	return e.cooldownUntil
+}
+
+// markCompleted 把任务标记为完成，并在成功后记一次批量暂停计数。
+func (e *Engine) markCompleted(ctx context.Context, job model.DownloadJob, total, done int, outputPath string) error {
+	err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", total, done, outputPath, "")
+	if err == nil {
+		e.noteBatchCompletion(job.SourceID)
+	}
+	return err
+}
+
+// noteBatchCompletion 记录一次章节完成：全局计数对所有内容源累加，达到阈值就
+// 整体暂停；同时维护每个内容源自己的计数（若该源单独配了批量暂停）。
+// 这两个计数器以前从来没被累加过，所以「每 N 章暂停 M 分钟」一直空转。
+func (e *Engine) noteBatchCompletion(sourceID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := time.Now()
+	e.batchCompleted++
+	if e.batchSize > 0 && e.batchCompleted >= e.batchSize {
+		e.batchCompleted = 0
+		if e.batchInterval > 0 {
+			e.cooldownUntil = now.Add(e.batchInterval)
+			// 暂停结束后主动唤醒一次，不用等 20 秒轮询才发现可以继续。
+			go func(delay time.Duration) {
+				time.Sleep(delay + time.Second)
+				e.Notify()
+			}(e.batchInterval)
+		}
+	}
+	if limit := e.sourceBatchSize[sourceID]; limit > 0 {
+		e.sourceBatchCompleted[sourceID]++
+		if e.sourceBatchCompleted[sourceID] >= limit {
+			e.sourceBatchCompleted[sourceID] = 0
+			interval := e.batchInterval
+			if custom, ok := e.sourceBatchInterval[sourceID]; ok {
+				interval = custom
+			}
+			if interval > 0 {
+				e.sourceCooldownUntil[sourceID] = now.Add(interval)
+			}
+		}
+	}
 }
 
 // SourceCooldowns returns the per-source batch pause deadlines. The download
@@ -713,7 +774,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	if seriesErr != nil {
 		e.logger.Printf("downloader: series metadata %s/%s: %v", job.SourceID, job.ComicID, seriesErr)
 	}
-	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", len(pages), len(pages), outputPath, ""); err != nil {
+	if err := e.markCompleted(ctx, job, len(pages), len(pages), outputPath); err != nil {
 		return err
 	}
 	finished = true
@@ -862,7 +923,7 @@ func (e *Engine) downloadMergedComic(ctx context.Context, item source.Source, ac
 	if seriesErr != nil {
 		e.logger.Printf("downloader: merged series metadata %s/%s: %v", job.SourceID, job.ComicID, seriesErr)
 	}
-	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", totalPages, totalPages, outputPath, ""); err != nil {
+	if err := e.markCompleted(ctx, job, totalPages, totalPages, outputPath); err != nil {
 		return err
 	}
 	finished = true
@@ -1000,7 +1061,7 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 	if metaErr != nil {
 		e.logger.Printf("downloader: merged book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
 	}
-	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", totalPages, totalPages, outputPath, ""); err != nil {
+	if err := e.markCompleted(ctx, job, totalPages, totalPages, outputPath); err != nil {
 		return err
 	}
 	finished = true
@@ -1285,7 +1346,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	if metaErr != nil {
 		e.logger.Printf("downloader: book metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
 	}
-	return e.store.UpdateDownloadJob(ctx, job.ID, "completed", 1, 1, outputPath, "")
+	return e.markCompleted(ctx, job, 1, 1, outputPath)
 }
 
 // downloadBookArchive packages a plugin book chapter as one EPUB. HTML and
@@ -1414,7 +1475,7 @@ func (e *Engine) downloadBookArchive(
 	if metaErr != nil {
 		e.logger.Printf("downloader: book archive metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
 	}
-	if err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", totalPages, totalPages, outputPath, ""); err != nil {
+	if err := e.markCompleted(ctx, job, totalPages, totalPages, outputPath); err != nil {
 		return err
 	}
 	finished = true

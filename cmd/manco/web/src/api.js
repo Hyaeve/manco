@@ -145,7 +145,13 @@ export const api = {
     request(`/api/downloads/${id}?removeFile=${removeFile}`, { method: 'DELETE' }),
 
   library: () => request('/api/library'),
-  localLibrary: () => request('/api/local'),
+  localLibrary: (limit = 0, offset = 0) => {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const query = params.toString()
+    return request(`/api/local${query ? `?${query}` : ''}`)
+  },
   localFileUrl: (path, download = false, width = 0) => {
     if (!path) return ''
     const params = new URLSearchParams({ path })

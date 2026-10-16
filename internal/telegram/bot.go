@@ -33,6 +33,7 @@ type App interface {
 	BotFill(ctx context.Context, subscriptionID int64) (int, int, error)
 	BotScrape(ctx context.Context, subscriptionID int64) (bool, error)
 	BotSetSubscriptionEnabled(ctx context.Context, subscriptionID int64, enabled bool) error
+	BotComicDetail(ctx context.Context, sourceID, comicID string) (model.Comic, error)
 	BotFullDownload(ctx context.Context, subscriptionID int64) (int, error)
 	BotDelete(ctx context.Context, subscriptionID int64) error
 }
@@ -116,6 +117,8 @@ type session struct {
 	results []resultEntry
 	// 搜索结果的 message_id：订阅成功后要把那条消息删掉。
 	resultsMessageID int64
+	// 作品详情的 message_id：返回时删掉它，再重新发一份搜索结果。
+	detailMessageID int64
 }
 
 type resultEntry struct {
@@ -280,9 +283,9 @@ func (s *Service) registerCommands(ctx context.Context) {
 	}
 	payload := `{"commands":[` +
 		`{"command":"start","description":"开始 / 查看帮助"},` +
-		`{"command":"subscriptions","description":"查看订阅清单（检查/补全/启用/禁用）"},` +
+		`{"command":"subscriptions","description":"查看订阅清单"},` +
 		`{"command":"sources","description":"查看已添加内容源"},` +
-		`{"command":"s","description":"搜索作品，例如 /s 海贼王"}` +
+		`{"command":"s","description":"搜索作品"}` +
 		`]}`
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", token)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))

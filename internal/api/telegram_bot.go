@@ -201,6 +201,28 @@ func (s *Server) BotSetSubscriptionEnabled(ctx context.Context, subscriptionID i
 	return nil
 }
 
+// BotComicDetail 拉取作品详情，供 TG 搜索结果里显示作者、简介和最新章节——
+// 列表接口通常不带这些字段，必须再查一次详情（和网页端同一条链路）。
+func (s *Server) BotComicDetail(ctx context.Context, sourceID, comicID string) (model.Comic, error) {
+	item, err := s.registry.Get(sourceID)
+	if err != nil {
+		return model.Comic{}, err
+	}
+	account, err := s.registry.Account(ctx, sourceID)
+	if err != nil {
+		return model.Comic{}, err
+	}
+	detail, err := s.loadComicDetail(ctx, item, account, comicID)
+	if err != nil {
+		return model.Comic{}, err
+	}
+	comic := detail.Comic
+	if strings.TrimSpace(comic.LatestChapterTitle) == "" && len(detail.Chapters) > 0 {
+		comic.LatestChapterTitle = detail.Chapters[len(detail.Chapters)-1].Title
+	}
+	return comic, nil
+}
+
 // BotScrape re-fetches the source metadata and overwrites the local
 // ComicInfo.xml / series.json / cover files of an already downloaded work.
 func (s *Server) BotScrape(ctx context.Context, subscriptionID int64) (bool, error) {

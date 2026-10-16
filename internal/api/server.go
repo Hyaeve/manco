@@ -57,7 +57,14 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.9"
+	appVersion    = "v0.6.0"
+	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
+	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
+	maxChapterConcurrencyLimit = 32
+	maxPageConcurrencyLimit    = 32
+	// 探索发现列表回填：每页最多补 12 条、并发 3。
+	discoverEnrichLimit       = 12
+	discoverEnrichConcurrency = 3
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -196,8 +203,11 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 		ScanInterval:          s.cfg.ScanInterval,
 		MaxChapterConcurrency: s.cfg.MaxChapterConcurrency,
 		MaxPageConcurrency:    s.cfg.MaxPageConcurrency,
-		CookieSecure:          s.cfg.CookieSecure,
-		SessionTTLDays:        30,
+		// 全局批量暂停：所有内容源加起来每下载 30 章，整体暂停 5 分钟。
+		BatchSize:            30,
+		BatchIntervalMinutes: 5,
+		CookieSecure:         s.cfg.CookieSecure,
+		SessionTTLDays:       30,
 		SourceConcurrency: map[string]int{
 			"picacg":   s.cfg.MaxChapterConcurrency,
 			"jmcomic":  s.cfg.MaxChapterConcurrency,
@@ -263,7 +273,7 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 		parsed := map[string]int{}
 		if json.Unmarshal([]byte(value), &parsed) == nil {
 			for sourceID, limit := range parsed {
-				if limit >= 1 && limit <= 8 {
+				if limit >= 1 && limit <= maxChapterConcurrencyLimit {
 					current.SourceConcurrency[sourceID] = limit
 				}
 			}
@@ -2326,6 +2336,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	info := item.Info()
 	kind := source.KindOf(info)
+	// 列表常常缺作者/简介/连载状态，这里按页补一次详情。
+	s.enrichDiscoverItems(r.Context(), item, account, result.Items)
 	for index := range result.Items {
 		result.Items[index] = s.annotateDiscover(info.ID, kind, result.Items[index])
 	}
@@ -2483,12 +2495,62 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 	info := item.Info()
 	kind := source.KindOf(info)
+	// 列表常常缺作者/简介/连载状态，这里按页补一次详情。
+	s.enrichDiscoverItems(r.Context(), item, account, result.Items)
 	s.cacheDiscoverItems(info, kind, result.Items)
 	for index := range result.Items {
 		result.Items[index] = s.annotateDiscover(info.ID, kind, result.Items[index])
 	}
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
+}
+
+// enrichDiscoverItems 给浏览/搜索结果补 author/description/status：很多内容源的
+// 列表接口不带这些字段，只有详情接口才有。只补当前页、最多 12 条、并发 3，
+// 避免首屏被回填拖慢；补好的结果会随 result 一起写进发现缓存。
+func (s *Server) enrichDiscoverItems(ctx context.Context, item source.Source, account source.Account, items []model.Comic) {
+	missing := make([]int, 0, discoverEnrichLimit)
+	for index := range items {
+		if strings.TrimSpace(items[index].Author) != "" &&
+			strings.TrimSpace(items[index].Description) != "" &&
+			strings.TrimSpace(items[index].Status) != "" {
+			continue
+		}
+		missing = append(missing, index)
+		if len(missing) >= discoverEnrichLimit {
+			break
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	sem := make(chan struct{}, discoverEnrichConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for _, index := range missing {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(index int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			detail, err := s.loadComicDetail(ctx, item, account, items[index].ID)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if strings.TrimSpace(items[index].Author) == "" {
+				items[index].Author = detail.Comic.Author
+			}
+			if strings.TrimSpace(items[index].Description) == "" {
+				items[index].Description = detail.Comic.Description
+			}
+			if strings.TrimSpace(items[index].Status) == "" {
+				items[index].Status = detail.Comic.Status
+			}
+		}(index)
+	}
+	wg.Wait()
 }
 
 func isBrowseControlParam(key string) bool {
@@ -3695,13 +3757,17 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	// 批量暂停是按内容源全局生效的：冷却期间该来源下所有排队的章节
 	// 都标记为 waiting，前端展示为“等待中”。
 	cooldowns := s.engine.SourceCooldowns()
+	// 全局批量暂停期间，所有内容源排队中的章节都显示为「等待中」。
+	globalCooldown := s.engine.GlobalCooldown()
 	annotated := map[string]model.Comic{}
 	// 同一部作品的多个章节共用一套本地元数据，按作品缓存一次即可，否则
 	// 每个章节都要读一次 ComicInfo.xml。
 	localMetadata := map[string]localJobMetadata{}
 	for index := range items {
 		if items[index].Status == "queued" {
-			if until, ok := cooldowns[items[index].SourceID]; ok && until.After(time.Now()) {
+			if globalCooldown.After(time.Now()) {
+				items[index].Status = "waiting"
+			} else if until, ok := cooldowns[items[index].SourceID]; ok && until.After(time.Now()) {
 				items[index].Status = "waiting"
 			}
 		}
@@ -4375,7 +4441,23 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "downloadDir": s.cfg.DownloadDir, "downloadDirs": roots})
+	// 本地仓库也分页：先返回一页，前端滚到末尾再取下一页。
+	total := len(items)
+	if limit := intParam(r, "limit", 0); limit > 0 {
+		offset := intParam(r, "offset", 0)
+		if offset < 0 {
+			offset = 0
+		}
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		items = items[offset:end]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "downloadDir": s.cfg.DownloadDir, "downloadDirs": roots})
 }
 
 func (s *Server) scanLocalDir(root, name string) localItemEntry {
@@ -5603,8 +5685,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if payload.MaxChapterConcurrency != 0 {
-		if payload.MaxChapterConcurrency < 1 || payload.MaxChapterConcurrency > 8 {
-			writeError(w, http.StatusBadRequest, "章节并发必须在 1 到 8 之间")
+		if payload.MaxChapterConcurrency < 1 || payload.MaxChapterConcurrency > maxChapterConcurrencyLimit {
+			writeError(w, http.StatusBadRequest, "章节并发必须在 1 到 32 之间")
 			return
 		}
 		if err := s.store.SetSetting(r.Context(), "max_chapter_concurrency", strconv.Itoa(payload.MaxChapterConcurrency)); err != nil {
@@ -5614,8 +5696,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if payload.MaxPageConcurrency != 0 {
-		if payload.MaxPageConcurrency < 1 || payload.MaxPageConcurrency > 16 {
-			writeError(w, http.StatusBadRequest, "图片并发必须在 1 到 16 之间")
+		if payload.MaxPageConcurrency < 1 || payload.MaxPageConcurrency > maxPageConcurrencyLimit {
+			writeError(w, http.StatusBadRequest, "图片并发必须在 1 到 32 之间")
 			return
 		}
 		if err := s.store.SetSetting(r.Context(), "max_page_concurrency", strconv.Itoa(payload.MaxPageConcurrency)); err != nil {
