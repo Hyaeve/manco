@@ -450,6 +450,7 @@ function rememberPosition() {
 }
 
 function cover(item) {
+  if (item.cachedCover) return item.cachedCover
   return api.imageUrl(item.cover, item.sourceId)
 }
 
@@ -618,7 +619,7 @@ function latestLabel(item) {
           @click="rememberOpenPosition"
         >
           <div class="comic-cover">
-            <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
+            <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
             <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
           </div>
           <div class="comic-body">
@@ -636,7 +637,7 @@ function latestLabel(item) {
           @click="rememberOpenPosition"
         >
           <div class="source-list-cover">
-            <img v-if="item.cover" :src="cover(item)" :alt="item.title" loading="lazy" />
+            <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" />
             <span v-else class="cover-fallback"><BookOpen :size="24" /></span>
           </div>
           <div class="source-list-body">

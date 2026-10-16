@@ -29,9 +29,33 @@ const (
 )
 
 type Cache struct {
-	mu     sync.RWMutex
-	root   string
-	maxAge time.Duration
+	mu             sync.RWMutex
+	root           string
+	maxAge         time.Duration
+	index          map[string]indexedEntry
+	indexReady     bool
+	touches        map[string]time.Time
+	touchQueue     chan touchRequest
+	touchQueueOnce sync.Once
+}
+
+type touchRequest struct {
+	path     string
+	accessed time.Time
+}
+
+type indexedEntry struct {
+	Path         string
+	SourceID     string
+	Kind         string
+	ComicID      string
+	CoverFile    string
+	Author       string
+	Description  string
+	Status       string
+	Tags         []string
+	ChapterCount int
+	UpdatedAt    time.Time
 }
 
 // CoverMaterializer lets a source-specific runtime fetch images that cannot
@@ -75,6 +99,9 @@ func Open(root string, maxAge time.Duration) (*Cache, error) {
 		return nil, err
 	}
 	cache := &Cache{root: filepath.Clean(root), maxAge: maxAge}
+	cache.index = make(map[string]indexedEntry)
+	cache.touches = make(map[string]time.Time)
+	cache.touchQueue = make(chan touchRequest, 256)
 	if err := cache.Prune(time.Now()); err != nil {
 		return nil, err
 	}
@@ -94,15 +121,15 @@ func (c *Cache) CachedCoverURL(sourceID, comicID string) string {
 	if c == nil {
 		return ""
 	}
-	entry, path, ok := c.findBySourceAndID(sourceID, comicID)
+	entry, ok := c.findIndexed(sourceID, comicID)
 	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
 		return ""
 	}
-	info, err := os.Stat(filepath.Join(path, entry.CoverFile))
+	info, err := os.Stat(filepath.Join(entry.Path, entry.CoverFile))
 	if err != nil || info.IsDir() || info.Size() == 0 {
 		return ""
 	}
-	id := strings.TrimSpace(entry.Comic.ID)
+	id := strings.TrimSpace(entry.ComicID)
 	if id == "" {
 		id = strings.TrimSpace(comicID)
 	}
@@ -121,14 +148,20 @@ func (c *Cache) Get(sourceID, kind, comicID string) (model.ComicDetail, bool) {
 	entry.Comic.Cached = true
 	if entry.CoverFile != "" {
 		if info, err := os.Stat(filepath.Join(path, entry.CoverFile)); err == nil && info.Size() > 0 {
-			entry.Comic.CachedCover = coverURL(sourceID, kind, entry.Comic.ID)
+			entry.Comic.CachedCover = coverURL(sourceID, entry.Kind, entry.Comic.ID)
 		}
 	}
-	_ = c.writeEntry(path, entry)
+	c.touch(path, time.Now(), entry.UpdatedAt)
 	return model.ComicDetail{Comic: entry.Comic, Chapters: entry.Chapters}, true
 }
 
 func (c *Cache) Annotate(comic model.Comic) model.Comic {
+	return c.AnnotateKind("", comic)
+}
+
+// AnnotateKind applies cached metadata for a known source kind. Passing the
+// kind avoids probing unrelated cache trees for book and video sources.
+func (c *Cache) AnnotateKind(kind string, comic model.Comic) model.Comic {
 	if c == nil {
 		return comic
 	}
@@ -136,58 +169,81 @@ func (c *Cache) Annotate(comic model.Comic) model.Comic {
 	if sourceID == "" {
 		return comic
 	}
-	kind := NormalizeKind("")
-	entry, path, ok := c.read(sourceID, kind, comic.ID)
+	kind = NormalizeKind(kind)
+	entry, ok := c.indexed(sourceID, kind, comic.ID)
 	if !ok {
-		entry, path, ok = c.findBySourceAndID(sourceID, comic.ID)
+		entry, ok = c.findIndexedAnyKind(sourceID, comic.ID)
 	}
 	if !ok {
 		return comic
 	}
-	entry.Accessed = time.Now()
 	if entry.CoverFile != "" {
-		if info, err := os.Stat(filepath.Join(path, entry.CoverFile)); err == nil && info.Size() > 0 {
-			comic.CachedCover = coverURL(sourceID, entry.Kind, entry.Comic.ID)
+		if info, err := os.Stat(filepath.Join(entry.Path, entry.CoverFile)); err == nil && info.Size() > 0 {
+			comic.CachedCover = coverURL(sourceID, entry.Kind, entry.ComicID)
 			comic.Cached = true
 		}
 	}
 	if comic.Author == "" {
-		comic.Author = entry.Comic.Author
+		comic.Author = entry.Author
 	}
 	if comic.Description == "" {
-		comic.Description = entry.Comic.Description
+		comic.Description = entry.Description
 	}
 	if comic.Status == "" {
-		comic.Status = entry.Comic.Status
+		comic.Status = entry.Status
 	}
-	if len(comic.Tags) == 0 && len(entry.Comic.Tags) > 0 {
-		comic.Tags = append([]string(nil), entry.Comic.Tags...)
+	if len(comic.Tags) == 0 && len(entry.Tags) > 0 {
+		comic.Tags = append([]string(nil), entry.Tags...)
 	}
-	if comic.ChapterCount == 0 && len(entry.Chapters) > 0 {
-		comic.ChapterCount = len(entry.Chapters)
+	if comic.ChapterCount == 0 && entry.ChapterCount > 0 {
+		comic.ChapterCount = entry.ChapterCount
 	}
-	_ = c.writeEntry(path, entry)
+	c.touch(entry.Path, time.Now(), entry.UpdatedAt)
 	return comic
 }
 
 func (c *Cache) Put(ctx context.Context, client *http.Client, sourceID, kind string, detail model.ComicDetail) error {
-	return c.put(ctx, client, sourceID, kind, "", detail)
+	return c.putWithOptions(ctx, client, sourceID, kind, "", detail, cachePutOptions{
+		downloadCover: true,
+		writeMetadata: true,
+	})
 }
 
 // PutNamed stores an entry under the localized source name. The source ID is
 // still used as the stable identity, while the directory remains readable in
 // the mounted /data tree.
 func (c *Cache) PutNamed(ctx context.Context, client *http.Client, sourceID, sourceName, kind string, detail model.ComicDetail) error {
-	return c.put(ctx, client, sourceID, kind, sourceName, detail)
+	return c.putWithOptions(ctx, client, sourceID, kind, sourceName, detail, cachePutOptions{
+		downloadCover: true,
+		writeMetadata: true,
+	})
 }
 
 // PutNamedWithCover stores an entry and lets the caller materialize the cover
 // through the owning source before falling back to a plain HTTP request.
 func (c *Cache) PutNamedWithCover(ctx context.Context, client *http.Client, sourceID, sourceName, kind string, detail model.ComicDetail, materialize CoverMaterializer) error {
-	return c.put(ctx, client, sourceID, kind, sourceName, detail, materialize)
+	return c.putWithOptions(ctx, client, sourceID, kind, sourceName, detail, cachePutOptions{
+		materialize:   materialize,
+		downloadCover: true,
+		writeMetadata: true,
+	})
 }
 
-func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, sourceName string, detail model.ComicDetail, materialize ...CoverMaterializer) error {
+// PutNamedCard stores only the lightweight card metadata. Browse and search
+// results do not need a downloaded cover or a ComicInfo sidecar, so keeping
+// those operations off this path avoids turning a page request into tens of
+// JVM image calls and disk writes.
+func (c *Cache) PutNamedCard(ctx context.Context, client *http.Client, sourceID, sourceName, kind string, detail model.ComicDetail) error {
+	return c.putWithOptions(ctx, client, sourceID, kind, sourceName, detail, cachePutOptions{})
+}
+
+type cachePutOptions struct {
+	materialize   CoverMaterializer
+	downloadCover bool
+	writeMetadata bool
+}
+
+func (c *Cache) putWithOptions(ctx context.Context, client *http.Client, sourceID, kind, sourceName string, detail model.ComicDetail, options cachePutOptions) error {
 	if c == nil {
 		return nil
 	}
@@ -215,17 +271,24 @@ func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, so
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
 	}
-	comic := detail.Comic
+	comic := mergeComic(existing.Comic, detail.Comic)
+	if strings.TrimSpace(comic.SourceID) == "" {
+		comic.SourceID = sourceID
+	}
+	chapters := detail.Chapters
+	if len(chapters) == 0 && exists {
+		chapters = existing.Chapters
+	}
 	coverURL := strings.TrimSpace(comic.Cover)
 	coverFile := ""
-	if len(materialize) > 0 && materialize[0] != nil {
-		if data, contentType, err := materialize[0](ctx, comic); err == nil && len(data) > 0 {
+	if options.materialize != nil {
+		if data, contentType, err := options.materialize(ctx, comic); err == nil && len(data) > 0 {
 			if name, err := c.writeCover(path, data, contentType, coverURL); err == nil {
 				coverFile = name
 			}
 		}
 	}
-	if coverFile == "" && coverURL != "" && client != nil {
+	if coverFile == "" && options.downloadCover && coverURL != "" && client != nil {
 		if name, err := c.downloadCover(ctx, client, path, coverURL); err == nil {
 			coverFile = name
 		}
@@ -238,7 +301,7 @@ func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, so
 		SourceID:  sourceID,
 		Kind:      kind,
 		Comic:     comic,
-		Chapters:  detail.Chapters,
+		Chapters:  chapters,
 		CoverFile: coverFile,
 		UpdatedAt: now,
 		Accessed:  now,
@@ -246,18 +309,21 @@ func (c *Cache) put(ctx context.Context, client *http.Client, sourceID, kind, so
 	if err := c.writeEntry(path, entry); err != nil {
 		return err
 	}
-	return c.writeMetadata(path, entry)
+	if options.writeMetadata {
+		return c.writeMetadata(path, entry)
+	}
+	return nil
 }
 
 func (c *Cache) ServeCover(w http.ResponseWriter, r *http.Request, sourceID, kind, comicID string) bool {
-	entry, path, ok := c.read(sourceID, kind, comicID)
+	entry, ok := c.indexed(sourceID, kind, comicID)
 	if !ok {
-		entry, path, ok = c.findBySourceAndID(sourceID, comicID)
+		entry, ok = c.findIndexedAnyKind(sourceID, comicID)
 	}
 	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
 		return false
 	}
-	coverPath := filepath.Join(path, entry.CoverFile)
+	coverPath := filepath.Join(entry.Path, entry.CoverFile)
 	file, err := os.Open(coverPath)
 	if err != nil {
 		return false
@@ -267,8 +333,7 @@ func (c *Cache) ServeCover(w http.ResponseWriter, r *http.Request, sourceID, kin
 	if err != nil || info.IsDir() {
 		return false
 	}
-	entry.Accessed = time.Now()
-	_ = c.writeEntry(path, entry)
+	c.touch(entry.Path, time.Now(), entry.UpdatedAt)
 	http.ServeContent(w, r, entry.CoverFile, info.ModTime(), file)
 	return true
 }
@@ -279,7 +344,8 @@ func (c *Cache) Prune(now time.Time) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return filepath.WalkDir(c.root, func(path string, entry os.DirEntry, err error) error {
+	index := make(map[string]indexedEntry)
+	err := filepath.WalkDir(c.root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -306,9 +372,17 @@ func (c *Cache) Prune(now time.Time) error {
 		}
 		if !stamp.IsZero() && now.Sub(stamp) > c.maxAge {
 			_ = os.RemoveAll(dir)
+			return nil
+		}
+		if strings.TrimSpace(stored.SourceID) != "" && strings.TrimSpace(stored.Comic.ID) != "" {
+			index[cacheIndexKey(stored.SourceID, stored.Kind, stored.Comic.ID)] = makeIndexedEntry(dir, stored)
 		}
 		return nil
 	})
+	c.index = index
+	c.indexReady = true
+	c.touches = make(map[string]time.Time)
+	return err
 }
 
 func (c *Cache) read(sourceID, kind, comicID string) (storedDetail, string, bool) {
@@ -321,7 +395,10 @@ func (c *Cache) read(sourceID, kind, comicID string) (storedDetail, string, bool
 		return storedDetail{}, "", false
 	}
 	kind = NormalizeKind(kind)
-	path := c.entryPath(sourceID, kind, comicID)
+	path, ok := c.resolvePath(sourceID, kind, comicID)
+	if !ok {
+		return storedDetail{}, "", false
+	}
 	entry, err := readEntry(path)
 	if err != nil {
 		return storedDetail{}, "", false
@@ -338,22 +415,6 @@ func (c *Cache) findBySourceAndID(sourceID, comicID string) (storedDetail, strin
 			return entry, path, true
 		}
 	}
-	var found storedDetail
-	var foundPath string
-	_ = filepath.WalkDir(c.root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || foundPath != "" || entry.IsDir() || entry.Name() != "item.json" {
-			return nil
-		}
-		candidate, readErr := readEntry(filepath.Dir(path))
-		if readErr == nil && candidate.SourceID == sourceID && candidate.Comic.ID == comicID {
-			found = candidate
-			foundPath = filepath.Dir(path)
-		}
-		return nil
-	})
-	if foundPath != "" {
-		return found, foundPath, true
-	}
 	return storedDetail{}, "", false
 }
 
@@ -367,6 +428,209 @@ func (c *Cache) findBySourceAndIDLegacy(sourceID, comicID string) (storedDetail,
 		}
 	}
 	return storedDetail{}, "", false
+}
+
+func (c *Cache) resolvePath(sourceID, kind, comicID string) (string, bool) {
+	sourceID = strings.TrimSpace(sourceID)
+	comicID = strings.TrimSpace(comicID)
+	if sourceID == "" || comicID == "" {
+		return "", false
+	}
+	kind = NormalizeKind(kind)
+	c.mu.Lock()
+	c.ensureIndexLocked()
+	if entry, ok := c.index[cacheIndexKey(sourceID, kind, comicID)]; ok {
+		c.mu.Unlock()
+		return entry.Path, true
+	}
+	c.mu.Unlock()
+
+	// Fall back to the deterministic legacy path for entries written before
+	// named directories or while an index is being rebuilt.
+	path := c.entryPath(sourceID, kind, comicID)
+	if _, err := os.Stat(filepath.Join(path, "item.json")); err == nil {
+		c.rememberPath(path)
+		return path, true
+	}
+	return "", false
+}
+
+func (c *Cache) ensureIndexLocked() {
+	if c == nil || c.indexReady {
+		return
+	}
+	if c.index == nil {
+		c.index = make(map[string]indexedEntry)
+	}
+	index := make(map[string]indexedEntry)
+	_ = filepath.WalkDir(c.root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Name() != "item.json" {
+			return nil
+		}
+		dir := filepath.Dir(path)
+		stored, readErr := readEntry(dir)
+		if readErr != nil || strings.TrimSpace(stored.SourceID) == "" || strings.TrimSpace(stored.Comic.ID) == "" {
+			return nil
+		}
+		index[cacheIndexKey(stored.SourceID, stored.Kind, stored.Comic.ID)] = makeIndexedEntry(dir, stored)
+		return nil
+	})
+	c.index = index
+	c.indexReady = true
+}
+
+func (c *Cache) rememberPath(path string) {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	entry, err := readEntry(path)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.index == nil {
+		c.index = make(map[string]indexedEntry)
+	}
+	c.index[cacheIndexKey(entry.SourceID, entry.Kind, entry.Comic.ID)] = makeIndexedEntry(path, entry)
+}
+
+func (c *Cache) indexed(sourceID, kind, comicID string) (indexedEntry, bool) {
+	if c == nil {
+		return indexedEntry{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureIndexLocked()
+	entry, ok := c.index[cacheIndexKey(sourceID, kind, comicID)]
+	return entry, ok
+}
+
+func (c *Cache) findIndexed(sourceID, comicID string) (indexedEntry, bool) {
+	for _, kind := range []string{"comic", "book", "other"} {
+		if entry, ok := c.indexed(sourceID, kind, comicID); ok {
+			return entry, true
+		}
+	}
+	return indexedEntry{}, false
+}
+
+func (c *Cache) findIndexedAnyKind(sourceID, comicID string) (indexedEntry, bool) {
+	return c.findIndexed(sourceID, comicID)
+}
+
+func makeIndexedEntry(path string, entry storedDetail) indexedEntry {
+	chapterCount := entry.Comic.ChapterCount
+	if chapterCount == 0 {
+		chapterCount = len(entry.Chapters)
+	}
+	return indexedEntry{
+		Path:         path,
+		SourceID:     strings.TrimSpace(entry.SourceID),
+		Kind:         NormalizeKind(entry.Kind),
+		ComicID:      strings.TrimSpace(entry.Comic.ID),
+		CoverFile:    strings.TrimSpace(entry.CoverFile),
+		Author:       entry.Comic.Author,
+		Description:  entry.Comic.Description,
+		Status:       entry.Comic.Status,
+		Tags:         append([]string(nil), entry.Comic.Tags...),
+		ChapterCount: chapterCount,
+		UpdatedAt:    entry.UpdatedAt,
+	}
+}
+
+func cacheIndexKey(sourceID, kind, comicID string) string {
+	return strings.TrimSpace(sourceID) + "\x00" + NormalizeKind(kind) + "\x00" + strings.TrimSpace(comicID)
+}
+
+func mergeComic(previous, current model.Comic) model.Comic {
+	if strings.TrimSpace(current.SourceID) == "" {
+		current.SourceID = previous.SourceID
+	}
+	if strings.TrimSpace(current.ID) == "" {
+		current.ID = previous.ID
+	}
+	if strings.TrimSpace(current.Title) == "" {
+		current.Title = previous.Title
+	}
+	if strings.TrimSpace(current.Cover) == "" {
+		current.Cover = previous.Cover
+	}
+	if strings.TrimSpace(current.Description) == "" {
+		current.Description = previous.Description
+	}
+	if strings.TrimSpace(current.Status) == "" {
+		current.Status = previous.Status
+	}
+	if strings.TrimSpace(current.Author) == "" {
+		current.Author = previous.Author
+	}
+	if len(current.Tags) == 0 {
+		current.Tags = append([]string(nil), previous.Tags...)
+	}
+	if current.ChapterCount == 0 {
+		current.ChapterCount = previous.ChapterCount
+	}
+	if strings.TrimSpace(current.CachedCover) == "" {
+		current.CachedCover = previous.CachedCover
+	}
+	if !current.Cached {
+		current.Cached = previous.Cached
+	}
+	return current
+}
+
+func (c *Cache) touch(path string, accessed, updated time.Time) {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	if accessed.IsZero() {
+		accessed = time.Now()
+	}
+	if !updated.IsZero() && accessed.Sub(updated) < 12*time.Hour {
+		return
+	}
+	key := path
+	c.mu.Lock()
+	if c.touches == nil {
+		c.touches = make(map[string]time.Time)
+	}
+	if last, ok := c.touches[key]; ok && accessed.Sub(last) < 12*time.Hour {
+		c.mu.Unlock()
+		return
+	}
+	c.touches[key] = accessed
+	c.mu.Unlock()
+	c.touchQueueOnce.Do(func() {
+		go c.runTouchQueue()
+	})
+	select {
+	case c.touchQueue <- touchRequest{path: path, accessed: accessed}:
+	default:
+		// Access timestamps are an optimization for retention. Dropping a
+		// touch under pressure is preferable to blocking a discover response.
+	}
+}
+
+func (c *Cache) runTouchQueue() {
+	for request := range c.touchQueue {
+		c.writeAccess(request.path, request.accessed)
+	}
+}
+
+func (c *Cache) writeAccess(path string, accessed time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, err := readEntry(path)
+	if err != nil {
+		return
+	}
+	entry.Accessed = accessed
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	_ = c.writeEntryLocked(path, raw, entry)
 }
 
 func (c *Cache) entryPathNamed(sourceID, sourceName, kind, comicTitle, comicID string) string {
@@ -487,16 +751,26 @@ func (c *Cache) downloadCover(ctx context.Context, client *http.Client, dir, add
 }
 
 func (c *Cache) writeEntry(path string, entry storedDetail) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	raw, err := json.MarshalIndent(entry, "", "  ")
+	raw, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeEntryLocked(path, raw, entry)
+}
+
+func (c *Cache) writeEntryLocked(path string, raw []byte, entry storedDetail) error {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(path, "item.json"), append(raw, '\n'))
+	if err := atomicWrite(filepath.Join(path, "item.json"), append(raw, '\n')); err != nil {
+		return err
+	}
+	if c.index != nil {
+		c.index[cacheIndexKey(entry.SourceID, entry.Kind, entry.Comic.ID)] = makeIndexedEntry(path, entry)
+	}
+	return nil
 }
 
 func (c *Cache) writeMetadata(path string, entry storedDetail) error {

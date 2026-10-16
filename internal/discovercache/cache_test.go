@@ -135,3 +135,95 @@ func TestPutNamedWithCoverUsesMaterializer(t *testing.T) {
 		t.Fatalf("ServeCover() body = %q", got)
 	}
 }
+
+func TestPutNamedCardKeepsBrowseMetadataLightweight(t *testing.T) {
+	root := t.TempDir()
+	cache, err := Open(root, time.Hour)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	detail := model.ComicDetail{Comic: model.Comic{
+		ID:       "card-work",
+		Title:    "卡片作品",
+		SourceID: "plugin-source",
+		Cover:    "https://invalid.example/cover.jpg",
+		Author:   "作者",
+	}}
+	if err := cache.PutNamedCard(context.Background(), http.DefaultClient, "plugin-source", "插件来源", "comic", detail); err != nil {
+		t.Fatalf("PutNamedCard() error = %v", err)
+	}
+
+	got, ok := cache.Get("plugin-source", "comic", "card-work")
+	if !ok {
+		t.Fatal("Get() did not find card entry")
+	}
+	if got.Comic.CachedCover != "" {
+		t.Fatalf("card entry unexpectedly materialized cover: %#v", got.Comic)
+	}
+	if _, err := os.Stat(filepath.Join(root, "comic", "插件来源", "卡片作品", "ComicInfo.xml")); !os.IsNotExist(err) {
+		t.Fatalf("card entry wrote ComicInfo.xml: %v", err)
+	}
+}
+
+func TestPutNamedCardPreservesCachedDetail(t *testing.T) {
+	root := t.TempDir()
+	cache, err := Open(root, time.Hour)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	detail := model.ComicDetail{
+		Comic: model.Comic{
+			ID:           "detail-work",
+			Title:        "详情作品",
+			SourceID:     "plugin-source",
+			Description:  "简介",
+			ChapterCount: 1,
+		},
+		Chapters: []model.Chapter{{ID: "ch-1", Title: "第1话"}},
+	}
+	if err := cache.PutNamed(context.Background(), nil, "plugin-source", "插件来源", "comic", detail); err != nil {
+		t.Fatalf("PutNamed() error = %v", err)
+	}
+	if err := cache.PutNamedCard(context.Background(), nil, "plugin-source", "插件来源", "comic", model.ComicDetail{
+		Comic: model.Comic{ID: "detail-work", SourceID: "plugin-source", Title: "详情作品"},
+	}); err != nil {
+		t.Fatalf("PutNamedCard() error = %v", err)
+	}
+	got, ok := cache.Get("plugin-source", "comic", "detail-work")
+	if !ok {
+		t.Fatal("Get() did not find merged card entry")
+	}
+	if got.Comic.Description != "简介" || len(got.Chapters) != 1 || got.Comic.ChapterCount != 1 {
+		t.Fatalf("card update dropped detail fields: %#v", got)
+	}
+}
+
+func TestAnnotateUsesInMemoryIndex(t *testing.T) {
+	root := t.TempDir()
+	cache, err := Open(root, time.Hour)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	detail := model.ComicDetail{Comic: model.Comic{
+		ID:          "indexed-work",
+		Title:       "索引作品",
+		SourceID:    "plugin-source",
+		Author:      "作者",
+		Description: "简介",
+		Tags:        []string{"标签"},
+	}}
+	if err := cache.PutNamed(context.Background(), nil, "plugin-source", "插件来源", "comic", detail); err != nil {
+		t.Fatalf("PutNamed() error = %v", err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("RemoveAll() error = %v", err)
+	}
+	comic := cache.AnnotateKind("comic", model.Comic{
+		ID:       "indexed-work",
+		SourceID: "plugin-source",
+		Title:    "索引作品",
+	})
+	if comic.Author != "作者" || comic.Description != "简介" || len(comic.Tags) != 1 {
+		t.Fatalf("AnnotateKind() did not use the in-memory index: %#v", comic)
+	}
+}

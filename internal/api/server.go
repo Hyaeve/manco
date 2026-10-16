@@ -2066,11 +2066,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	kind := source.KindOf(item.Info())
 
 	info := item.Info()
+	kind := source.KindOf(info)
 	for index := range result.Items {
-		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
+		result.Items[index] = s.annotateDiscover(info.ID, kind, result.Items[index])
 	}
 	s.cacheDiscoverItems(info, kind, result.Items)
 	_ = s.cache.Set(cacheKey, result)
@@ -2225,10 +2225,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := item.Info()
-	s.cacheDiscoverItems(info, source.KindOf(info), result.Items)
-	kind := source.KindOf(item.Info())
+	kind := source.KindOf(info)
+	s.cacheDiscoverItems(info, kind, result.Items)
 	for index := range result.Items {
-		result.Items[index] = s.annotateDiscover(item.Info().ID, kind, result.Items[index])
+		result.Items[index] = s.annotateDiscover(info.ID, kind, result.Items[index])
 	}
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
@@ -2423,7 +2423,7 @@ func (s *Server) runDiscoverCacheQueue() {
 			if strings.TrimSpace(comic.ID) == "" {
 				continue
 			}
-			if err := s.putDiscoverDetail(ctx, task.sourceID, task.sourceName, task.kind, model.ComicDetail{Comic: comic}); err != nil {
+			if err := s.putDiscoverCard(ctx, task.sourceID, task.sourceName, task.kind, comic); err != nil {
 				s.logger.Printf("api: cache discover browse %s/%s: %v", task.sourceID, comic.ID, err)
 			}
 			if ctx.Err() != nil {
@@ -2462,13 +2462,24 @@ func (s *Server) putDiscoverDetail(ctx context.Context, sourceID, sourceName, ki
 	return s.discover.PutNamedWithCover(ctx, s.registry.Client(), sourceID, sourceName, kind, detail, materialize)
 }
 
+func (s *Server) putDiscoverCard(ctx context.Context, sourceID, sourceName, kind string, comic model.Comic) error {
+	if s.discover == nil {
+		return nil
+	}
+	// Browse/search cards stay lightweight: persist the card metadata for
+	// long-lived reuse, but leave cover materialization and ComicInfo sidecars
+	// to detail visits. The browser can still render the remote cover through
+	// the existing image proxy in the meantime.
+	return s.discover.PutNamedCard(ctx, s.registry.Client(), sourceID, sourceName, kind, model.ComicDetail{Comic: comic})
+}
+
 func (s *Server) annotateDiscover(sourceID, kind string, comic model.Comic) model.Comic {
 
 	comic.SourceID = source.FirstNonEmpty(comic.SourceID, sourceID)
 	if s.discover == nil {
 		return comic
 	}
-	return s.discover.Annotate(comic)
+	return s.discover.AnnotateKind(kind, comic)
 }
 
 func (s *Server) refreshDiscoverDetail(sourceID, kind, comicID string) {
