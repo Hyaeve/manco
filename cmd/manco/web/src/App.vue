@@ -65,6 +65,20 @@ const menuOpen = ref(false)
 const openMenu = ref('')
 const activityOpen = ref(false)
 const activityItems = ref([])
+// 通知列表分片渲染：先 12 条，滚到底再追加，避免一次性铺满 DOM。
+const ACTIVITY_PAGE_SIZE = 12
+const activityRenderLimit = ref(ACTIVITY_PAGE_SIZE)
+const activityListRef = ref(null)
+const visibleActivity = computed(() => activityItems.value.slice(0, activityRenderLimit.value))
+
+function handleActivityScroll() {
+  const element = activityListRef.value
+  if (!element) return
+  if (activityRenderLimit.value >= activityItems.value.length) return
+  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 80) {
+    activityRenderLimit.value += ACTIVITY_PAGE_SIZE
+  }
+}
 const activityLoading = ref(false)
 const searchQuery = ref('')
 const searchInput = ref(null)
@@ -266,7 +280,11 @@ function toggleActivity(event) {
   event.stopPropagation()
   activityOpen.value = !activityOpen.value
   openMenu.value = ''
-  if (activityOpen.value) loadActivity()
+  if (activityOpen.value) {
+    // 每次打开都从第一页开始渲染。
+    activityRenderLimit.value = ACTIVITY_PAGE_SIZE
+    loadActivity()
+  }
 }
 
 function toggleMenu(name, event) {
@@ -407,13 +425,16 @@ function activityIcon(level) {
               </header>
               <p v-if="activityLoading" class="small-empty">加载中…</p>
               <p v-else-if="!activityItems.length" class="small-empty">暂无活动记录</p>
-              <ul v-else class="notification-list">
-                <li v-for="entry in activityItems" :key="entry.id || entry.time">
-                  <component
-                    :is="activityIcon(entry.level)"
-                    :size="16"
-                    :class="entry.ongoing && !entry.total ? 'spin' : entry.level === 'success' ? 'success-text' : entry.level === 'error' ? 'danger-text' : ''"
-                  />
+      <ul v-else ref="activityListRef" class="notification-list" @scroll="handleActivityScroll">
+        <li v-for="entry in visibleActivity" :key="entry.id || entry.time">
+          <!-- 作品相关的通知用封面，不再用图标 -->
+          <img v-if="entry.cover" class="notification-cover" :src="entry.cover" :alt="entry.comicTitle" loading="lazy" decoding="async" />
+          <component
+            v-else
+            :is="activityIcon(entry.level)"
+            :size="16"
+            :class="entry.ongoing && !entry.total ? 'spin' : entry.level === 'success' ? 'success-text' : entry.level === 'error' ? 'danger-text' : ''"
+          />
                   <span>
                     <strong>{{ entry.comicTitle || '未命名作品' }}</strong>
                     <span class="notification-summary">

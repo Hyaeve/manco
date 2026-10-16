@@ -31,7 +31,7 @@ type Subscriptions interface {
 // Notifier receives routine check results so an external service (for example
 // the Telegram bot) can push summaries. It is optional.
 type Notifier interface {
-	SubscriptionChecked(ctx context.Context, subscription model.Subscription, queued int)
+	SubscriptionChecked(ctx context.Context, subscription model.Subscription, queued int, titles []string)
 }
 
 type Scheduler struct {
@@ -153,6 +153,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 	}
 	if subscription.AutoDownload {
 		queued := 0
+		queuedTitles := make([]string, 0, 4)
 		for _, chapter := range chapters {
 			if !isNewer(chapter, subscription) {
 				continue
@@ -175,10 +176,15 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 				continue
 			}
 			queued++
+			title := strings.TrimSpace(chapter.Title)
+			if title == "" {
+				title = chapter.ID
+			}
+			queuedTitles = append(queuedTitles, title)
 		}
 		s.downloads.Notify()
 		if queued > 0 && s.notifier != nil {
-			s.notifier.SubscriptionChecked(ctx, subscription, queued)
+			s.notifier.SubscriptionChecked(ctx, subscription, queued, queuedTitles)
 		}
 	}
 	if isNewer(newest, subscription) {

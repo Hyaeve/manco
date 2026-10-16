@@ -22,6 +22,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
+import SortMenu from '../components/SortMenu.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import { dirBasename, splitAuthors } from '../utils/metadata'
@@ -42,16 +43,69 @@ const chapterQuery = ref('')
 const chapterApplied = ref('')
 const chapterSortMode = ref('title')
 const chapterSortDesc = ref(false)
-const chapterSortOpen = ref(false)
-const chapterSortUpward = ref(false)
-const chapterSortRoot = ref(null)
+// 详情页排序改用共用组件 SortMenu。
+const chapterSortOptions = [
+  { value: 'title', label: '标题' },
+  { value: 'time', label: '添加时间' },
+]
 const rootOrder = ref([])
 const activeRoot = ref('')
 const heroTint = ref('')
 
+// 二级排序：默认按执行时间（目录修改时间）降序，选择持久化。
+const SORT_STORAGE_KEY = 'manco.library.sort.v1'
+const sortOptions = [
+  { value: 'executed', label: '执行时间' },
+  { value: 'created', label: '添加时间' },
+  { value: 'title', label: '标题' },
+]
+const sortMode = ref('executed')
+const sortDesc = ref(true)
+try {
+  const saved = JSON.parse(window.localStorage.getItem(SORT_STORAGE_KEY) || 'null')
+  if (saved && sortOptions.some((option) => option.value === saved.mode)) sortMode.value = saved.mode
+  if (saved && typeof saved.desc === 'boolean') sortDesc.value = saved.desc
+} catch {
+  // 忽略损坏的本地设置
+}
+watch([sortMode, sortDesc], () => {
+  try {
+    window.localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ mode: sortMode.value, desc: sortDesc.value }))
+  } catch {
+    // 隐私模式下写不进去，忽略
+  }
+})
+
+function onSortChange({ mode, desc }) {
+  sortMode.value = mode
+  sortDesc.value = desc
+}
+
+const sortedItems = computed(() => {
+  const direction = sortDesc.value ? -1 : 1
+  const rows = [...items.value]
+  rows.sort((a, b) => {
+    let left
+    let right
+    if (sortMode.value === 'title') {
+      left = String(a.title || a.path || '')
+      right = String(b.title || b.path || '')
+    } else if (sortMode.value === 'created') {
+      left = String(a.createdAt || a.updatedAt || '')
+      right = String(b.createdAt || b.updatedAt || '')
+    } else {
+      left = String(a.updatedAt || '')
+      right = String(b.updatedAt || '')
+    }
+    if (left === right) return 0
+    return (left > right ? 1 : -1) * direction
+  })
+  return rows
+})
+
 const filtered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
-  return items.value.filter((item) => {
+  return sortedItems.value.filter((item) => {
     if (kind.value !== 'all' && itemKind(item) !== kind.value) return false
     if (activeRoot.value && rootOf(item) !== activeRoot.value) return false
     if (!keyword) return true
@@ -146,14 +200,12 @@ const selectedFileCount = computed(() =>
 onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
-  window.addEventListener('pointerdown', closeChapterSortOnOutside)
   scrollContainer = document.querySelector('.content-scroll')
   scrollContainer?.addEventListener('scroll', handleLibraryScroll, { passive: true })
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
-  window.removeEventListener('pointerdown', closeChapterSortOnOutside)
   scrollContainer?.removeEventListener('scroll', handleLibraryScroll)
   scrollContainer = null
 })
@@ -270,10 +322,6 @@ function clearSelection() {
 
 function handleKeydown(event) {
   if (event.key !== 'Escape') return
-  if (chapterSortOpen.value) {
-    chapterSortOpen.value = false
-    return
-  }
   if (selectionMode.value) clearSelection()
 }
 
@@ -395,36 +443,10 @@ function extractTint(url) {
   }
 }
 
-const chapterSortLabel = computed(() => (chapterSortMode.value === 'time' ? '添加时间' : '标题'))
-
-function toggleChapterSortMenu() {
-  if (chapterSortOpen.value) {
-    chapterSortOpen.value = false
-    return
-  }
-  const trigger = chapterSortRoot.value?.getBoundingClientRect()
-  const estimatedMenuHeight = 150
-  chapterSortUpward.value = Boolean(
-    trigger &&
-      trigger.bottom + estimatedMenuHeight > window.innerHeight &&
-      trigger.top > estimatedMenuHeight,
-  )
-  chapterSortOpen.value = true
-}
-
-function closeChapterSortOnOutside(event) {
-  if (!chapterSortOpen.value || chapterSortRoot.value?.contains(event.target)) return
-  chapterSortOpen.value = false
-}
-
-function chooseChapterSortMode(mode) {
+// SortMenu 组件回传 { mode, desc }。
+function onChapterSortChange({ mode, desc }) {
   chapterSortMode.value = mode
-  chapterSortOpen.value = false
-}
-
-function chooseChapterSortDirection(descending) {
-  chapterSortDesc.value = descending
-  chapterSortOpen.value = false
+  chapterSortDesc.value = desc
 }
 
 async function openDetail(item) {
@@ -438,7 +460,6 @@ async function openDetail(item) {
   chapterApplied.value = ''
   chapterSortMode.value = 'title'
   chapterSortDesc.value = false
-  chapterSortOpen.value = false
   for (const file of item.files || []) {
     if ((file.ext !== 'cbz' && file.ext !== 'zip') || file.thumbnail) continue
     try {
@@ -452,7 +473,6 @@ async function openDetail(item) {
 }
 
 function closeDetail() {
-  chapterSortOpen.value = false
   active.value = null
 }
 
@@ -562,68 +582,12 @@ function downloadReaderFile() {
             <X :size="14" />
           </button>
         </form>
-        <div ref="chapterSortRoot" class="chapter-sort-wrap" aria-label="章节排序">
-          <button
-            class="chapter-sort-trigger"
-            type="button"
-            aria-haspopup="menu"
-            :aria-expanded="chapterSortOpen"
-            @click="toggleChapterSortMenu"
-          >
-            <span>{{ chapterSortLabel }}</span>
-            <component :is="chapterSortDesc ? ArrowDown : ArrowUp" :size="14" :stroke-width="1.6" />
-          </button>
-          <Transition name="select-popup">
-            <div v-if="chapterSortOpen" class="chapter-sort-menu" :class="chapterSortUpward ? 'above' : 'below'" role="menu">
-              <div class="chapter-sort-group">
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  :aria-checked="chapterSortMode === 'title'"
-                  :class="{ active: chapterSortMode === 'title' }"
-                  @click="chooseChapterSortMode('title')"
-                >
-                  <span>标题</span>
-                  <Check v-if="chapterSortMode === 'title'" class="chapter-sort-check" :size="15" />
-                </button>
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  :aria-checked="chapterSortMode === 'time'"
-                  :class="{ active: chapterSortMode === 'time' }"
-                  @click="chooseChapterSortMode('time')"
-                >
-                  <span>添加时间</span>
-                  <Check v-if="chapterSortMode === 'time'" class="chapter-sort-check" :size="15" />
-                </button>
-              </div>
-              <div class="chapter-sort-group">
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  :aria-checked="!chapterSortDesc"
-                  :class="{ active: !chapterSortDesc }"
-                  @click="chooseChapterSortDirection(false)"
-                >
-                  <ArrowUp :size="15" :stroke-width="1.6" />
-                  <span>升序</span>
-                  <Check v-if="!chapterSortDesc" class="chapter-sort-check" :size="15" />
-                </button>
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  :aria-checked="chapterSortDesc"
-                  :class="{ active: chapterSortDesc }"
-                  @click="chooseChapterSortDirection(true)"
-                >
-                  <ArrowDown :size="15" :stroke-width="1.6" />
-                  <span>降序</span>
-                  <Check v-if="chapterSortDesc" class="chapter-sort-check" :size="15" />
-                </button>
-              </div>
-            </div>
-          </Transition>
-        </div>
+        <SortMenu
+          :options="chapterSortOptions"
+          :mode="chapterSortMode"
+          :desc="chapterSortDesc"
+          @change="onChapterSortChange"
+        />
       </div>
 
       <div v-if="!activeChapterFiles.length" class="empty">没有可阅读的章节</div>
@@ -676,7 +640,8 @@ function downloadReaderFile() {
       </label>
     </div>
 
-    <div v-if="libraryRoots.length" class="local-root-strip" aria-label="本地仓库目录">
+    <div v-if="libraryRoots.length" class="local-root-row">
+      <div class="local-root-strip" aria-label="本地仓库目录">
       <button type="button" :class="{ active: !activeRoot }" @click="activeRoot = ''">全部</button>
       <button
         v-for="root in libraryRoots"
@@ -687,6 +652,14 @@ function downloadReaderFile() {
       >
         {{ rootLabel(root) }}
       </button>
+      </div>
+      <SortMenu
+        class="local-library-sort"
+        :options="sortOptions"
+        :mode="sortMode"
+        :desc="sortDesc"
+        @change="onSortChange"
+      />
     </div>
 
     <div v-if="loading && !items.length" class="empty">

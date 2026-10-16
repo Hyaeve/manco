@@ -57,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.0"
+	appVersion    = "v0.6.1"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -3555,6 +3555,14 @@ func unescapeMountPath(value string) string {
 	return replacer.Replace(value)
 }
 
+// cachedCoverURL 返回发现缓存里的封面地址（无缓存时返回空串）。
+func (s *Server) cachedCoverURL(sourceID, comicID string) string {
+	if s.discover == nil || strings.TrimSpace(sourceID) == "" || strings.TrimSpace(comicID) == "" {
+		return ""
+	}
+	return s.discover.CachedCoverURL(sourceID, comicID)
+}
+
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	groups, err := s.store.DownloadJobActivity(r.Context(), 50)
 	if err != nil {
@@ -3573,6 +3581,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		SourceID   string    `json:"sourceId,omitempty"`
 		ComicID    string    `json:"comicId,omitempty"`
 		Pending    int       `json:"pending,omitempty"`
+		Cover      string    `json:"cover,omitempty"`
 	}
 	// 通知按作品聚合：一章一条太碎，改为每个作品一条汇总。聚合下推到
 	// SQLite，开销只跟作品数相关，不再把整张任务表读进内存。
@@ -3597,6 +3606,7 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			Ongoing:    group.Pending > 0,
 			SourceID:   group.SourceID,
 			ComicID:    group.ComicID,
+			Cover:      s.cachedCoverURL(group.SourceID, group.ComicID),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})

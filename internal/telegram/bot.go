@@ -26,7 +26,7 @@ import (
 type App interface {
 	BotSources(ctx context.Context) ([]BotSource, error)
 	BotSearch(ctx context.Context, sourceID, query string, limit int) ([]model.Comic, error)
-	BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, error)
+	BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, int, error)
 	BotSubscriptions(ctx context.Context) ([]BotSubscription, error)
 	BotCheck(ctx context.Context, subscriptionID int64) (BotCheckResult, error)
 	BotArchive(ctx context.Context, subscriptionID int64) error

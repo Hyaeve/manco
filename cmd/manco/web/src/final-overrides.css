@@ -4694,6 +4694,16 @@ svg.source-editor-icon {
   font-weight: 650;
 }
 
+/* 通知条目：作品相关用封面缩略图占据左侧。 */
+.notification-list .notification-cover {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface-muted);
+}
+
 .notification-summary {
   display: block;
   margin-top: 3px;
@@ -4998,6 +5008,74 @@ svg.source-editor-icon {
 }
 
 /* 三点菜单：默认向上弹；上方空间不够时加 .opens-down 改为向下弹。 */
+/* ===== v0.6.1：下拉选择器配色、页面浮入与侧栏果冻动画 ===== */
+/* 本地仓库：目录胶囊与排序选择器同一行，排序贴在最右边。 */
+.local-root-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.local-root-row .local-root-strip {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.local-root-row .local-library-sort {
+  flex: 0 0 auto;
+}
+
+/* 下拉选择器统一用侧栏选中态那块淡黄，替换之前的蓝/灰高亮。 */
+.rounded-select-trigger:hover,
+.rounded-select-popup [class*='option']:hover,
+.rounded-select-popup [class*='active'],
+.rounded-select-popup [class*='selected'] {
+  background: color-mix(in srgb, #f9ee9f 82%, #eef4dd);
+  color: #4f4715;
+}
+
+[data-theme='dark'] .rounded-select-trigger:hover,
+[data-theme='dark'] .rounded-select-popup [class*='option']:hover,
+[data-theme='dark'] .rounded-select-popup [class*='active'],
+[data-theme='dark'] .rounded-select-popup [class*='selected'] {
+  background: #3a2f1c;
+  color: #ffd88a;
+}
+
+/* 页面内容浮入：切页面时各模块像浮出水面一样轻微上浮 + 淡入。 */
+@keyframes manco-float-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.content-scroll > * {
+  animation: manco-float-in 0.32s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content-scroll > * {
+    animation: none;
+  }
+}
+
+/* 侧栏悬浮：图标带一点弹性向右放大，文字被挤开，移开回弹（果冻感）。 */
+.sidebar nav button svg {
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), margin 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sidebar nav button:hover svg,
+.sidebar nav button:focus-visible svg {
+  transform: scale(1.28) translateX(1px);
+  margin-right: 4px;
+}
+
 /* 标题行：作品名占满剩余宽度，内容源名 + 状态圆点贴在这一行最右边。 */
 .subscription-card .subscription-title-row {
   display: flex;

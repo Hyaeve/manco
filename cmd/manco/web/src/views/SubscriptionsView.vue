@@ -23,6 +23,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
+import SortMenu from '../components/SortMenu.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
@@ -92,8 +93,59 @@ function dirLabel(dir) {
   return parts.length ? parts[parts.length - 1] : cleaned
 }
 
+// 二级排序：默认按执行时间降序。选择持久化在 localStorage。
+const SORT_STORAGE_KEY = 'manco.subscriptions.sort.v1'
+const sortOptions = [
+  { value: 'executed', label: '执行时间' },
+  { value: 'created', label: '添加时间' },
+  { value: 'title', label: '标题' },
+]
+const sortMode = ref('executed')
+const sortDesc = ref(true)
+try {
+  const saved = JSON.parse(window.localStorage.getItem(SORT_STORAGE_KEY) || 'null')
+  if (saved && sortOptions.some((option) => option.value === saved.mode)) sortMode.value = saved.mode
+  if (saved && typeof saved.desc === 'boolean') sortDesc.value = saved.desc
+} catch {
+  // 忽略损坏的本地设置
+}
+watch([sortMode, sortDesc], () => {
+  try {
+    window.localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ mode: sortMode.value, desc: sortDesc.value }))
+  } catch {
+    // 隐私模式下写不进去，忽略
+  }
+})
+
+function onSortChange({ mode, desc }) {
+  sortMode.value = mode
+  sortDesc.value = desc
+}
+
+const sortedItems = computed(() => {
+  const direction = sortDesc.value ? -1 : 1
+  const rows = [...items.value]
+  rows.sort((a, b) => {
+    let left
+    let right
+    if (sortMode.value === 'title') {
+      left = String(a.title || '')
+      right = String(b.title || '')
+    } else if (sortMode.value === 'created') {
+      left = String(a.createdAt || '')
+      right = String(b.createdAt || '')
+    } else {
+      left = String(a.updatedAt || '')
+      right = String(b.updatedAt || '')
+    }
+    if (left === right) return 0
+    return (left > right ? 1 : -1) * direction
+  })
+  return rows
+})
+
 const filteredItems = computed(() => {
-  let rows = items.value
+  let rows = sortedItems.value
   if (kindFilter.value !== 'all') rows = rows.filter((item) => itemKind(item) === kindFilter.value)
   if (activeDir.value) rows = rows.filter((item) => String(item.downloadDir || '').trim() === activeDir.value)
   return rows
@@ -639,6 +691,13 @@ function batchDelete() {
       <Archive :size="15" />
       归档集
         </ContentLink>
+      <SortMenu
+        class="subscription-sort"
+        :options="sortOptions"
+        :mode="sortMode"
+        :desc="sortDesc"
+        @change="onSortChange"
+      />
   </div>
 
   <div v-if="downloadDirs.length" class="local-root-strip" aria-label="订阅目录">

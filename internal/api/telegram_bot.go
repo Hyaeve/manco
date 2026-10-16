@@ -61,18 +61,19 @@ func (s *Server) BotSearch(ctx context.Context, sourceID, query string, limit in
 // BotSubscribe creates a subscription with the same defaults the web UI uses:
 // source default download location, simplified conversion, historical chapters
 // and weekly automatic updates.
-func (s *Server) BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, error) {
+// BotSubscribe 建订阅并入队历史章节，第三个返回值是这次入队的章节数。
+func (s *Server) BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, int, error) {
 	adapter, err := s.registry.Get(sourceID)
 	if err != nil {
-		return model.Subscription{}, err
+		return model.Subscription{}, 0, err
 	}
 	account, err := s.registry.Account(ctx, sourceID)
 	if err != nil {
-		return model.Subscription{}, err
+		return model.Subscription{}, 0, err
 	}
 	comic, err := s.loadComicDetail(ctx, adapter, account, comicID)
 	if err != nil {
-		return model.Subscription{}, err
+		return model.Subscription{}, 0, err
 	}
 	settings := s.sourceDownloadSettingsFor(ctx, sourceID)
 	downloadDir := strings.TrimSpace(settings.DefaultDownloadDir)
@@ -104,14 +105,14 @@ func (s *Server) BotSubscribe(ctx context.Context, sourceID, comicID string) (mo
 	}
 	created, err := s.store.UpsertSubscription(ctx, subscription)
 	if err != nil {
-		return model.Subscription{}, err
+		return model.Subscription{}, 0, err
 	}
 	_ = s.configs.PersistSubscriptions(ctx, s.store)
 	// Historical chapters download right away; the stored baseline keeps later
 	// scheduled checks from re-queueing them.
-	_, _, _ = s.scheduler.QueueAll(ctx, created)
+	queued, _, _ := s.scheduler.QueueAll(ctx, created)
 	s.engine.Notify()
-	return created, nil
+	return created, queued, nil
 }
 
 // sourceDownloadSettingsFor returns the per-source policy merged with defaults.

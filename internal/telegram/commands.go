@@ -3,7 +3,6 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -491,7 +490,7 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 		return
 	}
 	entry := results[index]
-	subscription, err := s.app.BotSubscribe(ctx, entry.SourceID, entry.ComicID)
+	subscription, queued, err := s.app.BotSubscribe(ctx, entry.SourceID, entry.ComicID)
 	if err != nil {
 		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅失败：%s", entry.Title, err.Error()), nil)
 		return
@@ -509,12 +508,34 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 	delete(s.sessions, chatID)
 	s.mu.Unlock()
 
-	// 只显示作品目录的父目录名——作品名目录由 Manco 自动补在它下面。
-	target := path.Base(strings.TrimRight(strings.TrimSpace(subscription.DownloadDir), "/"))
-	if target == "" || target == "." || target == "/" {
-		target = strings.TrimSpace(subscription.DownloadDir)
+	// 订阅回执：封面 → 作品名 → 作者（内容源）→ cron → 完整下载位置 → 待下载章节数。
+	lines := []string{
+		fmt.Sprintf("<b>%s</b>", subscription.Title),
+		fmt.Sprintf("%s（%s）", fallback(subscription.Author, "未知作者"), entry.SourceName),
+		"Cron：" + fallback(subscription.CronExpr, "未设置"),
+		"下载位置：" + fallback(subscription.DownloadDir, "未设置"),
 	}
-	s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅成功，开始下载到 %s", subscription.Title, target), nil)
+	if queued > 0 {
+		lines = append(lines, fmt.Sprintf("共 %d 个章节待下载", queued))
+	} else {
+		lines = append(lines, "暂时没有需要下载的章节")
+	}
+	caption := strings.Join(lines, "\n")
+	cover := strings.TrimSpace(subscription.Cover)
+	if cover == "" {
+		cover = strings.TrimSpace(entry.Cover)
+	}
+	if cover != "" {
+		if _, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+			"chat_id":    chat,
+			"photo":      cover,
+			"caption":    caption,
+			"parse_mode": "HTML",
+		}); err == nil {
+			return
+		}
+	}
+	s.sendMessage(ctx, chat, caption, nil)
 }
 
 func newResultEntry(source BotSource, comic model.Comic) resultEntry {
