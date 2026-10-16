@@ -32,11 +32,16 @@ const jobs = ref([])
 const sources = ref({})
 const jobStatsData = ref({})
 const kindFilter = ref('all')
+const activeDir = ref('')
 const loading = ref(true)
 const busy = ref(0)
+const batchBusy = ref(false)
 const openMenu = ref(0)
 const editorOpen = ref(false)
 const editing = ref(null)
+const selectionMode = ref(false)
+const selected = ref(new Set())
+let selectAnchor = -1
 let timer = 0
 
 const form = ref({
@@ -55,10 +60,91 @@ function itemKind(item) {
   return kind === 'book' || kind === 'other' ? kind : 'comic'
 }
 
-const visibleItems = computed(() => {
-  if (kindFilter.value === 'all') return items.value
-  return items.value.filter((item) => itemKind(item) === kindFilter.value)
+const downloadDirs = computed(() => {
+  const seen = new Set()
+  const dirs = []
+  for (const item of items.value) {
+    const dir = String(item.downloadDir || '').trim()
+    if (!dir || seen.has(dir)) continue
+    seen.add(dir)
+    dirs.push(dir)
+  }
+  return dirs
 })
+
+function dirLabel(dir) {
+  const cleaned = String(dir || '').replace(/[\\/]+$/, '')
+  const parts = cleaned.split(/[\\/]/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : cleaned
+}
+
+const filteredItems = computed(() => {
+  let rows = items.value
+  if (kindFilter.value !== 'all') rows = rows.filter((item) => itemKind(item) === kindFilter.value)
+  if (activeDir.value) rows = rows.filter((item) => String(item.downloadDir || '').trim() === activeDir.value)
+  return rows
+})
+
+const selectedItems = computed(() => items.value.filter((item) => selected.value.has(item.id)))
+const selectedCount = computed(() => selectedItems.value.length)
+const allSelected = computed(
+  () => filteredItems.value.length > 0 && filteredItems.value.every((item) => selected.value.has(item.id)),
+)
+
+function isSubSelected(item) {
+  return selected.value.has(item.id)
+}
+
+function enterSelection(item, index, event) {
+  event?.preventDefault?.()
+  const next = new Set(selected.value)
+  if (event?.shiftKey && selectAnchor >= 0) {
+    const from = Math.min(selectAnchor, index)
+    const to = Math.max(selectAnchor, index)
+    filteredItems.value.slice(from, to + 1).forEach((row) => next.add(row.id))
+  } else {
+    next.add(item.id)
+  }
+  selected.value = next
+  selectionMode.value = true
+  selectAnchor = index
+}
+
+function handleCardClick(item, index, event) {
+  const next = new Set(selected.value)
+  if (event?.shiftKey && selectAnchor >= 0) {
+    const from = Math.min(selectAnchor, index)
+    const to = Math.max(selectAnchor, index)
+    filteredItems.value.slice(from, to + 1).forEach((row) => next.add(row.id))
+  } else if (next.has(item.id)) {
+    next.delete(item.id)
+  } else {
+    next.add(item.id)
+  }
+  selected.value = next
+  selectionMode.value = next.size > 0
+  selectAnchor = index
+}
+
+// 选中态下用捕获阶段拦截卡片内部链接/按钮的点击，改为切换选中。
+function captureCardClick(item, index, event) {
+  if (!selectionMode.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  handleCardClick(item, index, event)
+}
+
+function selectAllSubscriptions() {
+  selected.value = new Set(filteredItems.value.map((item) => item.id))
+  selectionMode.value = selected.value.size > 0
+  selectAnchor = selected.value.size ? 0 : -1
+}
+
+function clearSubscriptionSelection() {
+  selected.value = new Set()
+  selectionMode.value = false
+  selectAnchor = -1
+}
 
 function kindCount(kind) {
   if (kind === 'all') return items.value.length
@@ -71,12 +157,18 @@ onMounted(async () => {
     if (hasActive.value) load(true)
   }, 5000)
   window.addEventListener('click', closeMenus)
+  window.addEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
   window.removeEventListener('click', closeMenus)
+  window.removeEventListener('keydown', onKeydown)
 })
+
+function onKeydown(event) {
+  if (event.key === 'Escape' && selectionMode.value) clearSubscriptionSelection()
+}
 
 function closeMenus(event) {
   if (event && event.target.closest('.subscription-menu')) return
@@ -97,6 +189,11 @@ async function load(silent = false) {
     items.value = subscriptions.items || []
     jobs.value = downloads.items || []
     jobStatsData.value = subscriptions.jobStats || {}
+    const available = new Set(items.value.map((item) => item.id))
+    if ([...selected.value].some((id) => !available.has(id))) {
+      selected.value = new Set([...selected.value].filter((id) => available.has(id)))
+      if (!selected.value.size) selectionMode.value = false
+    }
   } catch (err) {
     if (!silent) notify(`订阅清单加载失败：${err.message}`, 'error')
   } finally {
@@ -330,6 +427,83 @@ async function downloadAll(item) {
     busy.value = 0
   }
 }
+
+// 批量操作统一走逐项接口，先二次确认再顺序执行，避免并发冲击内容源。
+async function runBatch({ title, message, confirmText, danger, action, successText }) {
+  const rows = selectedItems.value.slice()
+  if (!rows.length || batchBusy.value) return
+  const confirmed = await askConfirm({ title, message, confirmText, danger })
+  if (!confirmed) return
+  batchBusy.value = true
+  let done = 0
+  let failed = 0
+  try {
+    for (const item of rows) {
+      try {
+        await action(item)
+        done += 1
+      } catch {
+        failed += 1
+      }
+    }
+  } finally {
+    batchBusy.value = false
+    clearSubscriptionSelection()
+  }
+  notify(failed ? `${successText}：成功 ${done} 项，失败 ${failed} 项` : `${successText}：共 ${done} 项`, failed ? 'warning' : 'success')
+  await load(true)
+}
+
+function batchCheck() {
+  return runBatch({
+    title: '检查更新',
+    message: `确定对所选 ${selectedCount.value} 个订阅执行检查更新吗？`,
+    confirmText: '开始检查',
+    action: (item) => api.checkSubscription(item.id),
+    successText: '检查更新完成',
+  })
+}
+
+function batchDownloadAll() {
+  return runBatch({
+    title: '全量下载',
+    message: `确定对所选 ${selectedCount.value} 个订阅执行全量下载吗？已完成的章节会自动跳过。`,
+    confirmText: '开始下载',
+    action: (item) => api.downloadAllSubscription(item.id),
+    successText: '全量下载已入队',
+  })
+}
+
+function batchFill() {
+  return runBatch({
+    title: '补全缺失',
+    message: `确定检查所选 ${selectedCount.value} 个订阅的缺失章节并补全下载吗？`,
+    confirmText: '开始补全',
+    action: (item) => api.fillSubscription(item.id),
+    successText: '补全完成',
+  })
+}
+
+function batchArchive() {
+  return runBatch({
+    title: '归档订阅',
+    message: `确定归档所选 ${selectedCount.value} 个订阅吗？归档后可在归档集中查看。`,
+    confirmText: '归档',
+    action: (item) => api.archiveSubscription(item.id),
+    successText: '归档完成',
+  })
+}
+
+function batchDelete() {
+  return runBatch({
+    title: '删除订阅',
+    message: `确定删除所选 ${selectedCount.value} 个订阅吗？下载文件和任务记录不会被自动删除。`,
+    confirmText: '删除',
+    danger: true,
+    action: (item) => api.deleteSubscription(item.id),
+    successText: '删除完成',
+  })
+}
 </script>
 
 <template>
@@ -363,6 +537,20 @@ async function downloadAll(item) {
         </ContentLink>
   </div>
 
+  <div v-if="downloadDirs.length" class="local-root-strip" aria-label="订阅目录">
+    <button type="button" :class="{ active: !activeDir }" @click="activeDir = ''">全部</button>
+    <button
+      v-for="dir in downloadDirs"
+      :key="dir"
+      type="button"
+      :class="{ active: activeDir === dir }"
+      :title="dir"
+      @click="activeDir = dir"
+    >
+      {{ dirLabel(dir) }}
+    </button>
+  </div>
+
   <div v-if="loading && !items.length" class="empty">
     <Loader2 :size="22" class="spin" />
     <span>加载订阅清单</span>
@@ -372,16 +560,23 @@ async function downloadAll(item) {
     <p>还没有订阅。在探索发现打开作品后即可订阅追更。</p>
         <ContentLink class="btn small" to="/discover">去探索发现</ContentLink>
   </div>
-  <div v-else-if="!visibleItems.length" class="card empty">
+  <div v-else-if="!filteredItems.length" class="card empty">
     <p>当前栏目下没有订阅。</p>
   </div>
 
   <div v-else class="subscription-grid">
     <article
-      v-for="item in visibleItems"
+      v-for="(item, index) in filteredItems"
       :key="item.id"
       class="subscription-card"
-      :class="{ disabled: !item.enabled, 'menu-open': openMenu === item.id }"
+      :class="{
+        disabled: !item.enabled,
+        'menu-open': openMenu === item.id,
+        selected: isSubSelected(item),
+        selecting: selectionMode,
+      }"
+      @contextmenu.prevent="enterSelection(item, index, $event)"
+      @click.capture="captureCardClick(item, index, $event)"
     >
       <button
         class="subscription-source"
@@ -516,4 +711,34 @@ async function downloadAll(item) {
     </div>
   </div>
 
+  <div v-if="selectionMode" class="selection-pill selection-pill-flat">
+    <span class="selection-count">已选 {{ selectedCount }} 项</span>
+    <button class="btn ghost small" type="button" :disabled="batchBusy" @click="allSelected ? clearSubscriptionSelection() : selectAllSubscriptions()">
+      {{ allSelected ? '取消全选' : '全选' }}
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy" @click="clearSubscriptionSelection">
+      <X :size="14" />
+      清空
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchCheck">
+      <RefreshCcw :size="14" />
+      检查
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchDownloadAll">
+      <Layers :size="14" />
+      全量
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchFill">
+      <ListChecks :size="14" />
+      补全
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchArchive">
+      <Archive :size="14" />
+      归档
+    </button>
+    <button class="btn ghost small danger" type="button" :disabled="batchBusy || !selectedCount" @click="batchDelete">
+      <Trash2 :size="14" />
+      删除
+    </button>
+  </div>
 </template>

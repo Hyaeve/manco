@@ -1,6 +1,6 @@
 <script setup>
-import { onMounted, ref } from 'vue'
-import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw, RotateCcw } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { Archive, ArrowLeft, BookOpen, Loader2, RefreshCw, RotateCcw, X } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
 import SourceIcon from '../components/SourceIcon.vue'
@@ -12,8 +12,82 @@ const sources = ref({})
 const jobStatsData = ref({})
 const loading = ref(true)
 const busy = ref(0)
+const batchBusy = ref(false)
+const selectionMode = ref(false)
+const selected = ref(new Set())
+let selectAnchor = -1
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  window.addEventListener('keydown', onKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown)
+})
+
+function onKeydown(event) {
+  if (event.key === 'Escape' && selectionMode.value) clearSelection()
+}
+
+const selectedItems = computed(() => items.value.filter((item) => selected.value.has(item.id)))
+const selectedCount = computed(() => selectedItems.value.length)
+const allSelected = computed(() => items.value.length > 0 && items.value.every((item) => selected.value.has(item.id)))
+
+function isSelected(item) {
+  return selected.value.has(item.id)
+}
+
+function enterSelection(item, index, event) {
+  event?.preventDefault?.()
+  const next = new Set(selected.value)
+  if (event?.shiftKey && selectAnchor >= 0) {
+    const from = Math.min(selectAnchor, index)
+    const to = Math.max(selectAnchor, index)
+    items.value.slice(from, to + 1).forEach((row) => next.add(row.id))
+  } else {
+    next.add(item.id)
+  }
+  selected.value = next
+  selectionMode.value = true
+  selectAnchor = index
+}
+
+function handleCardClick(item, index, event) {
+  const next = new Set(selected.value)
+  if (event?.shiftKey && selectAnchor >= 0) {
+    const from = Math.min(selectAnchor, index)
+    const to = Math.max(selectAnchor, index)
+    items.value.slice(from, to + 1).forEach((row) => next.add(row.id))
+  } else if (next.has(item.id)) {
+    next.delete(item.id)
+  } else {
+    next.add(item.id)
+  }
+  selected.value = next
+  selectionMode.value = next.size > 0
+  selectAnchor = index
+}
+
+// 选中态下拦截卡片内部链接的点击，改为切换选中。
+function captureCardClick(item, index, event) {
+  if (!selectionMode.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  handleCardClick(item, index, event)
+}
+
+function selectAll() {
+  selected.value = new Set(items.value.map((item) => item.id))
+  selectionMode.value = selected.value.size > 0
+  selectAnchor = selected.value.size ? 0 : -1
+}
+
+function clearSelection() {
+  selected.value = new Set()
+  selectionMode.value = false
+  selectAnchor = -1
+}
 
 async function load() {
   loading.value = true
@@ -26,6 +100,11 @@ async function load() {
     jobStatsData.value = archived.jobStats || {}
     for (const source of sourcePayload.items || []) {
       sources.value = { ...sources.value, [source.id]: source }
+    }
+    const available = new Set(items.value.map((item) => item.id))
+    if ([...selected.value].some((id) => !available.has(id))) {
+      selected.value = new Set([...selected.value].filter((id) => available.has(id)))
+      if (!selected.value.size) selectionMode.value = false
     }
   } catch (err) {
     notify(`归档集加载失败：${err.message}`, 'error')
@@ -91,6 +170,35 @@ async function restore(item) {
   }
 }
 
+async function batchRestore() {
+  const rows = selectedItems.value.slice()
+  if (!rows.length || batchBusy.value) return
+  const confirmed = await askConfirm({
+    title: '移出归档集',
+    message: `确定把所选 ${rows.length} 个订阅移出归档并恢复到订阅清单吗？恢复后会重新启用。`,
+    confirmText: '移出归档',
+  })
+  if (!confirmed) return
+  batchBusy.value = true
+  let done = 0
+  let failed = 0
+  try {
+    for (const item of rows) {
+      try {
+        await api.restoreSubscription(item.id)
+        done += 1
+      } catch {
+        failed += 1
+      }
+    }
+  } finally {
+    batchBusy.value = false
+    clearSelection()
+  }
+  notify(failed ? `移出归档完成：成功 ${done} 项，失败 ${failed} 项` : `已将 ${done} 个订阅移出归档`, failed ? 'warning' : 'success')
+  await load()
+}
+
 function jobStats(item) {
   const aggregated = jobStatsData.value[`${item.sourceId}\u0000${item.comicId}`]
   if (aggregated) {
@@ -132,7 +240,14 @@ function jobStats(item) {
       <p>归档集为空。订阅卡片执行「归档」后会出现在这里。</p>
     </div>
     <div v-else class="archive-grid archive-page-grid">
-      <article v-for="item in items" :key="item.id" class="archive-card">
+      <article
+        v-for="(item, index) in items"
+        :key="item.id"
+        class="archive-card"
+        :class="{ selected: isSelected(item), selecting: selectionMode }"
+        @contextmenu.prevent="enterSelection(item, index, $event)"
+        @click.capture="captureCardClick(item, index, $event)"
+      >
         <ContentLink class="archive-cover" :to="archiveComicLink(item)" :title="item.title">
           <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" />
           <BookOpen v-else :size="22" />
@@ -170,6 +285,21 @@ function jobStats(item) {
           </button>
         </div>
       </article>
+    </div>
+
+    <div v-if="selectionMode" class="selection-pill selection-pill-flat">
+      <span class="selection-count">已选 {{ selectedCount }} 项</span>
+      <button class="btn ghost small" type="button" :disabled="batchBusy" @click="allSelected ? clearSelection() : selectAll()">
+        {{ allSelected ? '取消全选' : '全选' }}
+      </button>
+      <button class="btn ghost small" type="button" :disabled="batchBusy" @click="clearSelection">
+        <X :size="14" />
+        清空
+      </button>
+      <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchRestore">
+        <RotateCcw :size="14" />
+        移除归档集
+      </button>
     </div>
   </div>
 </template>

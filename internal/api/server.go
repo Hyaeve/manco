@@ -1643,6 +1643,8 @@ func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// 添加内容源时就把网页图标落到本地 /data/icon，之后统一索引本地文件。
+	item = s.localizeCustomSourceIcon(r.Context(), item)
 	saved, err := s.store.UpsertCustomSource(r.Context(), item)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -2733,6 +2735,8 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// 作品目录名或下载位置变化时，同步迁移本地已下载目录与任务路径。
+	s.syncSubscriptionLocalDir(r.Context(), existing, downloadDir, seriesDir)
 	updated, _ := s.store.Subscription(r.Context(), id)
 	updated = s.subscriptionWithCovers(r.Context(), updated)
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
@@ -3255,6 +3259,62 @@ func subscriptionSeriesDirName(value, title string, convertToSimplified bool) st
 		return downloader.SeriesDirectoryName(title, convertToSimplified)
 	}
 	return downloader.SafeName(value)
+}
+
+// syncSubscriptionLocalDir 在订阅的作品目录名或下载位置改变后，把本地已下载的
+// 作品文件夹迁移到新位置，并把该作品下载任务的目录与文件路径改指到新路径。
+// 目标目录已存在时不覆盖，仅保留现有数据。
+func (s *Server) syncSubscriptionLocalDir(ctx context.Context, existing model.Subscription, newDownloadDir, newSeriesDir string) {
+	oldRoot, errOld := s.cleanDownloadDir(existing.DownloadDir)
+	newRoot, errNew := s.cleanDownloadDir(newDownloadDir)
+	if errOld != nil || errNew != nil {
+		return
+	}
+	oldSeries := strings.TrimSpace(existing.SeriesDir)
+	if oldSeries == "" {
+		oldSeries = downloader.SeriesDirectoryName(existing.Title, existing.ConvertToSimplified)
+	}
+	newSeries := strings.TrimSpace(newSeriesDir)
+	if newSeries == "" {
+		return
+	}
+	oldPath := filepath.Join(oldRoot, downloader.SafeName(oldSeries))
+	newPath := filepath.Join(newRoot, downloader.SafeName(newSeries))
+	if filepath.Clean(oldPath) == filepath.Clean(newPath) {
+		return
+	}
+	if info, err := os.Stat(oldPath); err != nil || !info.IsDir() {
+		return
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return
+	}
+	jobs, err := s.store.ListDownloadJobs(ctx, 100000)
+	if err != nil {
+		return
+	}
+	for _, job := range jobs {
+		if job.SourceID != existing.SourceID || job.ComicID != existing.ComicID {
+			continue
+		}
+		dir := job.DownloadDir
+		if cleaned, dirErr := s.cleanDownloadDir(job.DownloadDir); dirErr == nil && filepath.Clean(cleaned) == filepath.Clean(oldRoot) {
+			dir = newRoot
+		}
+		filePath := strings.TrimSpace(job.FilePath)
+		if filePath != "" {
+			if rel, relErr := filepath.Rel(oldPath, filePath); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				filePath = filepath.Join(newPath, rel)
+			}
+		}
+		_ = s.store.SetDownloadJobLocation(ctx, job.ID, dir, filePath)
+	}
 }
 
 func (s *Server) localCoverForJob(job model.DownloadJob) string {

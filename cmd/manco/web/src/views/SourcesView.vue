@@ -266,7 +266,7 @@ async function load() {
       }
     }
   } catch (err) {
-    notify(`资源仓库加载失败：${err.message}`, 'error')
+    notify(`资源拓展加载失败：${err.message}`, 'error')
   } finally {
     loading.value = false
   }
@@ -1134,6 +1134,11 @@ async function addCandidate(candidate) {
 }
 
 function onDragStart(item, event) {
+	// 内置源顺序固定，不允许拖动。
+	if (item?.builtin) {
+		event?.preventDefault?.()
+		return
+	}
 	if (event?.target?.closest?.('button, input, textarea, select, a')) {
 		event.preventDefault()
 		return
@@ -1151,6 +1156,10 @@ function onDragStart(item, event) {
 
 function onDragOver(item, event) {
   if (!dragId.value || dragId.value === item.id) return
+  const dragged = sources.value.find((row) => row.id === dragId.value)
+  // 内置源不参与排序，插件源也不能排到内置源前面。
+  if (!dragged || dragged.builtin || item.builtin) return
+  if ((dragged.kind || 'comic') !== (item.kind || 'comic')) return
   event.preventDefault()
   const list = sources.value
   const from = list.findIndex((row) => row.id === dragId.value)
@@ -1164,7 +1173,8 @@ function onDragOver(item, event) {
 
 async function onDrop() {
   dragId.value = ''
-  const ids = visibleSources.value.map((item) => item.id)
+  // 只持久化插件源顺序，内置源始终按注册表顺序排在最前。
+  const ids = visibleSources.value.filter((item) => !item.builtin).map((item) => item.id)
   if (!ids.length) return
   try {
     await api.updateSource(ids[0], { order: ids })
@@ -1234,7 +1244,7 @@ function onDragEnd() {
         :key="item.id"
         class="card source-card-simple"
         :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id, 'source-card-selected': isSourceSelected(item) }"
-        draggable="true"
+        :draggable="!item.builtin"
         @dragstart="onDragStart(item, $event)"
         @click="handleSourceCardClick(item, index, $event)"
         @contextmenu.prevent="enterSourceSelection(item, index, $event)"

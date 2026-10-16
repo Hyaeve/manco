@@ -88,7 +88,7 @@ const navItems = [
   { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
   { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },
   { name: 'local', label: '本地仓库', to: '/local', icon: HardDrive },
-  { name: 'sources', label: '资源仓库', to: '/sources', icon: Server },
+  { name: 'sources', label: '资源拓展', to: '/sources', icon: Server },
 ]
 const logsItem = { name: 'logs', label: '运行日志', to: '/logs', icon: ScrollText }
 const systemItem = { name: 'settings', label: '系统设置', to: '/settings', icon: Settings }

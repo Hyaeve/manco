@@ -972,6 +972,12 @@ func (s *Store) SetDownloadJobFilePath(ctx context.Context, id int64, filePath s
 	return err
 }
 
+// SetDownloadJobLocation 在作品目录改名或改位置后同步更新任务的下载目录与文件路径。
+func (s *Store) SetDownloadJobLocation(ctx context.Context, id int64, downloadDir, filePath string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE download_jobs SET download_dir = ?, file_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, downloadDir, filePath, id)
+	return err
+}
+
 func (s *Store) UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE download_jobs SET status = ?, total_pages = ?, completed_pages = ?, file_path = ?, error = ?, updated_at = CURRENT_TIMESTAMP,

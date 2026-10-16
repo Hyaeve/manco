@@ -561,7 +561,7 @@ function latestLabel(item) {
     </div>
     <div v-else-if="!sources.length" class="card empty">
       <ImageOff :size="26" />
-      <span>暂无可用的{{ sourceKindLabel(activeKind) }}，请先在资源仓库中启用来源。</span>
+      <span>暂无可用的{{ sourceKindLabel(activeKind) }}，请先在资源拓展中启用来源。</span>
     </div>
 
     <section v-else-if="activeSource && activePanel" class="source-page">

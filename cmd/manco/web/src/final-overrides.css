@@ -2776,10 +2776,12 @@
 
 .selection-pill {
   position: fixed;
-  bottom: 28px;
+  bottom: 18px;
   left: 50%;
   z-index: 40;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: 8px;
   padding: 8px 10px 8px 16px;
@@ -2795,6 +2797,46 @@
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* 扁平胶囊操作条：按钮只保留文字与图标，不使用圆角边框。 */
+.selection-pill-flat {
+  border-radius: 14px;
+  padding: 6px 12px;
+}
+
+.selection-pill-flat .btn {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.selection-pill-flat .btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.selection-pill-flat .btn:disabled {
+  opacity: 0.45;
+}
+
+/* 订阅卡片与归档卡片选中态：描边 + 整体色块高亮。 */
+.subscription-card.selecting,
+.archive-card.selecting {
+  cursor: pointer;
+}
+
+.subscription-card.selected,
+.archive-card.selected {
+  border-color: var(--primary-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--surface) 86%, var(--primary));
+}
+
+[data-theme='dark'] .subscription-card.selected,
+[data-theme='dark'] .archive-card.selected {
+  background: color-mix(in srgb, var(--surface) 80%, var(--primary));
 }
 
 @media (max-width: 1100px) {
