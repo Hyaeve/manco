@@ -490,9 +490,9 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(downloadDir, ".tmp")); !os.IsNotExist(err) {
 		t.Fatalf("temporary directory was not cleaned up: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "job-1")); !os.IsNotExist(err) {
-		t.Fatalf("download cache directory was not cleaned up: %v", err)
-	}
+	// Cache cleanup runs asynchronously after the job finishes, so give it a
+	// brief window instead of asserting immediately.
+	waitForMissingPath(t, filepath.Join(cacheDir, "job-1"))
 
 	job, _ := store.find(1)
 	if job.TotalPages != 3 || job.CompletedPages != 3 {
@@ -1466,6 +1466,14 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition was not met before the deadline")
+}
+
+func waitForMissingPath(t *testing.T, path string) {
+	t.Helper()
+	waitFor(t, 3*time.Second, func() bool {
+		_, err := os.Stat(path)
+		return os.IsNotExist(err)
+	})
 }
 
 func listCBZ(t *testing.T, root string) []string {

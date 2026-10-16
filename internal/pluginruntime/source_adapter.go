@@ -409,6 +409,16 @@ func hasHeader(headers map[string]string, name string) bool {
 }
 
 func (a *Adapter) call(ctx context.Context, operation string, fields map[string]any, useProxy ...bool) (map[string]any, error) {
+	// Every sidecar call must carry the source name so the manager can pick
+	// the right runtime when both Kototoro and Mihon hosts are installed.
+	// Detail/page calls previously omitted it and failed with
+	// "无法确定内容源所属插件运行时".
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	if strings.TrimSpace(asString(fields["sourceName"])) == "" {
+		fields["sourceName"] = a.config.SourceName
+	}
 	if len(useProxy) == 0 {
 		return a.manager.Call(ctx, operation, fields)
 	}

@@ -31,6 +31,7 @@ import { api } from '../api'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import PasswordInput from '../components/PasswordInput.vue'
+import DirectoryPicker from '../components/DirectoryPicker.vue'
 import SitePicker from '../components/SitePicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 
@@ -57,6 +58,7 @@ const forms = reactive({})
 const repositoryForm = reactive({ name: '', url: '', kind: 'json' })
 const editingRepositoryId = ref('')
 const dragId = ref('')
+const dragOverId = ref('')
 const browserOpen = ref(false)
 const browserSource = ref(null)
 const browserSession = reactive({ url: '', userAgent: '' })
@@ -251,6 +253,7 @@ async function load() {
           pageConcurrency: Number(settings.pageConcurrency ?? 2),
           batchSize: Number(settings.batchSize ?? 5),
           batchIntervalMinutes: Number(settings.batchIntervalMinutes ?? 5),
+          defaultDownloadDir: settings.defaultDownloadDir || '',
         })
       } else {
         forms[item.id].username = account.username || ''
@@ -263,6 +266,7 @@ async function load() {
         forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
         forms[item.id].batchSize = Number(settings.batchSize ?? 5)
         forms[item.id].batchIntervalMinutes = Number(settings.batchIntervalMinutes ?? 5)
+        forms[item.id].defaultDownloadDir = settings.defaultDownloadDir || ''
       }
     }
   } catch (err) {
@@ -790,6 +794,7 @@ async function saveSource(item, login = false) {
         pageConcurrency: Number(form.pageConcurrency) || 4,
         batchSize: Number(form.batchSize) || 0,
         batchIntervalMinutes: Number(form.batchIntervalMinutes) || 0,
+        defaultDownloadDir: form.defaultDownloadDir || '',
       },
     }
     if (form.username) payload.username = form.username
@@ -1161,6 +1166,7 @@ function onDragOver(item, event) {
   if (!dragged || dragged.builtin || item.builtin) return
   if ((dragged.kind || 'comic') !== (item.kind || 'comic')) return
   event.preventDefault()
+  dragOverId.value = item.id
   const list = sources.value
   const from = list.findIndex((row) => row.id === dragId.value)
   const to = list.findIndex((row) => row.id === item.id)
@@ -1173,6 +1179,7 @@ function onDragOver(item, event) {
 
 async function onDrop() {
   dragId.value = ''
+  dragOverId.value = ''
   // 只持久化插件源顺序，内置源始终按注册表顺序排在最前。
   const ids = visibleSources.value.filter((item) => !item.builtin).map((item) => item.id)
   if (!ids.length) return
@@ -1186,6 +1193,7 @@ async function onDrop() {
 
 function onDragEnd() {
   dragId.value = ''
+  dragOverId.value = ''
 }
 </script>
 
@@ -1243,7 +1251,7 @@ function onDragEnd() {
         v-for="(item, index) in visibleSources"
         :key="item.id"
         class="card source-card-simple"
-        :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id, 'source-card-selected': isSourceSelected(item) }"
+        :class="{ 'source-card-disabled': item.hidden, 'source-card-dragging': dragId === item.id, 'source-card-drop-target': dragOverId === item.id && dragId !== item.id, 'source-card-selected': isSourceSelected(item) }"
         :draggable="!item.builtin"
         @dragstart="onDragStart(item, $event)"
         @click="handleSourceCardClick(item, index, $event)"
@@ -1625,12 +1633,18 @@ function onDragEnd() {
             :size="26"
           />
           <div>
-            <h2>{{ editorSource.name }}</h2>
+            <div class="source-editor-name-row">
+              <h2>{{ editorSource.name }}</h2>
+              <span
+                v-if="isPluginSource(editorSource) && editorSource.repositoryName"
+                class="plugin-repo-pill"
+                :title="`来自拓展仓库：${editorSource.repositoryName}`"
+              >
+                {{ editorSource.repositoryName }}
+              </span>
+            </div>
             <p class="muted small">
               {{ sourceStatus(editorSource).label }}
-              <template v-if="isPluginSource(editorSource) && editorSource.repositoryName">
-                · 来自 {{ editorSource.repositoryName }}
-              </template>
             </p>
           </div>
         </div>
@@ -1810,6 +1824,15 @@ function onDragEnd() {
 
         <section class="source-editor-section">
           <h3>下载策略</h3>
+          <label class="field">
+            <span>默认下载位置</span>
+            <DirectoryPicker
+              v-model="forms[editorSource.id].defaultDownloadDir"
+              :allow-default="false"
+              placeholder="选择该内容源订阅时的默认下载位置"
+            />
+          </label>
+          <p class="muted small">从该内容源创建订阅时会默认使用这个位置，订阅时仍可手动修改。</p>
           <div class="settings-grid settings-grid-4">
             <label class="field">
               <span>章节线程</span>

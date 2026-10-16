@@ -28,12 +28,24 @@ type Subscriptions interface {
 	UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error
 }
 
+// Notifier receives routine check results so an external service (for example
+// the Telegram bot) can push summaries. It is optional.
+type Notifier interface {
+	SubscriptionChecked(ctx context.Context, subscription model.Subscription, queued int)
+}
+
 type Scheduler struct {
 	registry      *sources.Registry
 	subscriptions Subscriptions
 	downloads     Downloads
 	intervalNanos atomic.Int64
 	logger        *log.Logger
+	notifier      Notifier
+}
+
+// SetNotifier installs a routine check notifier.
+func (s *Scheduler) SetNotifier(notifier Notifier) {
+	s.notifier = notifier
 }
 
 func New(registry *sources.Registry, subscriptions Subscriptions, downloads Downloads, interval time.Duration, logger *log.Logger) *Scheduler {
@@ -140,6 +152,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), false)
 	}
 	if subscription.AutoDownload {
+		queued := 0
 		for _, chapter := range chapters {
 			if !isNewer(chapter, subscription) {
 				continue
@@ -159,9 +172,14 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 			})
 			if err != nil {
 				s.logger.Printf("scheduler: queue %s/%s: %v", subscription.Title, chapter.Title, err)
+				continue
 			}
+			queued++
 		}
 		s.downloads.Notify()
+		if queued > 0 && s.notifier != nil {
+			s.notifier.SubscriptionChecked(ctx, subscription, queued)
+		}
 	}
 	if isNewer(newest, subscription) {
 		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), true)

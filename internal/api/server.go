@@ -50,12 +50,13 @@ import (
 	"github.com/hyaeve/manco/internal/source/generic"
 	"github.com/hyaeve/manco/internal/sources"
 	"github.com/hyaeve/manco/internal/store"
+	"github.com/hyaeve/manco/internal/telegram"
 )
 
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.3"
+	appVersion    = "v0.5.5"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -89,6 +90,7 @@ type Server struct {
 	logger    *log.Logger
 	logs      *logbuf.Buffer
 	assets    fs.FS
+	telegram  *telegram.Service
 
 	discoverQueueOnce sync.Once
 	discoverQueue     chan discoverCacheTask
@@ -119,6 +121,10 @@ type Settings struct {
 	BatchIntervalMinutes  int
 	ConvertToSimplified   bool
 	StaleDays             map[string]int
+	TelegramEnabled       bool
+	TelegramToken         string
+	TelegramChatIDs       []string
+	TelegramProxy         string
 }
 
 type Options struct {
@@ -136,6 +142,7 @@ type Options struct {
 	Logger    *log.Logger
 	Logs      *logbuf.Buffer
 	Assets    fs.FS
+	Telegram  *telegram.Service
 }
 
 func New(options Options) *Server {
@@ -158,6 +165,7 @@ func New(options Options) *Server {
 		logger:    logger,
 		logs:      options.Logs,
 		assets:    options.Assets,
+		telegram:  options.Telegram,
 	}
 }
 
@@ -205,6 +213,21 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 1 {
 			current.MaxPageConcurrency = parsed
 		}
+	}
+	if value, err := s.store.Setting(ctx, "telegram_enabled"); err == nil && value != "" {
+		current.TelegramEnabled = value == "true" || value == "1"
+	}
+	if value, err := s.store.Setting(ctx, "telegram_token"); err == nil {
+		current.TelegramToken = strings.TrimSpace(value)
+	}
+	if value, err := s.store.Setting(ctx, "telegram_chats"); err == nil && strings.TrimSpace(value) != "" {
+		var ids []string
+		if json.Unmarshal([]byte(value), &ids) == nil {
+			current.TelegramChatIDs = ids
+		}
+	}
+	if value, err := s.store.Setting(ctx, "telegram_proxy"); err == nil {
+		current.TelegramProxy = strings.TrimSpace(value)
 	}
 	if value, err := s.store.Setting(ctx, "proxy"); err == nil {
 		current.Proxy = strings.TrimSpace(value)
@@ -1006,26 +1029,52 @@ func (s *Server) filteredSourceList(hidden map[string]bool, disabled map[string]
 			}
 		}
 	}
+	return sortSourceItems(items, orderSetting)
+}
+
+// sortSourceItems applies the persisted source order without letting plugin
+// sources move ahead of the built-in ones. Built-in sources keep their
+// registry order, configured plugin sources follow their saved order, and
+// plugin sources missing from the setting stay after them in registry order.
+func sortSourceItems(items []model.SourceInfo, orderSetting map[string][]string) []model.SourceInfo {
+	registryPosition := make(map[string]int, len(items))
+	for index, item := range items {
+		registryPosition[item.ID] = index
+	}
+	orderPositions := make(map[string]map[string]int, len(orderSetting))
 	for kind, ids := range orderSetting {
-		positions := map[string]int{}
+		positions := make(map[string]int, len(ids))
 		for index, id := range ids {
 			positions[id] = index
 		}
-		sort.SliceStable(items, func(i, j int) bool {
-			if source.KindOf(items[i]) != kind || source.KindOf(items[j]) != kind {
-				return false
-			}
-			left, leftOK := positions[items[i].ID]
-			right, rightOK := positions[items[j].ID]
-			if leftOK && rightOK {
-				return left < right
-			}
-			if leftOK != rightOK {
-				return leftOK
-			}
-			return false
-		})
+		orderPositions[kind] = positions
 	}
+	// 比较函数必须是严格弱序，否则 sort.SliceStable 会近似于不做任何排序。
+	sort.SliceStable(items, func(i, j int) bool {
+		left, right := items[i], items[j]
+		if left.Builtin != right.Builtin {
+			return left.Builtin
+		}
+		if left.Builtin {
+			return registryPosition[left.ID] < registryPosition[right.ID]
+		}
+		leftKind := source.KindOf(left)
+		rightKind := source.KindOf(right)
+		if leftKind != rightKind {
+			return leftKind < rightKind
+		}
+		positions := orderPositions[leftKind]
+		leftOrder, leftOK := positions[left.ID]
+		rightOrder, rightOK := positions[right.ID]
+		switch {
+		case leftOK && rightOK:
+			return leftOrder < rightOrder
+		case leftOK != rightOK:
+			return leftOK
+		default:
+			return registryPosition[left.ID] < registryPosition[right.ID]
+		}
+	})
 	return items
 }
 
@@ -2801,7 +2850,7 @@ func (s *Server) handleDownloadAllSubscription(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	queued, skipped, err := s.scheduler.QueueAll(r.Context(), subscription)
+	queued, removedFiles, clearedJobs, err := s.fullRefreshSubscription(r.Context(), subscription)
 	if err != nil {
 		if errors.Is(err, scheduler.ErrNoChapters) {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -2810,7 +2859,79 @@ func (s *Server) handleDownloadAllSubscription(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": queued, "skipped": skipped})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"queued":       queued,
+		"skipped":      0,
+		"removedFiles": removedFiles,
+		"clearedJobs":  clearedJobs,
+	})
+}
+
+// fullRefreshSubscription implements the shared full-refresh semantics: cancel
+// running jobs, delete downloaded chapter files, clear success/failure records
+// and re-queue every chapter from the source. It returns the number of queued
+// chapters and the number of removed files.
+func (s *Server) fullRefreshSubscription(ctx context.Context, subscription model.Subscription) (queued, removedFiles, clearedJobs int, err error) {
+	jobs, err := s.store.DownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	for _, job := range jobs {
+		if job.Status == "running" {
+			s.engine.Cancel(job.ID)
+		}
+	}
+	for _, job := range jobs {
+		removed, removeErr := s.removeDownloadedChapterFile(job)
+		if removeErr != nil {
+			s.logger.Printf("api: 全量下载清理文件 %s/%s: %v", subscription.SourceID, job.ChapterTitle, removeErr)
+			continue
+		}
+		if removed {
+			removedFiles++
+		}
+	}
+	if _, err := s.store.DeleteDownloadJobsForComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
+		return 0, removedFiles, len(jobs), err
+	}
+	queued, _, err = s.scheduler.QueueAll(ctx, subscription)
+	if err != nil {
+		return 0, removedFiles, len(jobs), err
+	}
+	return queued, removedFiles, len(jobs), nil
+}
+
+// removeDownloadedChapterFile deletes one downloaded chapter file so a full
+// refresh cannot leave stale chapter names or stale image data behind.
+func (s *Server) removeDownloadedChapterFile(job model.DownloadJob) (bool, error) {
+	root, err := s.cleanDownloadDir(job.DownloadDir)
+	if err != nil {
+		return false, err
+	}
+	filePath := strings.TrimSpace(job.FilePath)
+	if filePath == "" {
+		return false, nil
+	}
+	target, err := filepath.Abs(filepath.Clean(filePath))
+	if err != nil {
+		return false, err
+	}
+	root, err = filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return false, err
+	}
+	within, err := filepath.Rel(root, target)
+	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(os.PathSeparator)) {
+		return false, errors.New("章节文件不在下载目录内")
+	}
+	if err := os.Remove(target); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Server) handleBackfillChapterMarkers(w http.ResponseWriter, r *http.Request) {
@@ -3126,43 +3247,90 @@ func unescapeMountPath(value string) string {
 }
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
-	items, err := s.store.ListDownloadJobs(r.Context(), 50)
+	items, err := s.store.ListDownloadJobs(r.Context(), 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	type activityItem struct {
-		ID      int64     `json:"id"`
-		Message string    `json:"message"`
-		Level   string    `json:"level"`
-		Time    time.Time `json:"time"`
+		ID             string    `json:"id"`
+		ComicTitle     string    `json:"comicTitle"`
+		ChapterTitle   string    `json:"chapterTitle,omitempty"`
+		Succeeded      int       `json:"succeeded"`
+		Failed         int       `json:"failed"`
+		Total          int       `json:"total"`
+		Level          string    `json:"level"`
+		Time           time.Time `json:"time"`
+		Ongoing        bool      `json:"ongoing,omitempty"`
+		SourceID       string    `json:"sourceId,omitempty"`
+		ComicID        string    `json:"comicId,omitempty"`
+		Pending        int       `json:"pending,omitempty"`
 	}
-	result := make([]activityItem, 0, len(items))
+	// 通知按作品聚合：一章一条太碎，改为每个作品一条汇总，带上成功/失败
+	// 章节数与该作品最近一次任务时间。
+	type group struct {
+		item      activityItem
+		lastIndex int
+	}
+	groups := map[string]*group{}
+	order := make([]string, 0, len(items))
 	for _, job := range items {
-		if job.Status != "completed" && job.Status != "failed" && job.Status != "canceled" {
-			continue
-		}
-		level := "info"
-		switch job.Status {
-		case "completed":
-			level = "success"
-		case "failed", "canceled":
-			level = "error"
-		}
-		message := fmt.Sprintf("%s：%s", job.ComicTitle, job.ChapterTitle)
-		switch job.Status {
-		case "completed":
-			message += " 下载完成"
-		case "failed":
-			message += " 下载失败"
-		case "canceled":
-			message += " 已取消"
+		key := job.SourceID + "\x00" + job.ComicID
+		entry, ok := groups[key]
+		if !ok {
+			entry = &group{
+				item: activityItem{
+					ID:         key,
+					ComicTitle: job.ComicTitle,
+					Level:      "info",
+					Time:       job.UpdatedAt,
+					SourceID:   job.SourceID,
+					ComicID:    job.ComicID,
+				},
+				lastIndex: -1,
+			}
+			groups[key] = entry
+			order = append(order, key)
 		}
 		stamp := job.UpdatedAt
 		if job.FinishedAt != nil {
 			stamp = *job.FinishedAt
 		}
-		result = append(result, activityItem{ID: job.ID, Message: message, Level: level, Time: stamp})
+		if stamp.After(entry.item.Time) {
+			entry.item.Time = stamp
+		}
+		switch job.Status {
+		case "completed":
+			entry.item.Succeeded++
+		case "failed", "canceled":
+			entry.item.Failed++
+			if entry.item.ChapterTitle == "" {
+				entry.item.ChapterTitle = job.ChapterTitle
+			}
+		case "queued", "running", "waiting", "paused":
+			entry.item.Pending++
+		}
+	}
+	result := make([]activityItem, 0, len(order))
+	for _, key := range order {
+		entry := groups[key].item
+		entry.Total = entry.Succeeded + entry.Failed
+		switch {
+		case entry.Failed > 0:
+			entry.Level = "error"
+		case entry.Succeeded > 0:
+			entry.Level = "success"
+		default:
+			entry.Level = "info"
+		}
+		entry.Ongoing = entry.Pending > 0
+		result = append(result, entry)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].Time.After(result[j].Time)
+	})
+	if len(result) > 50 {
+		result = result[:50]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
@@ -3315,6 +3483,25 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 		if len(items[index].ComicTags) == 0 {
 			items[index].ComicTags = append([]string(nil), annotatedComic.Tags...)
 		}
+		if strings.TrimSpace(items[index].ComicAuthor) == "" {
+			items[index].ComicAuthor = annotatedComic.Author
+		}
+		// 完成列表的元数据优先来自下载任务/发现缓存；旧订阅任务可能都没
+		// 有存这三项，此时回退到本地作品目录里由下载器写出的 ComicInfo.xml。
+		if strings.TrimSpace(items[index].ComicAuthor) == "" ||
+			strings.TrimSpace(items[index].ComicDescription) == "" ||
+			len(items[index].ComicTags) == 0 {
+			local := s.localMetadataForJob(items[index])
+			if strings.TrimSpace(items[index].ComicAuthor) == "" {
+				items[index].ComicAuthor = local.Author
+			}
+			if strings.TrimSpace(items[index].ComicDescription) == "" {
+				items[index].ComicDescription = local.Description
+			}
+			if len(items[index].ComicTags) == 0 && len(local.Tags) > 0 {
+				items[index].ComicTags = append([]string(nil), local.Tags...)
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -3396,6 +3583,59 @@ func (s *Server) localCoverForJob(job model.DownloadJob) string {
 		return ""
 	}
 	return s.localCoverForDir(root, folder)
+}
+
+type localJobMetadata struct {
+	Author      string
+	Description string
+	Tags        []string
+}
+
+// localMetadataForJob reads the series-level ComicInfo.xml written next to a
+// downloaded work so completed-list entries can still show author, summary and
+// tags when the download job row predates those columns.
+func (s *Server) localMetadataForJob(job model.DownloadJob) localJobMetadata {
+	root, err := s.cleanDownloadDir(job.DownloadDir)
+	if err != nil {
+		return localJobMetadata{}
+	}
+	folders := make([]string, 0, 2)
+	if filePath := strings.TrimSpace(job.FilePath); filePath != "" {
+		if folder, absErr := filepath.Abs(filepath.Dir(filePath)); absErr == nil {
+			folders = append(folders, folder)
+		}
+	}
+	if title := strings.TrimSpace(job.ComicTitle); title != "" {
+		folders = append(folders, filepath.Join(root, downloader.SafeName(title)))
+	}
+	seen := map[string]bool{}
+	for _, folder := range folders {
+		folder = filepath.Clean(folder)
+		if seen[folder] {
+			continue
+		}
+		seen[folder] = true
+		raw, readErr := os.ReadFile(filepath.Join(folder, "ComicInfo.xml"))
+		if readErr != nil {
+			continue
+		}
+		var info downloader.ComicInfo
+		if xml.Unmarshal(raw, &info) != nil {
+			continue
+		}
+		metadata := localJobMetadata{
+			Author:      strings.TrimSpace(info.Writer),
+			Description: strings.TrimSpace(info.Summary),
+		}
+		metadata.Tags = normalizeMetadataTags(strings.FieldsFunc(info.Genre, func(r rune) bool {
+			return r == ',' || r == '，' || r == ';' || r == '；'
+		}))
+		if metadata.Author == "" && metadata.Description == "" && len(metadata.Tags) == 0 {
+			continue
+		}
+		return metadata
+	}
+	return localJobMetadata{}
 }
 
 func (s *Server) localCoverForSubscription(subscription model.Subscription) string {
@@ -4944,7 +5184,25 @@ func (s *Server) settingsResponse(ctx context.Context, username string) map[stri
 		"batchIntervalMinutes":  current.BatchIntervalMinutes,
 		"convertToSimplified":   current.ConvertToSimplified,
 		"staleDays":             current.StaleDays,
+		"telegramEnabled":       current.TelegramEnabled,
+		"telegramToken":         current.TelegramToken,
+		"telegramChatIds":       current.TelegramChatIDs,
+		"telegramProxy":         current.TelegramProxy,
 	}
+}
+
+// reloadTelegram applies persisted Telegram settings to the bot service.
+func (s *Server) reloadTelegram(ctx context.Context) {
+	if s.telegram == nil {
+		return
+	}
+	current := s.loadSettings(ctx)
+	s.telegram.Configure(telegram.Config{
+		Enabled:  current.TelegramEnabled,
+		Token:    current.TelegramToken,
+		ChatIDs:  current.TelegramChatIDs,
+		ProxyURL: current.TelegramProxy,
+	})
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -4974,6 +5232,10 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		Username              string         `json:"username"`
 		CurrentPassword       string         `json:"currentPassword"`
 		NewPassword           string         `json:"newPassword"`
+		TelegramEnabled       *bool          `json:"telegramEnabled"`
+		TelegramToken         *string        `json:"telegramToken"`
+		TelegramChatIDs       []string       `json:"telegramChatIds"`
+		TelegramProxy         *string        `json:"telegramProxy"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -5181,6 +5443,42 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if payload.TelegramEnabled != nil {
+		if err := s.store.SetSetting(r.Context(), "telegram_enabled", strconv.FormatBool(*payload.TelegramEnabled)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.TelegramToken != nil {
+		if err := s.store.SetSetting(r.Context(), "telegram_token", strings.TrimSpace(*payload.TelegramToken)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.TelegramChatIDs != nil {
+		normalized := make([]string, 0, len(payload.TelegramChatIDs))
+		seen := map[string]bool{}
+		for _, value := range payload.TelegramChatIDs {
+			value = strings.TrimSpace(value)
+			if value == "" || seen[value] {
+				continue
+			}
+			seen[value] = true
+			normalized = append(normalized, value)
+		}
+		raw, _ := json.Marshal(normalized)
+		if err := s.store.SetSetting(r.Context(), "telegram_chats", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.TelegramProxy != nil {
+		if err := s.store.SetSetting(r.Context(), "telegram_proxy", strings.TrimSpace(*payload.TelegramProxy)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	s.reloadTelegram(r.Context())
 	if payload.ProxyUsername != nil || payload.ProxyPassword != nil {
 		current := s.loadSettings(r.Context())
 		proxyUsername, proxyPassword := current.ProxyUsername, current.ProxyPassword

@@ -1063,6 +1063,36 @@ func (s *Store) DeleteDownloadJob(ctx context.Context, id int64) error {
 	return err
 }
 
+// DownloadJobsByComic returns every chapter task for one work, including
+// completed and failed records, so a full refresh can clear them before
+// re-queuing the chapters from the source.
+func (s *Store) DownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
+	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []model.DownloadJob
+	for rows.Next() {
+		item, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// DeleteDownloadJobsForComic removes every chapter task for one work and
+// reports how many records were deleted.
+func (s *Store) DeleteDownloadJobsForComic(ctx context.Context, sourceID, comicID string) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM download_jobs WHERE source_id = ? AND comic_id = ?`, sourceID, comicID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) Stats(ctx context.Context) (model.Stats, error) {
 	var stats model.Stats
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions`).Scan(&stats.Subscriptions)

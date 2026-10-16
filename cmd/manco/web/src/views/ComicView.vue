@@ -5,6 +5,7 @@ import {
   BookOpen,
   CircleCheck,
   Download,
+  EyeOff,
   Languages,
   Loader2,
   Merge,
@@ -69,6 +70,11 @@ const downloadForm = ref({
 })
 
 const existingSubscription = ref(null)
+const sourceAccounts = ref({})
+const sourceDefaultDownloadDir = computed(() => {
+  const account = sourceAccounts.value[sourceId]
+  return String(account?.settings?.defaultDownloadDir || '').trim()
+})
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
@@ -127,13 +133,18 @@ onMounted(async () => {
       api.subscriptions().catch(() => ({ items: [] })),
     ])
     const source = (sourcePayload.items || []).find((item) => item.id === sourceId)
+    sourceAccounts.value = sourcePayload.accounts || {}
     isBook.value = source?.kind === 'book'
     existingSubscription.value =
       (subscriptionPayload.items || []).find((item) => {
         if (String(item.sourceId) !== String(sourceId)) return false
         return [comicId, comic.value?.id].some((id) => String(id) === String(item.comicId))
       }) || null
-    if (!lastSubscriptionDownloadDir() && subscriptionPayload.items?.length) {
+    if (sourceDefaultDownloadDir.value) {
+      // 该内容源设了默认下载位置时优先使用它。
+      subForm.value.downloadDir = sourceDefaultDownloadDir.value
+      downloadForm.value.downloadDir = sourceDefaultDownloadDir.value
+    } else if (!lastSubscriptionDownloadDir() && subscriptionPayload.items?.length) {
       const latestDownloadDir = subscriptionPayload.items[0].downloadDir || ''
       subForm.value.downloadDir = latestDownloadDir
       rememberSubscriptionDownloadDir(latestDownloadDir)
@@ -256,7 +267,7 @@ function openSubscribe() {
   error.value = ''
   subForm.value = {
     cronExpr: subForm.value.cronExpr || defaultCron(),
-    downloadDir: subForm.value.downloadDir || lastSubscriptionDownloadDir(),
+    downloadDir: sourceDefaultDownloadDir.value || subForm.value.downloadDir || lastSubscriptionDownloadDir(),
     seriesDir: '',
     convertToSimplified: true,
     chapterMarker: false,
@@ -518,21 +529,34 @@ async function downloadSelected() {
             @change="rememberSubscriptionDownloadDir"
           />
         </label>
-        <div class="subscription-toggle-grid">
-          <label class="switch-row">
-            <input v-model="subForm.chapterMarker" type="checkbox" />
-            <span>章节标符</span>
-          </label>
-          <label class="switch-row">
-            <input v-model="subForm.coverBlur" type="checkbox" />
-            <span>封面模糊</span>
-          </label>
-          <label class="switch-row">
-            <input v-model="subForm.convertToSimplified" type="checkbox" />
-            <span>繁转简</span>
-          </label>
-        </div>
         <div class="subscription-action-toggles">
+          <button
+            class="function-toggle"
+            :class="{ active: subForm.chapterMarker }"
+            type="button"
+            @click="subForm.chapterMarker = !subForm.chapterMarker"
+          >
+            <BookOpen :size="16" />
+            <span>章节标符</span>
+          </button>
+          <button
+            class="function-toggle"
+            :class="{ active: subForm.coverBlur }"
+            type="button"
+            @click="subForm.coverBlur = !subForm.coverBlur"
+          >
+            <EyeOff :size="16" />
+            <span>封面模糊</span>
+          </button>
+          <button
+            class="function-toggle"
+            :class="{ active: subForm.convertToSimplified }"
+            type="button"
+            @click="subForm.convertToSimplified = !subForm.convertToSimplified"
+          >
+            <Languages :size="16" />
+            <span>繁转简</span>
+          </button>
           <button
             class="function-toggle"
             :class="{ active: subForm.allChapters }"

@@ -29,6 +29,7 @@ import (
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/sources"
 	"github.com/hyaeve/manco/internal/store"
+	"github.com/hyaeve/manco/internal/telegram"
 )
 
 //go:embed all:web/dist
@@ -130,6 +131,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	engine := downloader.NewEngine(registry, repository, cfg.DownloadDir, cfg.MaxChapterConcurrency, cfg.MaxPageConcurrency, logger)
 	engine.SetCacheDir(filepath.Join(cfg.DataDir, "download-cache"))
 	scanner := scheduler.New(registry, repository, downloadQueue{store: repository, engine: engine}, cfg.ScanInterval, logger)
+	bot := telegram.New(logger)
 
 	assets, err := fs.Sub(embedded, "web/dist")
 	if err != nil {
@@ -150,7 +152,10 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Logger:    logger,
 		Logs:      logs,
 		Assets:    assets,
+		Telegram:  bot,
 	})
+	bot.SetApp(server)
+	scanner.SetNotifier(bot)
 	settings, err := server.Settings(ctx)
 	if err != nil {
 		logger.Printf("manco: load settings: %v", err)
@@ -158,7 +163,15 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		engine.SetSourceConcurrency(settings.SourceConcurrency)
 		engine.SetSourceSettings(server.SourceSettings(ctx))
 		engine.SetDownloadPolicy(settings.BatchSize, settings.BatchIntervalMinutes, settings.ConvertToSimplified)
+		bot.Configure(telegram.Config{
+			Enabled:  settings.TelegramEnabled,
+			Token:    settings.TelegramToken,
+			ChatIDs:  settings.TelegramChatIDs,
+			ProxyURL: settings.TelegramProxy,
+		})
 	}
+	bot.Start(ctx)
+	defer bot.Stop()
 	_ = repository.CleanupSessions(ctx, time.Now())
 	// A process restart invalidates all browser sessions, so every client has
 	// to authenticate again after the service comes back up.

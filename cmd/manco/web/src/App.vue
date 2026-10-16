@@ -412,10 +412,15 @@ function activityIcon(level) {
                   <component
                     :is="activityIcon(entry.level)"
                     :size="16"
-                    :class="entry.level === 'success' ? 'success-text' : entry.level === 'error' ? 'danger-text' : 'spin'"
+                    :class="entry.ongoing && !entry.total ? 'spin' : entry.level === 'success' ? 'success-text' : entry.level === 'error' ? 'danger-text' : ''"
                   />
                   <span>
-                    <strong>{{ entry.message }}</strong>
+                    <strong>{{ entry.comicTitle || '未命名作品' }}</strong>
+                    <em class="notification-summary">
+                      成功 {{ entry.succeeded || 0 }}
+                      <template v-if="entry.failed"> · 失败 {{ entry.failed }}</template>
+                      <template v-if="entry.pending"> · 待处理 {{ entry.pending }}</template>
+                    </em>
                     <small>{{ entry.time ? new Date(entry.time).toLocaleString() : '' }}</small>
                   </span>
                 </li>

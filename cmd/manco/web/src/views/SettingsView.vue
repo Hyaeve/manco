@@ -9,6 +9,7 @@ import {
   Loader2,
   Network,
   RefreshCw,
+  Send,
   ShieldCheck,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -35,6 +36,10 @@ const form = reactive({
   proxyPassword: '',
   staleDays: 30,
   convertToSimplified: false,
+  telegramEnabled: false,
+  telegramToken: '',
+  telegramChatIds: '',
+  telegramProxy: '',
 })
 
 onMounted(async () => {
@@ -68,6 +73,10 @@ async function load() {
     form.proxyPassword = payload.proxyPassword || ''
     form.staleDays = Number(payload.staleDays?.['*'] ?? 30)
     form.convertToSimplified = Boolean(payload.convertToSimplified)
+    form.telegramEnabled = Boolean(payload.telegramEnabled)
+    form.telegramToken = payload.telegramToken || ''
+    form.telegramChatIds = Array.isArray(payload.telegramChatIds) ? payload.telegramChatIds.join(', ') : ''
+    form.telegramProxy = payload.telegramProxy || ''
     currentVersion.value = versionPayload.version || ''
   } catch (err) {
     notify(`设置加载失败：${err.message}`, 'error')
@@ -129,6 +138,27 @@ async function saveConvertToSimplified() {
   try {
     await api.saveSettings({ convertToSimplified: form.convertToSimplified })
     notify(form.convertToSimplified ? '全局繁转简已开启' : '全局繁转简已关闭', 'success')
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    saving.value = ''
+  }
+}
+
+async function saveTelegram() {
+  saving.value = 'telegram'
+  try {
+    const chats = form.telegramChatIds
+      .split(/[,\s，、]+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+    await api.saveSettings({
+      telegramEnabled: Boolean(form.telegramEnabled),
+      telegramToken: form.telegramToken.trim(),
+      telegramChatIds: chats,
+      telegramProxy: form.telegramProxy.trim(),
+    })
+    notify(form.telegramEnabled ? 'TG 通知已开启' : 'TG 通知已关闭', 'success')
   } catch (err) {
     notify(err.message, 'error')
   } finally {
@@ -239,6 +269,45 @@ async function checkUpdate() {
           <label class="field">
             <span>密码</span>
             <PasswordInput v-model="form.proxyPassword" autocomplete="off" placeholder="代理密码" />
+          </label>
+        </div>
+      </section>
+
+      <section id="settings-telegram" class="card card-pad settings-compact-card">
+        <div class="settings-card-title">
+          <div class="inline">
+            <Send :size="17" />
+            <h2>TG 通知</h2>
+          </div>
+          <button class="btn settings-save-button" type="button" :disabled="saving === 'telegram'" @click="saveTelegram">
+            <Loader2 v-if="saving === 'telegram'" :size="15" class="spin" />
+            保存
+          </button>
+        </div>
+        <p class="muted small settings-card-help">
+          在 @BotFather 创建机器人拿到 Token，把聊天 ID 填进允许列表后即可接收例行通知，也能直接用指令查看订阅、搜索并订阅作品。
+        </p>
+        <button
+          class="function-toggle"
+          :class="{ active: form.telegramEnabled }"
+          type="button"
+          @click="form.telegramEnabled = !form.telegramEnabled"
+        >
+          <Send :size="16" />
+          <span>启用 TG 通知</span>
+        </button>
+        <div class="settings-form-stack">
+          <label class="field">
+            <span>Bot Token</span>
+            <input v-model="form.telegramToken" class="input" autocomplete="off" placeholder="123456:ABC-DEF..." />
+          </label>
+          <label class="field">
+            <span>允许的 Chat ID</span>
+            <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
+          </label>
+          <label class="field">
+            <span>TG 专用代理（可选）</span>
+            <input v-model="form.telegramProxy" class="input" placeholder="http://127.0.0.1:7890" />
           </label>
         </div>
       </section>

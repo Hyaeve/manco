@@ -2298,21 +2298,21 @@ func Descramble(data []byte, parts int) ([]byte, error) {
 	output := image.NewRGBA(image.Rect(0, 0, width, height))
 	blockSize := height / parts
 	remainder := height % parts
+	// The reference decoder walks source strips from bottom to top and appends
+	// them to the result in that order. Only the top source strip carries the
+	// remainder. Track both offsets explicitly: deriving them from the loop
+	// index gets the non-divisible cases wrong.
 	destinationY := 0
-	for index := 0; index < parts; index++ {
-		move := blockSize
-		if index == parts-1 {
-			move += remainder
+	for sourceIndex := parts - 1; sourceIndex >= 0; sourceIndex-- {
+		start := sourceIndex * blockSize
+		end := start + blockSize
+		if sourceIndex == parts-1 {
+			end += remainder
 		}
+		sourceY := start
+		move := end - start
 		if move <= 0 {
 			continue
-		}
-		// Blocks are reversed from bottom to top. The reference decoder keeps
-		// the remainder on the last (bottom) block, so every other source
-		// block is offset by it.
-		sourceY := 0
-		if index != parts-1 {
-			sourceY = (parts-index-1)*blockSize + remainder
 		}
 		sourcePoint := image.Pt(bounds.Min.X, bounds.Min.Y+sourceY)
 		destination := image.Rect(0, destinationY, width, destinationY+move)

@@ -101,6 +101,9 @@ type SourceDownloadSettings struct {
 	PageConcurrency      int `json:"pageConcurrency"`
 	BatchSize            int `json:"batchSize"`
 	BatchIntervalMinutes int `json:"batchIntervalMinutes"`
+	// DefaultDownloadDir pre-fills the download location when subscribing to a
+	// work from this source; the user can still override it per subscription.
+	DefaultDownloadDir string `json:"defaultDownloadDir,omitempty"`
 }
 
 type Stats struct {

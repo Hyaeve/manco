@@ -416,9 +416,9 @@ async function downloadAll(item) {
   try {
     const result = await api.downloadAllSubscription(item.id)
     const queued = Number(result?.queued || 0)
-    const skipped = Number(result?.skipped || 0)
+    const removedFiles = Number(result?.removedFiles || 0)
     notify(
-      [`《${item.title}》全量下载已加入 ${queued} 个章节`, skipped ? `跳过 ${skipped} 个已完成章节` : '']
+      [`《${item.title}》已清理旧记录并重新入队 ${queued} 个章节`, removedFiles ? `删除旧章节文件 ${removedFiles} 个` : '']
         .filter(Boolean)
         .join('，'),
       'success',
@@ -470,7 +470,7 @@ function batchCheck() {
 function batchDownloadAll() {
   return runBatch({
     title: '全量下载',
-    message: `确定对所选 ${selectedCount.value} 个订阅执行全量下载吗？已完成的章节会自动跳过。`,
+    message: `确定对所选 ${selectedCount.value} 个订阅执行全量下载吗？会删除成功与失败记录、删除作品目录里已存在的章节文件，然后重新拉取并覆盖。`,
     confirmText: '开始下载',
     action: (item) => api.downloadAllSubscription(item.id),
     successText: '全量下载已入队',
