@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ const (
 	maxPerSourceItems = 3
 	maxDirectItems    = 5
 	titleLimit        = 24
+	summaryLimit      = 160
 )
 
 func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
@@ -86,6 +88,8 @@ var actionAliases = map[string]string{
 	"归档": "archive",
 	"补全": "fill",
 	"刮削": "scrape",
+	"启用": "enable",
+	"禁用": "disable",
 	"全量": "full",
 	"删除": "delete",
 }
@@ -117,6 +121,8 @@ func helpText() string {
 		"检查 作品名",
 		"补全 作品名",
 		"刮削 作品名",
+		"启用 作品名",
+		"禁用 作品名",
 		"全量 作品名",
 		"归档 作品名",
 		"删除 作品名",
@@ -160,7 +166,8 @@ func (s *Service) replySubscriptions(ctx context.Context, chat string) {
 		if !item.Enabled {
 			state = "已停用"
 		}
-		lines = append(lines, fmt.Sprintf("%d. %s（%s）· %s", item.ID, item.Title, item.Source, state))
+		// 用连续序号而不是数据库 ID：以前这里是订阅主键，看起来像序号却是内部 ID。
+		lines = append(lines, fmt.Sprintf("%d. %s（%s）· %s", index+1, item.Title, item.Source, state))
 	}
 	s.sendMessage(ctx, chat, strings.Join(lines, "\n"), nil)
 }
@@ -219,6 +226,13 @@ func (s *Service) runAction(ctx context.Context, chat, action string, subscripti
 			return
 		}
 		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》缺 %d 章，已全部入队（已存在 %d 章）。", subscription.Title, queued, skipped), nil)
+	case "enable", "disable":
+		enabled := action == "enable"
+		if err := s.app.BotSetSubscriptionEnabled(ctx, subscription.ID, enabled); err != nil {
+			s.sendMessage(ctx, chat, "设置失败："+err.Error(), nil)
+			return
+		}
+		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》已%s。", subscription.Title, map[bool]string{true: "启用", false: "禁用"}[enabled]), nil)
 	case "scrape":
 		updated, err := s.app.BotScrape(ctx, subscription.ID)
 		if err != nil {
@@ -310,7 +324,19 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, sourceNa
 	s.mu.Lock()
 	s.sessions[chatID] = &session{results: entries}
 	s.mu.Unlock()
-	s.sendMessage(ctx, chat, renderResults(query, entries), resultKeyboard(entries))
+	// 记下搜索结果消息的 message_id：订阅成功后要把这条消息删掉。
+	messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
+		"chat_id":      chat,
+		"text":         renderResults(query, entries),
+		"parse_mode":   "HTML",
+		"reply_markup": resultKeyboard(entries),
+	})
+	if err != nil {
+		s.logger.Printf("telegram: send search results: %v", err)
+	}
+	s.mu.Lock()
+	s.sessions[chatID] = &session{results: entries, resultsMessageID: messageID}
+	s.mu.Unlock()
 }
 
 func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
@@ -336,16 +362,10 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		if err != nil {
 			return
 		}
-		s.replySubscribe(ctx, chatID, chat, index)
+		s.replySubscribe(ctx, chatID, chat, index, query.Message.MessageID)
 	case data == "back":
-		s.mu.RLock()
-		current := s.sessions[chatID]
-		s.mu.RUnlock()
-		if current == nil || len(current.results) == 0 {
-			s.sendMessage(ctx, chat, "没有可返回的搜索结果。", nil)
-			return
-		}
-		s.sendMessage(ctx, chat, renderResults("", current.results), resultKeyboard(current.results))
+		// 收起作品详情即可；原来的搜索结果消息还在上面，可以继续点其它项。
+		s.deleteMessage(ctx, chat, query.Message.MessageID)
 	}
 }
 
@@ -379,10 +399,26 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 			},
 		},
 	}
-	s.sendMessage(ctx, chat, strings.Join(lines, "\n"), keyboard)
+	caption := strings.Join(lines, "\n")
+	if summary := strings.TrimSpace(entry.Summary); summary != "" {
+		caption += "\n\n" + truncate(summary, summaryLimit)
+	}
+	// 有封面就带图发送；没有则退回纯文本。始终是新消息，搜索结果原样保留。
+	if cover := strings.TrimSpace(entry.Cover); cover != "" {
+		if _, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+			"chat_id":      chat,
+			"photo":        cover,
+			"caption":      caption,
+			"parse_mode":   "HTML",
+			"reply_markup": keyboard,
+		}); err == nil {
+			return
+		}
+	}
+	s.sendMessage(ctx, chat, caption, keyboard)
 }
 
-func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string, index int) {
+func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string, index int, detailMessageID int64) {
 	results := s.sessionResults(chatID)
 	if index < 0 || index >= len(results) {
 		s.sendMessage(ctx, chat, "结果已过期，请重新搜索。", nil)
@@ -394,7 +430,25 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅失败：%s", entry.Title, err.Error()), nil)
 		return
 	}
-	s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅成功，已按内容源默认下载位置开始下载。", subscription.Title), nil)
+	// 订阅完成后收起搜索结果与作品详情，只留一条结果消息。
+	s.mu.RLock()
+	resultsMessageID := int64(0)
+	if current := s.sessions[chatID]; current != nil {
+		resultsMessageID = current.resultsMessageID
+	}
+	s.mu.RUnlock()
+	s.deleteMessage(ctx, chat, resultsMessageID)
+	s.deleteMessage(ctx, chat, detailMessageID)
+	s.mu.Lock()
+	delete(s.sessions, chatID)
+	s.mu.Unlock()
+
+	// 只显示作品目录的父目录名——作品名目录由 Manco 自动补在它下面。
+	target := path.Base(strings.TrimRight(strings.TrimSpace(subscription.DownloadDir), "/"))
+	if target == "" || target == "." || target == "/" {
+		target = strings.TrimSpace(subscription.DownloadDir)
+	}
+	s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅成功，开始下载到 %s", subscription.Title, target), nil)
 }
 
 func newResultEntry(source BotSource, comic model.Comic) resultEntry {
@@ -405,6 +459,8 @@ func newResultEntry(source BotSource, comic model.Comic) resultEntry {
 		Title:      comic.Title,
 		Author:     comic.Author,
 		Latest:     comic.LatestChapterTitle,
+		Cover:      comic.Cover,
+		Summary:    comic.Description,
 	}
 }
 

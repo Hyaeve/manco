@@ -3360,7 +3360,8 @@
   height: 24px;
   padding: 0 7px;
   border-radius: 999px;
-  background: #e07a2f;
+  /* 章数胶囊：提高橘色饱和度，比卡片描边更醒目。 */
+  background: #f26a12;
   color: #fff;
   font-size: 12px;
   font-weight: 600;
@@ -4169,7 +4170,8 @@ svg.source-editor-icon {
 .page-scroll::-webkit-scrollbar-thumb:hover,
 .thin-scroll-area::-webkit-scrollbar-thumb:hover,
 .modal-body::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--primary) 12%, #eef1f5);
+  /* 悬浮/拖动时用品牌橘色，之前混出来的灰黄还是偏深。 */
+  background: rgba(224, 122, 47, 0.72);
 }
 
 .local-detail-view .tag-pill {
@@ -4833,7 +4835,13 @@ svg.source-editor-icon {
 .subscription-card .subscription-cover.blurred:hover img,
 .subscription-card .subscription-cover.blurred:focus-within img {
   filter: none;
-  transform: scale(1.04);
+  transform: scale(1.12);
+}
+
+/* 模糊封面悬浮卡片时同样要有放大动作（之前静态模糊规则把它压掉了）。 */
+.subscription-card:hover .subscription-cover.blurred img,
+.subscription-card:focus-within .subscription-cover.blurred img {
+  transform: scale(1.12);
 }
 
 /* 悬浮任意订阅卡片时给一层橘色描边，与选中态的橘色保持一致。 */
@@ -4909,4 +4917,81 @@ svg.source-editor-icon {
   display: flex;
   justify-content: center;
   padding: 14px 0 4px;
+}
+
+/* ===== v0.5.8：筛选栏定稿 ===== */
+/* 不横向滚动、不因下拉展开而变形；每颗胶囊宽度不变，文字过长省略；
+   层级抬起来，避免被下面作品网格盖住。 */
+.source-filter-grid {
+  position: relative;
+  z-index: 5;
+  flex-wrap: wrap;
+  overflow: visible;
+  padding-bottom: 0;
+  scrollbar-width: none;
+}
+
+.source-filter-grid::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.source-filter-grid .filter-chip,
+.source-filter-grid .sort-chip {
+  position: relative;
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 168px;
+  overflow: hidden;
+}
+
+.source-filter-grid .rounded-select,
+.source-filter-grid .rounded-select-trigger {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.source-filter-grid .select-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.source-filter-grid .select-label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 被禁用的订阅卡片整体置灰，和启用状态一眼区分。 */
+.settings-about-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 280px;
+}
+
+/* 关于卡片右下角放橘猫图标水印，做成卡通元素而不是纯文字卡片。 */
+.settings-about-card::after {
+  content: '';
+  position: absolute;
+  right: -26px;
+  bottom: -30px;
+  width: 200px;
+  height: 200px;
+  background-image: url('/logo-icon.png');
+  background-repeat: no-repeat;
+  background-size: contain;
+  opacity: 0.16;
+  pointer-events: none;
+}
+
+.subscription-card.disabled {
+  opacity: 0.58;
+  filter: grayscale(0.85);
+}
+
+.subscription-card.disabled:hover {
+  opacity: 0.75;
 }

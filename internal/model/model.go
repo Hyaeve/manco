@@ -52,9 +52,12 @@ type Subscription struct {
 	ComicStatus         string     `json:"comicStatus,omitempty"`
 	LastNewChapterAt    *time.Time `json:"lastNewChapterAt,omitempty"`
 	DisabledAt          *time.Time `json:"disabledAt,omitempty"`
-	CompletedAt         *time.Time `json:"completedAt,omitempty"`
-	ArchivedAt          *time.Time `json:"archivedAt,omitempty"`
-	ArchiveReason       string     `json:"archiveReason,omitempty"`
+	// Temporary 表示这条订阅是「点了一次下载」临时生成的卡片：任务跑完就
+	// 自动移除卡片，已下载的文件保留。
+	Temporary     bool       `json:"temporary,omitempty"`
+	CompletedAt   *time.Time `json:"completedAt,omitempty"`
+	ArchivedAt    *time.Time `json:"archivedAt,omitempty"`
+	ArchiveReason string     `json:"archiveReason,omitempty"`
 }
 
 type DownloadJob struct {

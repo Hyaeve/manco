@@ -40,8 +40,8 @@ const form = reactive({
   telegramEnabled: false,
   telegramToken: '',
   telegramChatIds: '',
-  maxChapterConcurrency: 2,
-  maxPageConcurrency: 4,
+  maxChapterConcurrency: 10,
+  maxPageConcurrency: 2,
   batchSize: 5,
   batchIntervalMinutes: 5,
 })
@@ -80,8 +80,8 @@ async function load() {
     form.telegramEnabled = Boolean(payload.telegramEnabled)
     form.telegramToken = payload.telegramToken || ''
     form.telegramChatIds = Array.isArray(payload.telegramChatIds) ? payload.telegramChatIds.join(', ') : ''
-    form.maxChapterConcurrency = Number(payload.maxChapterConcurrency) || 2
-    form.maxPageConcurrency = Number(payload.maxPageConcurrency) || 4
+    form.maxChapterConcurrency = Number(payload.maxChapterConcurrency) || 10
+    form.maxPageConcurrency = Number(payload.maxPageConcurrency) || 2
     form.batchSize = Number(payload.batchSize) || 0
     form.batchIntervalMinutes = Number(payload.batchIntervalMinutes) || 0
     currentVersion.value = versionPayload.version || ''
@@ -298,40 +298,6 @@ async function checkUpdate() {
         </div>
       </section>
 
-      <section id="settings-telegram" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <Send :size="17" />
-            <h2>TG 通知</h2>
-          </div>
-          <button class="btn settings-save-button" type="button" :disabled="saving === 'telegram'" @click="saveTelegram">
-            <Loader2 v-if="saving === 'telegram'" :size="15" class="spin" />
-            保存
-          </button>
-        </div>
-        <p class="muted small settings-card-help">
-          在 @BotFather 创建机器人拿到 Token，把聊天 ID 填进允许列表后即可接收例行通知，也能直接用指令查看订阅、搜索并订阅作品。网络走上面「代理」栏目里的系统代理设置。
-        </p>
-        <button
-          class="function-toggle"
-          :class="{ active: form.telegramEnabled }"
-          type="button"
-          @click="form.telegramEnabled = !form.telegramEnabled"
-        >
-          <Send :size="16" />
-          <span>启用 TG 通知</span>
-        </button>
-        <div class="settings-form-stack" @keydown.enter.prevent="saveTelegram">
-          <label class="field">
-            <span>Bot Token</span>
-            <input v-model="form.telegramToken" class="input" autocomplete="off" placeholder="123456:ABC-DEF..." />
-          </label>
-          <label class="field">
-            <span>允许的 Chat ID</span>
-            <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
-          </label>
-        </div>
-      </section>
     </div>
 
     <div class="settings-pair settings-bottom-pair">
@@ -366,6 +332,40 @@ async function checkUpdate() {
             <span>分钟</span>
           </div>
           <p class="muted small">暂停按内容源全局生效，队列里其它内容源不受影响；填 0 表示不暂停。</p>
+        </div>
+      </section>
+      <section id="settings-telegram" class="card card-pad settings-compact-card">
+        <div class="settings-card-title">
+          <div class="inline">
+            <Send :size="17" />
+            <h2>TG 通知</h2>
+          </div>
+          <button class="btn settings-save-button" type="button" :disabled="saving === 'telegram'" @click="saveTelegram">
+            <Loader2 v-if="saving === 'telegram'" :size="15" class="spin" />
+            保存
+          </button>
+        </div>
+        <p class="muted small settings-card-help">
+          在 @BotFather 创建机器人拿到 Token，把聊天 ID 填进允许列表后即可接收例行通知，也能直接用指令查看订阅、搜索并订阅作品。网络走「代理」栏目里的系统代理设置。
+        </p>
+        <div class="settings-form-stack" @keydown.enter.prevent="saveTelegram">
+          <label class="field">
+            <span>Bot Token</span>
+            <input v-model="form.telegramToken" class="input" autocomplete="off" placeholder="123456:ABC-DEF..." />
+          </label>
+          <label class="field">
+            <span>允许的 Chat ID</span>
+            <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
+          </label>
+          <button
+            class="function-toggle"
+            :class="{ active: form.telegramEnabled }"
+            type="button"
+            @click="form.telegramEnabled = !form.telegramEnabled"
+          >
+            <Send :size="16" />
+            <span>启用 TG 通知</span>
+          </button>
         </div>
       </section>
     </div>
@@ -411,7 +411,7 @@ async function checkUpdate() {
         </div>
       </section>
 
-      <section id="settings-about" class="card card-pad settings-compact-card">
+      <section id="settings-about" class="card card-pad settings-compact-card settings-about-card">
         <div class="settings-card-title">
           <div class="inline">
             <CheckCircle2 :size="17" />

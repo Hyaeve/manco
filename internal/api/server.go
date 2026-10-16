@@ -57,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.5.8"
+	appVersion    = "v0.5.9"
 )
 
 var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
@@ -2792,6 +2792,8 @@ func (s *Server) handleDiscoverCover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	// 下载结束后自动移除临时卡片（文件保留），顺带保证列表里的状态是干净的。
+	s.pruneTemporarySubscriptions(r.Context())
 	items, err := s.store.ListSubscriptions(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -2818,6 +2820,43 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 }
 
 // persistSubscriptionsIfChanged 只在内容变化时重写 configstore 的订阅快照。
+// pruneTemporarySubscriptions 移除「临时下载卡片」：该作品不再有下载/排队任务
+// 时删掉卡片，已经下载到本地的文件保持不动。
+func (s *Server) pruneTemporarySubscriptions(ctx context.Context) {
+	items, err := s.store.ListSubscriptions(ctx)
+	if err != nil {
+		return
+	}
+	for _, item := range items {
+		if !item.Temporary {
+			continue
+		}
+		jobs, err := s.store.UnfinishedDownloadJobsByComic(ctx, item.SourceID, item.ComicID)
+		if err != nil || len(jobs) > 0 {
+			continue
+		}
+		if err := s.store.DeleteSubscription(ctx, item.ID); err != nil {
+			s.logger.Printf("api: prune temporary subscription %d: %v", item.ID, err)
+		}
+	}
+}
+
+// cancelUnfinishedJobs 取消某部作品正在下载/排队的任务并删掉这些任务记录；
+// 已下载文件与已完成记录都不动。
+func (s *Server) cancelUnfinishedJobs(ctx context.Context, sub model.Subscription) {
+	jobs, err := s.store.UnfinishedDownloadJobsByComic(ctx, sub.SourceID, sub.ComicID)
+	if err != nil {
+		s.logger.Printf("api: list unfinished jobs for %s/%s: %v", sub.SourceID, sub.ComicID, err)
+		return
+	}
+	for _, job := range jobs {
+		s.engine.Cancel(job.ID)
+		if err := s.store.DeleteDownloadJob(ctx, job.ID); err != nil {
+			s.logger.Printf("api: delete unfinished job %d: %v", job.ID, err)
+		}
+	}
+}
+
 // 订阅页每 5 秒轮询一次，之前每次都要整份写盘。
 func (s *Server) persistSubscriptionsIfChanged(ctx context.Context, items []model.Subscription) {
 	raw, err := json.Marshal(items)
@@ -3507,6 +3546,13 @@ func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
 		return
 	}
+	subscription, err := s.store.Subscription(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "订阅不存在")
+		return
+	}
+	// 只清掉还在下载/排队的任务，已下载的文件和完成记录都保留。
+	s.cancelUnfinishedJobs(r.Context(), subscription)
 	if err := s.store.DeleteSubscription(r.Context(), id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -4109,8 +4155,33 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			created = append(created, saved)
 		}
 	}
-	// 作品详情页直接「下载」只产生下载任务，不再顺手创建订阅：订阅清单应该
-	// 只收录用户显式订阅过的作品。要追更请走订阅任务设置。
+	// 直接「下载」会临时出现在订阅清单里（方便看进度、也能中途取消）。任务全部
+	// 结束后由 pruneTemporarySubscriptions 移除卡片，已下载文件保留；如果这部
+	// 作品本来就有正式订阅，则不动它。
+	if len(created) > 0 {
+		if _, subErr := s.store.SubscriptionByComic(r.Context(), payload.SourceID, payload.ComicID); errors.Is(subErr, store.ErrNotFound) {
+			lastChapter := normalizedChapters[len(normalizedChapters)-1]
+			if _, err := s.store.UpsertSubscription(r.Context(), model.Subscription{
+				SourceID:            payload.SourceID,
+				ComicID:             payload.ComicID,
+				Title:               title,
+				Author:              strings.TrimSpace(payload.ComicAuthor),
+				SeriesDir:           seriesDir,
+				Cover:               payload.ComicCover,
+				DownloadDir:         downloadDir,
+				Enabled:             true,
+				ConvertToSimplified: convertToSimplified,
+				ChapterMarker:       chapterMarker,
+				CoverBlur:           payload.CoverBlur != nil && *payload.CoverBlur,
+				LastChapterID:       lastChapter.ID,
+				LastChapterTitle:    source.FirstNonEmpty(lastChapter.Title, lastChapter.ID),
+				LastChapterOrder:    lastChapter.Order,
+				Temporary:           true,
+			}); err != nil {
+				s.logger.Printf("api: temporary subscription: %v", err)
+			}
+		}
+	}
 	s.engine.Notify()
 	writeJSON(w, http.StatusOK, map[string]any{"items": created, "queued": queuedCount, "skipped": skippedCount})
 }

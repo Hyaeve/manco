@@ -13,6 +13,7 @@ import {
   Loader2,
   MoreVertical,
   Pencil,
+  Power,
   RefreshCcw,
   RefreshCw,
   Rss,
@@ -381,7 +382,7 @@ async function remove(item) {
   openMenu.value = 0
   const confirmed = await askConfirm({
     title: '删除订阅',
-    message: `确定删除订阅「${item.title}」吗？下载文件和任务记录不会被自动删除。`,
+    message: `确定删除订阅「${item.title}」吗？还在下载和排队的任务会被取消，已下载的文件会保留。`,
     confirmText: '删除',
     danger: true,
   })
@@ -528,7 +529,6 @@ async function runBatch({ title, message, confirmText, danger, action, successTe
     }
   } finally {
     batchBusy.value = false
-    clearSubscriptionSelection()
   }
   notify(failed ? `${successText}：成功 ${done} 项，失败 ${failed} 项` : `${successText}：共 ${done} 项`, failed ? 'warning' : 'success')
   await load(true)
@@ -565,6 +565,19 @@ function batchFill() {
 }
 
 // 刮削：重新拉取订阅源的元数据，覆盖本地已有的 ComicInfo.xml / series.json / cover。
+// 批量启用/禁用：选中的里只要还有禁用的就统一启用，否则统一禁用。
+function batchToggleEnabled() {
+  const rows = selectedItems.value.slice()
+  const enable = rows.some((item) => !item.enabled)
+  return runBatch({
+    title: enable ? '启用订阅' : '禁用订阅',
+    message: `确定${enable ? '启用' : '禁用'}所选 ${rows.length} 个订阅吗？${enable ? '' : '禁用后不再检查更新与自动下载。'}`,
+    confirmText: enable ? '启用' : '禁用',
+    action: (item) => api.updateSubscription(item.id, { enabled: enable }),
+    successText: enable ? '启用完成' : '禁用完成',
+  })
+}
+
 function batchScrape() {
   return runBatch({
     title: '刮削元数据',
@@ -588,7 +601,7 @@ function batchArchive() {
 function batchDelete() {
   return runBatch({
     title: '删除订阅',
-    message: `确定删除所选 ${selectedCount.value} 个订阅吗？下载文件和任务记录不会被自动删除。`,
+    message: `确定删除所选 ${selectedCount.value} 个订阅吗？还在下载和排队的任务会被取消，已下载的文件会保留。`,
     confirmText: '删除',
     danger: true,
     action: (item) => api.deleteSubscription(item.id),
@@ -741,6 +754,9 @@ function batchDelete() {
             <button class="dropdown-item" type="button" @click="fillMissing(item)">
               <ListChecks :size="15" /> 补全
             </button>
+            <button class="dropdown-item" type="button" @click="toggleEnabled(item)">
+              <Power :size="15" /> {{ item.enabled ? '禁用' : '启用' }}
+            </button>
             <button class="dropdown-item" type="button" @click="archive(item)">
               <Archive :size="15" /> 归档
             </button>
@@ -831,6 +847,10 @@ function batchDelete() {
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchScrape">
       <Sparkles :size="14" />
       刮削
+    </button>
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchToggleEnabled">
+      <Power :size="14" />
+      启用/禁用
     </button>
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchArchive">
       <Archive :size="14" />

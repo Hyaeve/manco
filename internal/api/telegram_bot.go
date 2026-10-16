@@ -188,6 +188,19 @@ func (s *Server) BotFill(ctx context.Context, subscriptionID int64) (int, int, e
 	return s.scheduler.QueueAll(ctx, subscription)
 }
 
+// BotSetSubscriptionEnabled 切换订阅的启用/禁用状态。
+func (s *Server) BotSetSubscriptionEnabled(ctx context.Context, subscriptionID int64, enabled bool) error {
+	subscription, err := s.store.Subscription(ctx, subscriptionID)
+	if err != nil {
+		return err
+	}
+	if err := s.store.UpdateSubscription(ctx, subscriptionID, enabled, subscription.AutoDownload, subscription.CronExpr); err != nil {
+		return err
+	}
+	_ = s.configs.PersistSubscriptions(ctx, s.store)
+	return nil
+}
+
 // BotScrape re-fetches the source metadata and overwrites the local
 // ComicInfo.xml / series.json / cover files of an already downloaded work.
 func (s *Server) BotScrape(ctx context.Context, subscriptionID int64) (bool, error) {

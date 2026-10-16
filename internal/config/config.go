@@ -34,8 +34,8 @@ func Load() (Config, error) {
 		DownloadDir:           env("MANCO_DOWNLOAD_DIR", "downloads"),
 		SourceRepo:            env("MANCO_SOURCE_REPO", ""),
 		ScanInterval:          durationEnv("MANCO_SCAN_INTERVAL", 30*time.Minute),
-		MaxChapterConcurrency: intEnv("MANCO_MAX_CHAPTER_CONCURRENCY", 2),
-		MaxPageConcurrency:    intEnv("MANCO_MAX_PAGE_CONCURRENCY", 4),
+		MaxChapterConcurrency: intEnv("MANCO_MAX_CHAPTER_CONCURRENCY", 10),
+		MaxPageConcurrency:    intEnv("MANCO_MAX_PAGE_CONCURRENCY", 2),
 		CookieSecure:          boolEnv("MANCO_COOKIE_SECURE", false),
 	}
 	if cfg.MaxChapterConcurrency < 1 {

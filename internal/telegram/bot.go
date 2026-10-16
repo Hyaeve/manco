@@ -32,6 +32,7 @@ type App interface {
 	BotArchive(ctx context.Context, subscriptionID int64) error
 	BotFill(ctx context.Context, subscriptionID int64) (int, int, error)
 	BotScrape(ctx context.Context, subscriptionID int64) (bool, error)
+	BotSetSubscriptionEnabled(ctx context.Context, subscriptionID int64, enabled bool) error
 	BotFullDownload(ctx context.Context, subscriptionID int64) (int, error)
 	BotDelete(ctx context.Context, subscriptionID int64) error
 }
@@ -113,6 +114,8 @@ type Service struct {
 
 type session struct {
 	results []resultEntry
+	// 搜索结果的 message_id：订阅成功后要把那条消息删掉。
+	resultsMessageID int64
 }
 
 type resultEntry struct {
@@ -122,6 +125,62 @@ type resultEntry struct {
 	Title      string
 	Author     string
 	Latest     string
+	Cover      string
+	Summary    string
+}
+
+// callMethod 调用一个 Bot API 方法并返回 result.message_id（没有则返回 0）。
+// sendMessage / sendPhoto / deleteMessage 的返回信封是同一套结构。
+func (s *Service) callMethod(ctx context.Context, method string, payload map[string]any) (int64, error) {
+	s.mu.RLock()
+	token := s.cfg.Token
+	s.mu.RUnlock()
+	if token == "" {
+		return 0, errors.New("telegram token 未配置")
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/%s", token, method)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(encoded)))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := s.client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return 0, err
+	}
+	var envelope struct {
+		OK          bool   `json:"ok"`
+		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return 0, err
+	}
+	if !envelope.OK {
+		return 0, fmt.Errorf("telegram %s: %s", method, strings.TrimSpace(envelope.Description))
+	}
+	return envelope.Result.MessageID, nil
+}
+
+// deleteMessage 删除一条消息（用户按「返回」时收起作品详情）。
+func (s *Service) deleteMessage(ctx context.Context, chat string, messageID int64) {
+	if messageID == 0 {
+		return
+	}
+	if _, err := s.callMethod(ctx, "deleteMessage", map[string]any{"chat_id": chat, "message_id": messageID}); err != nil {
+		s.logger.Printf("telegram: deleteMessage: %v", err)
+	}
 }
 
 // New creates a bot service. The app binding is set later with SetApp so the
@@ -207,6 +266,37 @@ func (s *Service) Start(ctx context.Context) {
 	s.started = true
 	s.mu.Unlock()
 	go s.loop(ctx)
+	go s.registerCommands(ctx)
+}
+
+// registerCommands 把英文快捷指令注册到 Telegram，客户端才会在输入框旁显示
+// 命令菜单（以前完全没调 setMyCommands，所以看不到任何快捷指令）。
+func (s *Service) registerCommands(ctx context.Context) {
+	s.mu.RLock()
+	token := s.cfg.Token
+	s.mu.RUnlock()
+	if token == "" {
+		return
+	}
+	payload := `{"commands":[` +
+		`{"command":"start","description":"开始 / 查看帮助"},` +
+		`{"command":"subscriptions","description":"查看订阅清单（检查/补全/启用/禁用）"},` +
+		`{"command":"sources","description":"查看已添加内容源"},` +
+		`{"command":"s","description":"搜索作品，例如 /s 海贼王"}` +
+		`]}`
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", token)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))
+	if err != nil {
+		return
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := s.client.Do(request)
+	if err != nil {
+		s.logger.Printf("telegram: setMyCommands: %v", err)
+		return
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 }
 
 // Stop terminates polling.

@@ -167,6 +167,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "subscriptions", "cron_expr", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "subscriptions", "temporary", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	for _, column := range []struct {
 		name        string
 		declaration string
@@ -685,8 +688,8 @@ func (s *Store) DeleteExtensionCandidatesForRepository(ctx context.Context, repo
 func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, temporary)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
 			chapter_marker = excluded.chapter_marker,
 			cover_blur = excluded.cover_blur,
@@ -707,8 +710,9 @@ func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) 
 			disabled_at = NULL,
 			archived_at = NULL,
 			archive_reason = '',
+			temporary = excluded.temporary,
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus)
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.Temporary)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -724,7 +728,8 @@ func (s *Store) Subscription(ctx context.Context, id int64) (model.Subscription,
 }
 
 func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NULL ORDER BY updated_at DESC, id DESC`)
+	// 订阅清单按订阅先后排序（最早 → 最新），和本地仓库的目录胶囊、TG 列表一致。
+	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NULL ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -740,7 +745,7 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 	return subscriptions, rows.Err()
 }
 
-const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at FROM subscriptions`
+const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary FROM subscriptions`
 
 // ListArchivedSubscriptions 返回归档集里的订阅：按归档时间倒序，最近归档的排在最前。
 func (s *Store) ListArchivedSubscriptions(ctx context.Context) ([]model.Subscription, error) {
@@ -815,7 +820,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
-	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt)
+	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Subscription{}, ErrNotFound
 	}
@@ -978,7 +983,10 @@ func (s *Store) DownloadJobPage(ctx context.Context, status string, limit, offse
 		offset = 0
 	}
 	where := `status <> 'completed'`
-	order := `CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id DESC`
+	// 同一状态内：排队/下载中按 id 升序（先入先出，和实际执行顺序一致），
+	// 失败记录才用 id 降序把最新的放前面。之前统一 id DESC，导致手动「全量/
+	// 检查/补全/刮削」新入队的任务显示在列表最前面，看起来像插队。
+	order := `CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, CASE WHEN status IN ('failed', 'canceled') THEN id ELSE -id END DESC`
 	if strings.EqualFold(strings.TrimSpace(status), "completed") {
 		where = `status = 'completed'`
 		order = `COALESCE(finished_at, updated_at, created_at) DESC, id DESC`
@@ -1014,7 +1022,7 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 		SELECT * FROM (
 			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status NOT IN ('completed', 'failed', 'canceled')
-			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id DESC
+			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id ASC
 			LIMIT ?
 		)
 		UNION ALL
@@ -1148,6 +1156,27 @@ func (s *Store) ActivateDueRetries(ctx context.Context, now time.Time) (int64, e
 func (s *Store) UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE download_jobs SET completed_pages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, completedPages, id)
 	return err
+}
+
+// UnfinishedDownloadJobsByComic 返回某部作品还在下载或排队中的任务。删除订阅
+// 卡片时用它决定要取消哪些任务，也用来判断临时卡片是否可以移除。
+func (s *Store) UnfinishedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
+	rows, err := s.db.QueryContext(ctx, jobSelect+`
+		WHERE source_id = ? AND comic_id = ? AND status IN ('queued', 'running', 'waiting', 'paused')
+		ORDER BY id ASC`, sourceID, comicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []model.DownloadJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
 }
 
 func (s *Store) DeleteDownloadJob(ctx context.Context, id int64) error {
