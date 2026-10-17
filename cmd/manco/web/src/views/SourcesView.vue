@@ -254,6 +254,7 @@ async function load() {
       const settings = account.settings || {}
       if (!forms[item.id]) {
         forms[item.id] = reactive({
+      name: item.name || '',
           username: account.username || '',
           password: account.password || '',
           cookie: '',
@@ -818,6 +819,11 @@ async function saveSource(item, login = false) {
       payload.reloginDays = Number.isFinite(days) && days > 0 ? Math.round(days) : 7
     }
     await api.saveAccount(item.id, payload)
+    // 非内置来源支持自定义显示名称（插件源加进来后名字往往很长）。
+    const nextName = String(form.name || '').trim()
+    if (!item.builtin && nextName && nextName !== item.name) {
+      await api.renameCustomSource(item.id, nextName)
+    }
     form.cookie = ''
     notify(login ? `${item.name} 登录成功，设置已保存` : `${item.name} 设置已保存`, 'success')
     editorOpen.value = false
@@ -1856,7 +1862,11 @@ function onDragEnd() {
       </div>
       <div class="modal-body">
         <section class="source-editor-section">
-          <h3>{{ isPluginSource(editorSource) ? '解析器账号与设置' : '网站与凭据' }}</h3>
+            <label v-if="!editorSource.builtin" class="field">
+              <span>内容源名称</span>
+              <input v-model="forms[editorSource.id].name" class="input" placeholder="自定义显示名称" />
+            </label>
+            <h3>{{ isPluginSource(editorSource) ? '解析器账号与设置' : '网站与凭据' }}</h3>
           <template v-if="isPluginSource(editorSource)">
             <div v-if="pluginAuthLoading || pluginPrefLoading" class="inline muted small">
               <Loader2 :size="15" class="spin" />

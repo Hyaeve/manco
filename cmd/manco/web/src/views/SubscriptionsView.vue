@@ -769,10 +769,6 @@ function batchDelete() {
             >
               {{ cardTitle(item) }}
             </ContentLink>
-            <!-- 内容源放在这一行最右边，括号里跟在来源名后面的是启用状态圆点。 -->
-            <span class="subscription-source-name">
-              （{{ sourceLabel(item) }}<i class="subscription-status-dot" :class="{ off: !item.enabled }"></i>）
-            </span>
           </div>
           <span class="subscription-sub">{{ item.author || '未知作者' }}</span>
           <span class="subscription-sub">

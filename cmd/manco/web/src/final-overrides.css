@@ -5010,6 +5010,14 @@ svg.source-editor-icon {
 /* 三点菜单：默认向上弹；上方空间不够时加 .opens-down 改为向下弹。 */
 /* ===== v0.6.1：下拉选择器配色、页面浮入与侧栏果冻动画 ===== */
 /* 本地仓库：目录胶囊与排序选择器同一行，排序贴在最右边。 */
+/* 探索发现来源胶囊：最多 5 个汉字宽，超出省略。 */
+.discover-source-strip button {
+  max-width: 5em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .local-root-row {
   display: flex;
   align-items: center;
@@ -5055,12 +5063,13 @@ svg.source-editor-icon {
   }
 }
 
-.content-scroll > * {
+/* 切页面时由 App.vue 加上 .page-enter 重播一次（KeepAlive 缓存下动画不会自动重播）。 */
+.content-scroll.page-enter > * {
   animation: manco-float-in 0.32s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .content-scroll > * {
+  .content-scroll.page-enter > * {
     animation: none;
   }
 }

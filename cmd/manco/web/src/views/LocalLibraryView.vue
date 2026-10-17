@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   ArrowDown,
   ArrowUp,

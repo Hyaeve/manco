@@ -56,6 +56,8 @@ export const api = {
   customSourceConfig: (id) => request(`/api/custom-sources/${encodeURIComponent(id)}`),
   updateCustomSource: (id, payload) =>
     request(`/api/custom-sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  renameCustomSource: (id, name) =>
+    request(`/api/custom-sources/${encodeURIComponent(id)}/name`, { method: 'PUT', body: JSON.stringify({ name }) }),
   deleteCustomSource: (id) =>
     request(`/api/custom-sources/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   updateSource: (id, payload) =>

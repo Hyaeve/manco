@@ -65,6 +65,9 @@ const menuOpen = ref(false)
 const openMenu = ref('')
 const activityOpen = ref(false)
 const activityItems = ref([])
+// 切页面时给内容区加一次浮入动画的类（KeepAlive 缓存下动画不会自动重播）。
+const pageAnimating = ref(false)
+let pageAnimTimer = 0
 // 通知列表分片渲染：先 12 条，滚到底再追加，避免一次性铺满 DOM。
 const ACTIVITY_PAGE_SIZE = 12
 const activityRenderLimit = ref(ACTIVITY_PAGE_SIZE)
@@ -178,6 +181,14 @@ watch(
     menuOpen.value = false
     openMenu.value = ''
     activityOpen.value = false
+    // 每次切页面重播一次浮入动画（KeepAlive 缓存的视图不会自己重新挂载）。
+    pageAnimating.value = false
+    window.clearTimeout(pageAnimTimer)
+    await nextTick()
+    pageAnimating.value = true
+    pageAnimTimer = window.setTimeout(() => {
+      pageAnimating.value = false
+    }, 400)
     if (fromName !== toName) {
       await nextTick()
       restoreScrollPosition()
@@ -466,7 +477,7 @@ function activityIcon(level) {
           </div>
         </div>
       </header>
-      <main class="content-scroll" :class="{ 'logs-page': route.name === 'logs' }">
+    <main class="content-scroll" :class="{ 'logs-page': route.name === 'logs', 'page-enter': pageAnimating }">
         <div class="page-content">
           <RouterView v-slot="{ Component }">
             <KeepAlive :include="cachedViews">

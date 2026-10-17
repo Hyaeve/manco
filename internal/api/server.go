@@ -57,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.1"
+	appVersion    = "v0.6.2"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -331,6 +331,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/custom-sources", s.requireAuth(s.handleCreateCustomSource))
 	mux.HandleFunc("GET /api/custom-sources/{id}", s.requireAuth(s.handleGetCustomSource))
 	mux.HandleFunc("PUT /api/custom-sources/{id}", s.requireAuth(s.handleUpdateCustomSource))
+	mux.HandleFunc("PUT /api/custom-sources/{id}/name", s.requireAuth(s.handleRenameCustomSource))
 	mux.HandleFunc("DELETE /api/custom-sources/{id}", s.requireAuth(s.handleDeleteCustomSource))
 	mux.HandleFunc("PATCH /api/sources/{id}", s.requireAuth(s.handleUpdateSource))
 	mux.HandleFunc("PUT /api/sources/order", s.requireAuth(s.handleSourceOrder))
@@ -1527,7 +1528,12 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if len(sources) == 0 {
-		writeError(w, http.StatusBadGateway, "该扩展没有新增可添加的内容源")
+		// 差集为空通常是因为这个扩展之前已经装过（来源已经躺在运行时里），
+		// 这时退回「运行时全部来源里还没被添加过的那些」，不要误报失败。
+		sources = s.pendingPluginSources(r.Context())
+	}
+	if len(sources) == 0 {
+		writeError(w, http.StatusBadGateway, "插件未声明任何可用内容源")
 		return
 	}
 	candidates := make([]map[string]any, 0, len(sources))
@@ -1831,6 +1837,37 @@ func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.
 // Reading a repository's candidate list requires installing its extensions, so
 // without this the sidecar would keep loading every enumerated extension on
 // every restart, which is what made the add-source dialog slow and heavy.
+// pendingPluginSources 返回插件运行时里目前声明、但还没被添加成内容源的那批
+// 来源。探测式枚举的差集为空时用它兜底（扩展之前已经装过的情况）。
+func (s *Server) pendingPluginSources(ctx context.Context) []pluginruntime.Source {
+	if s.runtime == nil {
+		return nil
+	}
+	all, err := s.runtime.Sources(ctx)
+	if err != nil {
+		s.logger.Printf("api: list runtime sources: %v", err)
+		return nil
+	}
+	added := map[string]bool{}
+	if items, err := s.store.ListCustomSources(ctx); err == nil {
+		for _, item := range items {
+			var config pluginruntime.Config
+			if json.Unmarshal(item.Config, &config) == nil && strings.TrimSpace(config.SourceName) != "" {
+				added[strings.ToLower(strings.TrimSpace(config.SourceName))] = true
+			}
+		}
+	}
+	result := make([]pluginruntime.Source, 0, len(all))
+	for _, item := range all {
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		if name == "" || added[name] {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
 func (s *Server) handlePrunePlugins(w http.ResponseWriter, r *http.Request) {
 	removed, err := s.PruneUnusedPlugins(r.Context())
 	if err != nil {
@@ -1929,6 +1966,41 @@ func (s *Server) handleCreateCustomSource(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleUpdateCustomSource(w http.ResponseWriter, r *http.Request) {
 	s.saveCustomSource(w, r, strings.ToLower(strings.TrimSpace(r.PathValue("id"))))
+}
+
+// handleRenameCustomSource 只改非内置来源的显示名称，不影响来源 ID、配置与
+// 运行时路由；插件源加进来时通常带很长的站点名，允许用户改成自己的叫法。
+func (s *Server) handleRenameCustomSource(w http.ResponseWriter, r *http.Request) {
+	id := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	item, err := s.store.CustomSource(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "自定义源不存在")
+		return
+	}
+	var payload struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "名称不能为空")
+		return
+	}
+	item.Name = name
+	saved, err := s.store.UpsertCustomSource(r.Context(), item)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.registry.ReloadCustomSources(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.configs.PersistSources(r.Context(), s.store)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": saved})
 }
 
 func (s *Server) handleGetCustomSource(w http.ResponseWriter, r *http.Request) {

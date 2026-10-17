@@ -250,12 +250,12 @@ function scrollStrip(direction) {
 
 function handleStripWheel(event) {
   const element = sourceStripRef.value
-  if (!element || element.scrollWidth <= element.clientWidth) return
+  if (!element) return
+  // 悬停在这一行时滚轮只用于横向滚动，到顶/到底也不再带动整页上下滚。
+  event.preventDefault()
+  if (element.scrollWidth <= element.clientWidth) return
   const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
   if (delta === 0) return
-  if (delta < 0 && element.scrollLeft <= 0) return
-  if (delta > 0 && element.scrollLeft + element.clientWidth >= element.scrollWidth - 1) return
-  event.preventDefault()
   element.scrollBy({ left: delta, behavior: 'auto' })
 }
 
