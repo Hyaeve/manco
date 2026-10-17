@@ -246,6 +246,20 @@ function onKeydown(event) {
   if (event.key === 'Escape' && selecting.value) clearSelection()
 }
 
+function stopPolling() {
+  if (timer) {
+    window.clearInterval(timer)
+    timer = 0
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  timer = window.setInterval(() => {
+    if (hasActive.value) load(true)
+  }, 4000)
+}
+
 onMounted(async () => {
   await load()
   scrollContainer = virtualViewport.value?.closest('.content-scroll') || null
@@ -254,13 +268,11 @@ onMounted(async () => {
   await nextTick()
   measureVirtual()
   window.addEventListener('keydown', onKeydown)
-  timer = window.setInterval(() => {
-    if (hasActive.value) load(true)
-  }, 4000)
+  startPolling()
 })
 
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer)
+  stopPolling()
   scrollContainer?.removeEventListener('scroll', onPageScroll)
   window.removeEventListener('resize', onPageResize)
   window.removeEventListener('keydown', onKeydown)
@@ -269,20 +281,31 @@ onUnmounted(() => {
 // 切走页面时退出多选，避免回到列表还停留在选中态。
 onDeactivated(() => {
   clearSelection()
+  stopPolling()
 })
 
 onActivated(() => {
   measureVirtual()
+  startPolling()
 })
 
 async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     // 只取第一页：任务历史可能上万条，整表拉下来既慢又占内存。
-    // 静默轮询时按已加载条数取，避免把用户翻过的页缩回去。
-    const limit = silent ? Math.max(TASK_PAGE_SIZE, items.value.length) : TASK_PAGE_SIZE
-    const payload = await api.downloads(limit, 0, 'active')
-    items.value = payload.items || []
+    const payload = await api.downloads(TASK_PAGE_SIZE, 0, 'active')
+    const pageItems = payload.items || []
+    if (silent && items.value.length) {
+      const updates = new Map(pageItems.map((item) => [item.id, item]))
+      const existing = new Set(items.value.map((item) => item.id))
+      const merged = items.value.map((item) => updates.get(item.id) || item)
+      for (const item of pageItems) {
+        if (!existing.has(item.id)) merged.push(item)
+      }
+      items.value = merged
+    } else {
+      items.value = pageItems
+    }
     totalTasks.value = Number(payload.total || items.value.length)
     if (silent) error.value = ''
   } catch (err) {

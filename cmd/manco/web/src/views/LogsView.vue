@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Code2, Loader2, ListTree, RefreshCw, Search } from 'lucide-vue-next'
 import { api } from '../api'
 import RoundedSelect from '../components/RoundedSelect.vue'
@@ -77,6 +77,17 @@ watch(mode, (value) => window.localStorage.setItem(LOG_MODE_KEY, value))
 onMounted(() => {
   load()
   resetTimer()
+})
+
+onActivated(() => {
+  resetTimer()
+})
+
+onDeactivated(() => {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
 })
 
 onUnmounted(() => {

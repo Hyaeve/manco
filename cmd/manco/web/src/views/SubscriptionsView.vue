@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Archive,
   BookOpen,
@@ -47,8 +47,16 @@ const editorOpen = ref(false)
 const editing = ref(null)
 const selectionMode = ref(false)
 const selected = ref(new Set())
-// 订阅很多时逐个渲染所有卡片会把主线程拖到无响应，这里分批渲染。
-const renderLimit = ref(60)
+// 真正虚拟化：只渲染视口附近的订阅行，避免滚动时持续堆积 DOM。
+const gridRef = ref(null)
+const gridColumns = ref(3)
+const virtualStartIndex = ref(0)
+const virtualEndIndex = ref(60)
+const virtualPaddingTop = ref(0)
+const virtualPaddingBottom = ref(0)
+const VIRTUAL_CARD_HEIGHT = 215
+const VIRTUAL_ROW_GAP = 16
+const VIRTUAL_OVERSCAN_ROWS = 3
 // 订阅清单分页：首屏只取一页，滚到底再补。
 const SUBS_PAGE_SIZE = 60
 const totalSubscriptions = ref(0)
@@ -60,6 +68,7 @@ let lastStatsSignature = ''
 let lastJobsSignature = ''
 let selectAnchor = -1
 let timer = 0
+let scrollFrame = 0
 
 const form = ref({
   cronExpr: '',
@@ -156,19 +165,60 @@ const filteredItems = computed(() => {
   return rows
 })
 
-const renderedItems = computed(() => filteredItems.value.slice(0, renderLimit.value))
+const visibleItems = computed(() =>
+  filteredItems.value.slice(virtualStartIndex.value, virtualEndIndex.value),
+)
+const virtualGridStyle = computed(() => ({
+  paddingTop: `${virtualPaddingTop.value}px`,
+  paddingBottom: `${virtualPaddingBottom.value}px`,
+}))
 
-watch([kindFilter, activeDir], () => {
-  renderLimit.value = 60
-})
+function updateGridColumns() {
+  if (window.innerWidth > 1500) gridColumns.value = 3
+  else if (window.innerWidth > 900) gridColumns.value = 2
+  else gridColumns.value = 1
+}
+
+function updateVirtualWindow() {
+  const rows = filteredItems.value.length
+  if (!rows) {
+    virtualStartIndex.value = 0
+    virtualEndIndex.value = 0
+    virtualPaddingTop.value = 0
+    virtualPaddingBottom.value = 0
+    return
+  }
+  const columns = Math.max(1, gridColumns.value)
+  const totalRows = Math.ceil(rows / columns)
+  const stride = VIRTUAL_CARD_HEIGHT + VIRTUAL_ROW_GAP
+  const viewportHeight = scrollEl?.clientHeight || window.innerHeight
+  const scrollTop = scrollEl?.scrollTop || 0
+  let gridTop = scrollTop
+  if (scrollEl && gridRef.value) {
+    const gridRect = gridRef.value.getBoundingClientRect()
+    const viewportRect = scrollEl.getBoundingClientRect()
+    gridTop = Math.max(0, scrollTop + gridRect.top - viewportRect.top)
+  }
+  const relativeTop = Math.max(0, scrollTop - gridTop)
+  const firstRow = Math.floor(relativeTop / stride)
+  const startRow = Math.max(0, firstRow - VIRTUAL_OVERSCAN_ROWS)
+  const visibleRowCount = Math.ceil(viewportHeight / stride) + VIRTUAL_OVERSCAN_ROWS * 2 + 1
+  const endRow = Math.min(totalRows, startRow + visibleRowCount)
+  virtualStartIndex.value = startRow * columns
+  virtualEndIndex.value = Math.min(rows, endRow * columns)
+  virtualPaddingTop.value = startRow * stride
+  virtualPaddingBottom.value = Math.max(0, (totalRows - endRow) * stride)
+}
 
 function handlePageScroll() {
-  if (!scrollEl) return
-  if (scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 360) {
-    // 先补数据页，再扩渲染窗口。
-    if (items.value.length < totalSubscriptions.value) loadMoreSubscriptions()
-    if (renderLimit.value < filteredItems.value.length) renderLimit.value += 60
-  }
+  if (!scrollEl || scrollFrame) return
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = 0
+    updateVirtualWindow()
+    if (scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 360 && items.value.length < totalSubscriptions.value) {
+      loadMoreSubscriptions()
+    }
+  })
 }
 
 async function loadMoreSubscriptions() {
@@ -180,6 +230,8 @@ async function loadMoreSubscriptions() {
     if (next.length) items.value = [...items.value, ...next]
     totalSubscriptions.value = Number(payload.total ?? totalSubscriptions.value)
     if (payload.jobStats) jobStatsData.value = { ...jobStatsData.value, ...payload.jobStats }
+    await nextTick()
+    updateVirtualWindow()
   } catch (err) {
     notify(`加载更多订阅失败：${err.message}`, 'error')
   } finally {
@@ -194,20 +246,23 @@ const selectedCount = computed(() => selectedItems.value.length)
 // “卡片数 × 任务数”的重复扫描把主线程拖死。
 const statsByComic = computed(() => {
   const map = new Map()
-  for (const [key, value] of Object.entries(jobStatsData.value || {})) {
+  const stats = jobStatsData.value || {}
+  for (const item of items.value) {
+    const key = `${item.sourceId}\u0000${item.comicId}`
+    const value = stats[key]
+    if (!value) continue
     map.set(key, {
       success: Number(value?.succeeded || 0),
       failed: Number(value?.failed || 0),
     })
   }
-  if (!map.size) {
-    for (const job of jobs.value) {
-      const key = `${job.sourceId}\u0000${job.comicId}`
-      const entry = map.get(key) || { success: 0, failed: 0 }
-      if (job.status === 'completed') entry.success += 1
-      else if (job.status === 'failed') entry.failed += 1
-      map.set(key, entry)
-    }
+  for (const job of jobs.value) {
+    const key = `${job.sourceId}\u0000${job.comicId}`
+    if (map.has(key)) continue
+    const entry = { success: 0, failed: 0 }
+    if (job.status === 'completed') entry.success += 1
+    else if (job.status === 'failed') entry.failed += 1
+    map.set(key, entry)
   }
   return map
 })
@@ -276,27 +331,62 @@ function kindCount(kind) {
   return items.value.filter((item) => itemKind(item) === kind).length
 }
 
-onMounted(async () => {
-  await load()
-  scrollEl = document.querySelector('.content-scroll')
-  scrollEl?.addEventListener('scroll', handlePageScroll, { passive: true })
+function stopPolling() {
+  if (timer) {
+    window.clearInterval(timer)
+    timer = 0
+  }
+}
+
+function startPolling() {
+  stopPolling()
   timer = window.setInterval(() => {
     if (hasActive.value) load(true)
   }, 5000)
+}
+
+onMounted(async () => {
+  updateGridColumns()
+  await load()
+  scrollEl = document.querySelector('.content-scroll')
+  scrollEl?.addEventListener('scroll', handlePageScroll, { passive: true })
+  window.addEventListener('resize', onWindowResize)
+  startPolling()
   window.addEventListener('click', closeMenus)
   window.addEventListener('keydown', onKeydown)
+  await nextTick()
+  updateVirtualWindow()
 })
 
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer)
+  stopPolling()
+  if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
   scrollEl?.removeEventListener('scroll', handlePageScroll)
+  window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', onKeydown)
 })
 
 onDeactivated(() => {
   clearSubscriptionSelection()
+  stopPolling()
 })
+
+onActivated(() => {
+  startPolling()
+})
+
+function onWindowResize() {
+  updateGridColumns()
+  nextTick(updateVirtualWindow)
+}
+
+watch([kindFilter, activeDir], () => {
+  if (scrollEl) scrollEl.scrollTop = 0
+  nextTick(updateVirtualWindow)
+})
+
+watch(() => filteredItems.value.length, () => nextTick(updateVirtualWindow))
 
 function onKeydown(event) {
   if (event.key === 'Escape' && selectionMode.value) clearSubscriptionSelection()
@@ -311,7 +401,7 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     const [subscriptions, downloads, sourcePayload] = await Promise.all([
-      api.subscriptions(silent ? Math.max(SUBS_PAGE_SIZE, items.value.length) : SUBS_PAGE_SIZE, 0),
+      api.subscriptions(SUBS_PAGE_SIZE, 0),
       // 统计信息由 /api/subscriptions 的 jobStats 直接给出，不再额外拉一次
       // 几百条下载任务——那个请求服务端每条都要查本地封面与元数据，5 秒
       // 轮询一次会把机器拖住。
@@ -321,7 +411,16 @@ async function load(silent = false) {
     for (const source of sourcePayload.items || []) {
       sources.value = { ...sources.value, [source.id]: source }
     }
-    const nextItems = subscriptions.items || []
+    const pageItems = subscriptions.items || []
+    let nextItems = pageItems
+    if (silent && items.value.length) {
+      const updates = new Map(pageItems.map((item) => [item.id, item]))
+      const existing = new Set(items.value.map((item) => item.id))
+      nextItems = items.value.map((item) => updates.get(item.id) || item)
+      for (const item of pageItems) {
+        if (!existing.has(item.id)) nextItems.push(item)
+      }
+    }
     totalSubscriptions.value = Number(subscriptions.total || nextItems.length)
     const itemsSignature = JSON.stringify(
       nextItems.map((item) => [
@@ -761,9 +860,9 @@ function batchDelete() {
     <p>当前栏目下没有订阅。</p>
   </div>
 
-  <div v-else class="subscription-grid">
+  <div v-else ref="gridRef" class="subscription-grid" :style="virtualGridStyle">
     <article
-      v-for="(item, index) in renderedItems"
+      v-for="(item, index) in visibleItems"
       :key="item.id"
       class="subscription-card"
       :class="{
@@ -772,8 +871,8 @@ function batchDelete() {
         selected: isSubSelected(item),
         selecting: selectionMode,
       }"
-      @contextmenu.prevent="enterSelection(item, index, $event)"
-      @click.capture="captureCardClick(item, index, $event)"
+      @contextmenu.prevent="enterSelection(item, virtualStartIndex + index, $event)"
+      @click.capture="captureCardClick(item, virtualStartIndex + index, $event)"
     >
       <button
         class="subscription-source"

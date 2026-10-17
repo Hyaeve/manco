@@ -72,8 +72,11 @@ func (f *combinedDetailFixture) Pages(context.Context, source.Account, string, m
 func (f *combinedDetailFixture) DetailWithChapters(context.Context, source.Account, string) (model.ComicDetail, error) {
 	f.detailCalls++
 	return model.ComicDetail{
-		Comic:    model.Comic{ID: "book-1", Title: "测试书籍"},
-		Chapters: []model.Chapter{{ID: "chapter-1", Title: "第一章"}},
+		Comic: model.Comic{ID: "book-1", Title: "测试书籍"},
+		Chapters: []model.Chapter{
+			{ID: "chapter-1", Title: "第一章", Order: 1, UpdatedAt: "2026-10-01T04:00:00Z"},
+			{ID: "chapter-2", Title: "第二章", Order: 2, UpdatedAt: "2026-10-17T04:00:00Z"},
+		},
 	}, nil
 }
 
@@ -83,8 +86,11 @@ func TestLoadComicDetailUsesCombinedSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadComicDetail: %v", err)
 	}
-	if detail.Comic.Title != "测试书籍" || len(detail.Chapters) != 1 {
+	if detail.Comic.Title != "测试书籍" || len(detail.Chapters) != 2 {
 		t.Fatalf("detail = %#v", detail)
+	}
+	if detail.Comic.UpdatedAt != "2026-10-17T04:00:00Z" {
+		t.Fatalf("updated at = %q, want newest chapter timestamp", detail.Comic.UpdatedAt)
 	}
 	if fixture.detailCalls != 1 || fixture.chaptersCalls != 0 {
 		t.Fatalf("calls = detail %d, chapters %d; want 1 and 0", fixture.detailCalls, fixture.chaptersCalls)

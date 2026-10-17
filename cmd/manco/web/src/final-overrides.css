@@ -1564,12 +1564,36 @@
 
 /* v0.1.27：探索发现搜索栏，搜索图标内嵌在输入框内。 */
 .discover-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   flex: 0 0 330px;
   width: min(330px, 100%);
   margin-left: auto;
 }
+.discover-refresh-button {
+  display: inline-grid;
+  flex: 0 0 30px;
+  place-items: center;
+  width: 30px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+.discover-refresh-button:hover:not(:disabled) {
+  color: var(--primary-strong);
+}
+.discover-refresh-button:disabled {
+  cursor: default;
+}
 .discover-search-field {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
   gap: 8px;
   height: 34px;
@@ -3775,8 +3799,10 @@
   gap: 16px;
 }
 .subscription-card {
+  height: 215px;
   min-height: 0;
   overflow: visible;
+  contain: layout style;
 }
 .subscription-card .subscription-main {
   grid-template-columns: 122px minmax(0, 1fr);
@@ -5251,23 +5277,19 @@ svg.source-editor-icon {
   color: #ffd88a;
 }
 
-/* 页面内容浮入：切页面时各模块像浮出水面一样轻微上浮 + 淡入。 */
+/* 页面切换只用短暂淡入，避免整页 transform 造成大范围合成和位移感。 */
 @keyframes manco-float-in {
   from {
     opacity: 0;
-    /* 原位淡入 + 极小放大，不再位移 */
-    transform: scale(0.98);
   }
   to {
     opacity: 1;
-    transform: scale(1);
   }
 }
 
 /* 切页面时由 App.vue 加上 .page-enter 重播一次（KeepAlive 缓存下动画不会自动重播）。 */
 .content-scroll.page-enter > * {
-  animation: manco-float-in 0.32s ease-out both;
-  transform-origin: center;
+  animation: manco-float-in 0.16s ease-out both;
 }
 
 /* 网格封面 / 卡片内容逐个浮出：每个卡片轻微上浮 + 淡入，前几项错开一点。 */
@@ -5282,8 +5304,39 @@ svg.source-editor-icon {
   }
 }
 
+@keyframes discover-refresh-float {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.source-comic-grid.refresh-reveal > *,
+.source-list-view.refresh-reveal > * {
+  animation: discover-refresh-float 0.34s ease-out both;
+  transform-origin: center;
+}
+
+.source-comic-grid.refresh-reveal > :nth-child(2),
+.source-list-view.refresh-reveal > :nth-child(2) { animation-delay: 0.03s; }
+.source-comic-grid.refresh-reveal > :nth-child(3),
+.source-list-view.refresh-reveal > :nth-child(3) { animation-delay: 0.06s; }
+.source-comic-grid.refresh-reveal > :nth-child(4),
+.source-list-view.refresh-reveal > :nth-child(4) { animation-delay: 0.09s; }
+.source-comic-grid.refresh-reveal > :nth-child(5),
+.source-list-view.refresh-reveal > :nth-child(5) { animation-delay: 0.12s; }
+.source-comic-grid.refresh-reveal > :nth-child(6),
+.source-list-view.refresh-reveal > :nth-child(6) { animation-delay: 0.15s; }
+.source-comic-grid.refresh-reveal > :nth-child(7),
+.source-list-view.refresh-reveal > :nth-child(7) { animation-delay: 0.18s; }
+.source-comic-grid.refresh-reveal > :nth-child(8),
+.source-list-view.refresh-reveal > :nth-child(8) { animation-delay: 0.21s; }
+
 .local-library-card,
-.subscription-card,
 .source-card-simple,
 .completed-task-group {
   animation: manco-card-in 0.34s ease-out both;
@@ -5292,24 +5345,20 @@ svg.source-editor-icon {
 }
 
 .local-library-grid > :nth-child(2),
-.subscription-grid > :nth-child(2),
 .source-grid > :nth-child(2) { animation-delay: 0.03s; }
 .local-library-grid > :nth-child(3),
-.subscription-grid > :nth-child(3),
 .source-grid > :nth-child(3) { animation-delay: 0.06s; }
 .local-library-grid > :nth-child(4),
-.subscription-grid > :nth-child(4),
 .source-grid > :nth-child(4) { animation-delay: 0.09s; }
 .local-library-grid > :nth-child(5),
-.subscription-grid > :nth-child(5),
 .source-grid > :nth-child(5) { animation-delay: 0.12s; }
 .local-library-grid > :nth-child(6),
-.subscription-grid > :nth-child(6),
 .source-grid > :nth-child(6) { animation-delay: 0.15s; }
 
 @media (prefers-reduced-motion: reduce) {
   .local-library-card,
-  .subscription-card,
+  .source-comic-grid.refresh-reveal > *,
+  .source-list-view.refresh-reveal > *,
   .source-card-simple,
   .completed-task-group {
     animation: none;
@@ -5401,14 +5450,15 @@ svg.source-editor-icon {
   place-items: center;
   width: 116px;
   height: 116px;
+  margin-top: 18px;
 }
 
 .source-cat-loader img {
   width: 92px;
   height: 92px;
   object-fit: contain;
-  opacity: 0.28;
-  filter: saturate(0.82);
+  opacity: 0.5;
+  filter: saturate(0.95);
   animation: source-cat-breathe 2.2s ease-in-out infinite;
 }
 
@@ -5425,11 +5475,11 @@ svg.source-editor-icon {
 @keyframes source-cat-breathe {
   0%,
   100% {
-    opacity: 0.22;
+    opacity: 0.42;
     transform: translateY(2px) scale(0.96);
   }
   50% {
-    opacity: 0.36;
+    opacity: 0.62;
     transform: translateY(-2px) scale(1.035);
   }
 }

@@ -1535,7 +1535,7 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 	}
 
 	e.metaMu.Lock()
-	_, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, "", 0, len(results), countSeriesBookFiles(comicDir))
+	metaErr := writeOtherMetadata(ctx, client, account, item, metadata, comicDir)
 	e.metaMu.Unlock()
 	if metaErr != nil {
 		e.logger.Printf("downloader: other source metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
@@ -1779,6 +1779,104 @@ func writeBookMetadata(ctx context.Context, client *http.Client, account source.
 	return writeSeriesMetadataFiles(book, item.Info(), comicDir)
 }
 
+const otherNFOFileName = "tvshow.nfo"
+
+// Other sources represent episodic or mixed media rather than comics/books.
+// Kodi-compatible media libraries consume a tvshow.nfo sidecar for that shape.
+type OtherNFO struct {
+	XMLName       xml.Name        `xml:"tvshow"`
+	Title         string          `xml:"title"`
+	OriginalTitle string          `xml:"originaltitle,omitempty"`
+	Plot          string          `xml:"plot,omitempty"`
+	Year          int             `xml:"year,omitempty"`
+	Status        string          `xml:"status,omitempty"`
+	Studio        string          `xml:"studio,omitempty"`
+	Genres        []string        `xml:"genre,omitempty"`
+	Tags          []string        `xml:"tag,omitempty"`
+	UniqueIDs     []OtherNFOID    `xml:"uniqueid,omitempty"`
+	Actors        []OtherNFOActor `xml:"actor,omitempty"`
+	Thumb         string          `xml:"thumb,omitempty"`
+	Art           *OtherNFOArt    `xml:"art,omitempty"`
+}
+
+type OtherNFOID struct {
+	Type  string `xml:"type,attr,omitempty"`
+	Value string `xml:",chardata"`
+}
+
+type OtherNFOActor struct {
+	Name string `xml:"name"`
+	Role string `xml:"role,omitempty"`
+}
+
+type OtherNFOArt struct {
+	Poster string `xml:"poster,omitempty"`
+	Fanart string `xml:"fanart,omitempty"`
+}
+
+func writeOtherMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic, comicDir string) error {
+	if err := os.MkdirAll(comicDir, 0o755); err != nil {
+		return err
+	}
+	coverURL := strings.TrimSpace(comic.Cover)
+	if coverURL != "" || canMaterializeCover(item, coverURL) {
+		existing, _ := filepath.Glob(filepath.Join(comicDir, "cover.*"))
+		if len(existing) == 0 {
+			if data, err := fetchCoverImage(ctx, client, account, item, comic); err == nil {
+				if err := writeFileAtomic(filepath.Join(comicDir, "cover"+imageExtension(data, coverURL)), data); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	payload, err := marshalOtherNFO(otherNFODoc(item, comic, comicDir))
+	if err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(comicDir, otherNFOFileName), payload); err != nil {
+		return err
+	}
+	for _, name := range []string{"ComicInfo.xml", "series.json", "metadata.opf", "book.json"} {
+		_ = os.Remove(filepath.Join(comicDir, name))
+	}
+	return nil
+}
+
+func otherNFODoc(item source.Source, comic model.Comic, comicDir string) OtherNFO {
+	genres := comicGenreValues(comic, item.Info())
+	title := source.FirstNonEmpty(strings.TrimSpace(comic.Title), strings.TrimSpace(comic.ID), "untitled")
+	doc := OtherNFO{
+		Title:         title,
+		OriginalTitle: title,
+		Plot:          plainMetadataText(comic.Description),
+		Year:          metadataYear(comic.UpdatedAt),
+		Status:        mylarStatus(comic.Status),
+		Studio:        strings.TrimSpace(item.Info().Name),
+		Genres:        genres,
+		Tags:          genres,
+		UniqueIDs: []OtherNFOID{{
+			Type:  "manco",
+			Value: strings.TrimSpace(comic.SourceID) + ":" + strings.TrimSpace(comic.ID),
+		}},
+	}
+	for _, author := range metadataAuthors(comic.Author) {
+		doc.Actors = append(doc.Actors, OtherNFOActor{Name: author, Role: "作者"})
+	}
+	if cover := localCoverName(comicDir); cover != "" {
+		doc.Thumb = cover
+		doc.Art = &OtherNFOArt{Poster: cover}
+	}
+	return doc
+}
+
+func marshalOtherNFO(doc OtherNFO) ([]byte, error) {
+	payload, err := xml.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(xml.Header), payload...), nil
+}
+
 // seriesComicInfoDoc builds the standalone series-level ComicInfo document. It
 // reuses the same fields Komga/KMRS aggregate from each chapter so the series
 // view can be populated, then clears the fields that only belong to a chapter.
@@ -2013,6 +2111,7 @@ func countSeriesBookFiles(comicDir string) int {
 			name == "series.json" ||
 			name == "metadata.opf" ||
 			name == "book.json" ||
+			strings.HasSuffix(name, ".nfo") ||
 			strings.HasSuffix(name, ".part") {
 			continue
 		}
@@ -2111,8 +2210,8 @@ func (e *Engine) EnsureSeriesMetadata(ctx context.Context, subscription model.Su
 }
 
 // ScrapeSeriesMetadata re-fetches the upstream metadata and overwrites the
-// local ComicInfo.xml / series.json / cover even when they already look
-// current. EnsureSeriesMetadata only fills in what is missing.
+// media-type-specific sidecars and cover even when they already look current.
+// EnsureSeriesMetadata only fills in what is missing.
 func (e *Engine) ScrapeSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error) {
 	return e.writeSeriesMetadata(ctx, subscription, true)
 }
@@ -2147,6 +2246,22 @@ func rewriteSeriesMetadataTitle(comicDir, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil
+	}
+	if raw, err := os.ReadFile(filepath.Join(comicDir, otherNFOFileName)); err == nil {
+		var nfo OtherNFO
+		if xml.Unmarshal(raw, &nfo) == nil {
+			nfo.Title = title
+			nfo.OriginalTitle = title
+			payload, marshalErr := marshalOtherNFO(nfo)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if err := writeFileAtomic(filepath.Join(comicDir, otherNFOFileName), payload); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if raw, err := os.ReadFile(filepath.Join(comicDir, "ComicInfo.xml")); err == nil {
 		var info ComicInfo
@@ -2317,8 +2432,8 @@ func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Sub
 	if err != nil {
 		return false, err
 	}
-	book := source.KindOf(item.Info()) == source.KindBook
-	if !force && seriesMetadataCurrent(comicDir) {
+	kind := source.KindOf(item.Info())
+	if !force && seriesMetadataCurrent(comicDir, kind) {
 		if covers, _ := filepath.Glob(filepath.Join(comicDir, "cover.*")); len(covers) > 0 {
 			return false, nil
 		}
@@ -2360,28 +2475,55 @@ func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Sub
 	}
 	e.metaMu.Lock()
 	defer e.metaMu.Unlock()
-	if book {
+	switch kind {
+	case source.KindBook:
 		if err := writeBookMetadata(ctx, client, account, item, metadata, comicDir); err != nil {
 			return false, err
 		}
-	} else if _, err := writeComicMetadata(ctx, client, account, item, metadata, comicDir, "", 0, 0, countSeriesBookFiles(comicDir)); err != nil {
-		return false, err
+	case source.KindOther:
+		if err := writeOtherMetadata(ctx, client, account, item, metadata, comicDir); err != nil {
+			return false, err
+		}
+	default:
+		if _, err := writeComicMetadata(ctx, client, account, item, metadata, comicDir, "", 0, 0, countSeriesBookFiles(comicDir)); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
 
-// seriesMetadataCurrent reports whether the folder carries the two sidecars
-// KMRS/Komga need and no obsolete OPF/Manco files. The JSON is parsed before it
-// is trusted, so folders written by older Manco versions with an incomplete
-// series.json are repaired on the next subscription metadata check.
-func seriesMetadataCurrent(comicDir string) bool {
+// seriesMetadataCurrent reports whether the folder carries the sidecars for
+// its media type and no obsolete or cross-type metadata. Comic/book JSON is
+// parsed before it is trusted, so incomplete legacy series.json files are
+// repaired on the next subscription metadata check; other sources require a
+// valid tvshow.nfo instead.
+func seriesMetadataCurrent(comicDir, kind string) bool {
+	if kind == source.KindOther {
+		raw, err := os.ReadFile(filepath.Join(comicDir, otherNFOFileName))
+		if err != nil {
+			return false
+		}
+		var nfo OtherNFO
+		if xml.Unmarshal(raw, &nfo) != nil || hasHTMLTag(nfo.Plot) {
+			return false
+		}
+		if strings.TrimSpace(nfo.Title) != filepath.Base(filepath.Clean(comicDir)) {
+			return false
+		}
+		for _, name := range []string{"ComicInfo.xml", "series.json"} {
+			if _, err := os.Stat(filepath.Join(comicDir, name)); err == nil {
+				return false
+			}
+		}
+		return true
+	}
 	if _, err := os.Stat(filepath.Join(comicDir, "ComicInfo.xml")); err != nil {
 		return false
 	}
 	if !validMylarSeriesJSON(filepath.Join(comicDir, "series.json")) {
 		return false
 	}
-	if !seriesMetadataTitleCurrent(comicDir) {
+	if !seriesMetadataTitleCurrent(comicDir, kind) {
 		return false
 	}
 	// 旧版本会把简介包成 <p>…</p>，KMRS/Komga 会把标签原样显示出来。
@@ -2396,7 +2538,16 @@ func seriesMetadataCurrent(comicDir string) bool {
 	return true
 }
 
-func seriesMetadataTitleCurrent(comicDir string) bool {
+func seriesMetadataTitleCurrent(comicDir, kind string) bool {
+	if kind == source.KindOther {
+		raw, err := os.ReadFile(filepath.Join(comicDir, otherNFOFileName))
+		if err != nil {
+			return false
+		}
+		var nfo OtherNFO
+		return xml.Unmarshal(raw, &nfo) == nil &&
+			strings.TrimSpace(nfo.Title) == filepath.Base(filepath.Clean(comicDir))
+	}
 	title := filepath.Base(filepath.Clean(comicDir))
 	raw, err := os.ReadFile(filepath.Join(comicDir, "ComicInfo.xml"))
 	if err != nil {

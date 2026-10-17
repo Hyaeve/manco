@@ -226,7 +226,7 @@ func TestSeriesMetadataTreatsHTMLDescriptionAsStale(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "ComicInfo.xml"), []byte(legacyInfo), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if seriesMetadataCurrent(dir) {
+	if seriesMetadataCurrent(dir, source.KindComic) {
 		t.Fatal("metadata with HTML description should be treated as stale")
 	}
 
@@ -238,7 +238,7 @@ func TestSeriesMetadataTreatsHTMLDescriptionAsStale(t *testing.T) {
 	if _, err := writeSeriesComicInfo(item, comic, dir); err != nil {
 		t.Fatalf("writeSeriesComicInfo: %v", err)
 	}
-	if !seriesMetadataCurrent(dir) {
+	if !seriesMetadataCurrent(dir, source.KindComic) {
 		t.Fatal("metadata should be current after the rewrite")
 	}
 }

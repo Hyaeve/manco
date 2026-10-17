@@ -88,6 +88,7 @@ const searchInput = ref(null)
 const SEARCH_HISTORY_KEY = 'manco.search.history.v1'
 let sessionCheckTimer = 0
 let activityTimer = 0
+let prefetchHandle = 0
 
 const theme = ref(localStorage.getItem('manco-theme') || 'system')
 const themeOptions = [
@@ -125,6 +126,25 @@ const cachedViews = [
   'LogsView',
   'SettingsView',
 ]
+
+const mainViewLoaders = [
+  () => import('./views/DashboardView.vue'),
+  () => import('./views/DiscoverView.vue'),
+  () => import('./views/SubscriptionsView.vue'),
+  () => import('./views/DownloadsView.vue'),
+  () => import('./views/ArchivedSubscriptionsView.vue'),
+  () => import('./views/CompletedTasksView.vue'),
+  () => import('./views/LocalLibraryView.vue'),
+  () => import('./views/SourcesView.vue'),
+  () => import('./views/LogsView.vue'),
+  () => import('./views/SettingsView.vue'),
+]
+
+function prefetchMainViews() {
+  for (const load of mainViewLoaders) {
+    void load().catch(() => {})
+  }
+}
 
 const scrollPositions = new Map()
 let pendingScrollRestore = 0
@@ -188,7 +208,7 @@ watch(
     pageAnimating.value = true
     pageAnimTimer = window.setTimeout(() => {
       pageAnimating.value = false
-    }, 400)
+    }, 200)
     if (fromName !== toName) {
       await nextTick()
       restoreScrollPosition()
@@ -218,6 +238,13 @@ onMounted(() => {
     if (route.name !== 'login') loadActivity(true)
   }, 15000)
   if (route.name !== 'login') loadActivity(true)
+  if (route.name !== 'login') {
+    if ('requestIdleCallback' in window) {
+      prefetchHandle = window.requestIdleCallback(prefetchMainViews, { timeout: 3000 })
+    } else {
+      prefetchHandle = window.setTimeout(prefetchMainViews, 1200)
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -232,6 +259,10 @@ onUnmounted(() => {
   document.removeEventListener('visibilitychange', checkSessionOnVisible)
   if (sessionCheckTimer) window.clearInterval(sessionCheckTimer)
   if (activityTimer) window.clearInterval(activityTimer)
+  if (prefetchHandle) {
+    if ('cancelIdleCallback' in window) window.cancelIdleCallback(prefetchHandle)
+    else window.clearTimeout(prefetchHandle)
+  }
   if (pendingScrollRestore) cancelAnimationFrame(pendingScrollRestore)
 })
 

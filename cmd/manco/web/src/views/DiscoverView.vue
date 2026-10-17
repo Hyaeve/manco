@@ -11,6 +11,7 @@ import {
   ImageOff,
   List,
   Loader2,
+  RefreshCw,
   Search,
   X,
 } from 'lucide-vue-next'
@@ -48,7 +49,9 @@ const gridRef = ref(null)
 const stripCanLeft = ref(false)
 const stripCanRight = ref(false)
 const gridColumns = ref(7)
+const refreshRevealing = ref(false)
 const requestStates = new Map()
+let refreshRevealTimer = 0
 
 const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
 const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
@@ -165,6 +168,7 @@ const hasNextPage = computed(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateStripBounds)
+  window.clearTimeout(refreshRevealTimer)
   for (const state of requestStates.values()) state.controller.abort()
   requestStates.clear()
 })
@@ -404,6 +408,23 @@ async function changeFilter() {
   afterLoad()
 }
 
+async function refreshCurrentPanel() {
+  const source = activeSource.value
+  const panel = activePanel.value
+  if (!source || !panel || panel.loading) return
+  refreshRevealing.value = false
+  resetPanel(panel)
+  await ensure(source, panel, 1)
+  if (panel.items.length) {
+    refreshRevealing.value = true
+    window.clearTimeout(refreshRevealTimer)
+    refreshRevealTimer = window.setTimeout(() => {
+      refreshRevealing.value = false
+    }, 620)
+  }
+  afterLoad()
+}
+
 async function goPage(page) {
   const panel = activePanel.value
   if (!panel || panel.loading) return
@@ -452,7 +473,8 @@ function rememberPosition() {
 
 function cover(item) {
   if (item.cachedCover) return item.cachedCover
-    return api.imageUrl(item.cover, item.sourceId, '', 320)
+  const source = allSources.value.find((entry) => entry.id === item.sourceId)
+  return api.imageUrl(item.cover, item.sourceId, source?.homepage || '', 320)
 }
 
 function filterOptions(group) {
@@ -500,6 +522,16 @@ function latestLabel(item) {
         </div>
       </div>
       <div v-if="activeSource && activePanel" class="discover-search">
+        <button
+          class="discover-refresh-button"
+          type="button"
+          :disabled="activePanel.loading"
+          aria-label="刷新当前内容源"
+          title="刷新当前内容源和筛选"
+          @click="refreshCurrentPanel"
+        >
+          <RefreshCw :size="18" :class="{ spin: activePanel.loading }" />
+        </button>
         <label class="discover-search-field">
           <Search :size="15" />
           <input
@@ -619,7 +651,12 @@ function latestLabel(item) {
         <ImageOff :size="24" />
         <span>没有作品</span>
       </div>
-      <div v-else-if="viewMode === 'grid'" ref="gridRef" class="source-comic-grid source-comic-grid-7">
+      <div
+        v-else-if="viewMode === 'grid'"
+        ref="gridRef"
+        class="source-comic-grid source-comic-grid-7"
+        :class="{ 'refresh-reveal': refreshRevealing }"
+      >
         <ContentLink
           v-for="item in visibleItems"
           :key="`${item.sourceId}-${item.id}`"
@@ -637,7 +674,7 @@ function latestLabel(item) {
           </div>
         </ContentLink>
       </div>
-      <div v-else class="source-list-view">
+      <div v-else class="source-list-view" :class="{ 'refresh-reveal': refreshRevealing }">
         <ContentLink
           v-for="item in visibleItems"
           :key="`${item.sourceId}-${item.id}`"

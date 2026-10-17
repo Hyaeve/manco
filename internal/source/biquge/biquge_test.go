@@ -26,6 +26,8 @@ func TestChaptersAndContent(t *testing.T) {
 			_, _ = w.Write([]byte(`<html><head>
 				<meta property="og:novel:book_name" content="测试小说"/>
 				<meta property="og:novel:author" content="测试作者"/>
+				<meta property="og:image" content="/cover/123.jpg"/>
+				<meta property="og:novel:update_time" content="2026-10-17 12:34:56"/>
 			</head><body>
 				<a href="/chapter/123/2.html">第二章</a>
 				<a href="/chapter/123/1.html">第一章</a>
@@ -47,6 +49,12 @@ func TestChaptersAndContent(t *testing.T) {
 	if detail.Title != "测试小说" || detail.Author != "测试作者" {
 		t.Fatalf("detail = %+v", detail)
 	}
+	if detail.UpdatedAt != "2026-10-17T12:34:56+08:00" {
+		t.Fatalf("updated at = %q", detail.UpdatedAt)
+	}
+	if detail.Cover != server.URL+"/cover/123.jpg" {
+		t.Fatalf("cover = %q", detail.Cover)
+	}
 	chapters, err := item.Chapters(context.Background(), account, "123")
 	if err != nil {
 		t.Fatalf("Chapters: %v", err)
@@ -60,5 +68,37 @@ func TestChaptersAndContent(t *testing.T) {
 	}
 	if !strings.Contains(content, "第一段") || !strings.Contains(content, "第二段") {
 		t.Fatalf("content = %q", content)
+	}
+}
+
+func TestParseListReadsLazyBookCover(t *testing.T) {
+	html := `<ul class="list">
+		<li class="item">
+			<a href="/book/456/"><img data-original="//img.example.com/cover/456.jpg" src="/placeholder.gif"></a>
+			<h3><a href="/book/456/">测试书籍</a></h3>
+		</li>
+	</ul>`
+	result := parseList(html, "https://www.biquge345.com", 1)
+	if len(result.Items) != 1 {
+		t.Fatalf("items = %+v", result.Items)
+	}
+	if result.Items[0].Cover != "https://img.example.com/cover/456.jpg" {
+		t.Fatalf("cover = %q", result.Items[0].Cover)
+	}
+}
+
+func TestParseSearchReadsCoverNearBookLink(t *testing.T) {
+	html := `<ul class="search">
+		<li>
+			<div class="image"><img data-src="/cover/789.jpg"></div>
+			<div class="name"><a href="/book/789/">搜索书籍</a><span class="zuo">搜索作者</span></div>
+		</li>
+	</ul>`
+	result := parseSearch(html, "https://www.biquge345.com", 1)
+	if len(result.Items) != 1 {
+		t.Fatalf("items = %+v", result.Items)
+	}
+	if result.Items[0].Cover != "https://www.biquge345.com/cover/789.jpg" {
+		t.Fatalf("cover = %q", result.Items[0].Cover)
 	}
 }

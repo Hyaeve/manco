@@ -1,10 +1,10 @@
 package baozimh
 
 import (
+	"strings"
 	"testing"
 
-	"strings"
-
+	"github.com/PuerkitoBio/goquery"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 )
@@ -125,5 +125,17 @@ func TestParseComicsReadsPlainImageAnchors(t *testing.T) {
 	result := parseComics(html, "https://www.baozimh.com", 1)
 	if len(result.Items) != 1 || result.Items[0].ID != "abc" {
 		t.Fatalf("items = %#v", result.Items)
+	}
+}
+
+func TestDetailUpdatedAtReadsNovelMetadata(t *testing.T) {
+	document, err := goquery.NewDocumentFromReader(strings.NewReader(
+		`<html><head><meta property="og:novel:update_time" content="2026-10-17 08:30:00"></head></html>`,
+	))
+	if err != nil {
+		t.Fatalf("parse document: %v", err)
+	}
+	if got := detailUpdatedAt(document); got != "2026-10-17T08:30:00+08:00" {
+		t.Fatalf("detailUpdatedAt = %q", got)
 	}
 }

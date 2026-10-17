@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"image"
 	"image/color"
@@ -599,7 +600,16 @@ func TestOtherSourcePreservesProvidedContentType(t *testing.T) {
 
 	registry := sources.NewRegistry(server.Client(), nil, nil)
 	registry.Register(&otherSource{staticSource: &staticSource{
-		detail: model.Comic{SourceID: "other-stub", ID: "video-1", Title: "其他作品", Author: "作者"},
+		detail: model.Comic{
+			SourceID:    "other-stub",
+			ID:          "video-1",
+			Title:       "其他作品",
+			Author:      "作者",
+			Description: "其他源简介",
+			Tags:        []string{"视频", "测试"},
+			Status:      "连载中",
+			UpdatedAt:   "2026-10-17",
+		},
 		pages: map[string][]model.Page{
 			"chapter-1": {{URL: server.URL + "/stream", ContentType: "video/mp4"}},
 		},
@@ -635,6 +645,96 @@ func TestOtherSourcePreservesProvidedContentType(t *testing.T) {
 	}
 	if matches, _ := filepath.Glob(filepath.Join(downloadDir, "其他作品", "*.cbz")); len(matches) != 0 {
 		t.Fatalf("other source was incorrectly wrapped as CBZ: %v", matches)
+	}
+	nfoPath := filepath.Join(downloadDir, "其他作品", "tvshow.nfo")
+	nfoRaw, err := os.ReadFile(nfoPath)
+	if err != nil {
+		t.Fatalf("read other source NFO: %v", err)
+	}
+	var nfo OtherNFO
+	if err := xml.Unmarshal(nfoRaw, &nfo); err != nil {
+		t.Fatalf("parse other source NFO: %v", err)
+	}
+	if nfo.Title != "其他作品" || nfo.Plot != "其他源简介" || nfo.Year != 2026 {
+		t.Fatalf("unexpected other source NFO: %+v", nfo)
+	}
+	if len(nfo.Actors) != 1 || nfo.Actors[0].Name != "作者" {
+		t.Fatalf("other source NFO authors = %+v", nfo.Actors)
+	}
+	for _, obsolete := range []string{"ComicInfo.xml", "series.json"} {
+		if _, err := os.Stat(filepath.Join(downloadDir, "其他作品", obsolete)); !os.IsNotExist(err) {
+			t.Fatalf("other source should not write %s: %v", obsolete, err)
+		}
+	}
+}
+
+func TestEnsureSeriesMetadataWritesNFOForOtherSource(t *testing.T) {
+	registry := sources.NewRegistry(source.NewHTTPClient(), nil, nil)
+	registry.Register(&otherSource{staticSource: &staticSource{
+		detail: model.Comic{
+			SourceID:    "other-stub",
+			ID:          "video-2",
+			Title:       "其他订阅",
+			Author:      "测试作者",
+			Description: "订阅简介",
+			Tags:        []string{"视频"},
+			Status:      "已完结",
+			UpdatedAt:   "2025-08-01",
+		},
+	}})
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, &memoryJobs{}, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	seriesDir := filepath.Join(downloadDir, "其他订阅")
+	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "第1话.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []string{"ComicInfo.xml", "series.json"} {
+		if err := os.WriteFile(filepath.Join(seriesDir, legacy), []byte("legacy"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	subscription := model.Subscription{
+		SourceID:    "other-stub",
+		ComicID:     "video-2",
+		Title:       "其他订阅",
+		DownloadDir: downloadDir,
+	}
+	repaired, err := engine.EnsureSeriesMetadata(context.Background(), subscription)
+	if err != nil {
+		t.Fatalf("ensure other metadata: %v", err)
+	}
+	if !repaired {
+		t.Fatal("missing other source NFO was not repaired")
+	}
+	raw, err := os.ReadFile(filepath.Join(seriesDir, "tvshow.nfo"))
+	if err != nil {
+		t.Fatalf("read tvshow.nfo: %v", err)
+	}
+	var nfo OtherNFO
+	if err := xml.Unmarshal(raw, &nfo); err != nil {
+		t.Fatalf("parse tvshow.nfo: %v", err)
+	}
+	if nfo.Title != "其他订阅" || nfo.Status != "Ended" || nfo.Year != 2025 {
+		t.Fatalf("unexpected NFO: %+v", nfo)
+	}
+	for _, legacy := range []string{"ComicInfo.xml", "series.json"} {
+		if _, err := os.Stat(filepath.Join(seriesDir, legacy)); !os.IsNotExist(err) {
+			t.Fatalf("legacy metadata %s should be removed: %v", legacy, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "cover.jpg"), []byte("cover"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err = engine.EnsureSeriesMetadata(context.Background(), subscription)
+	if err != nil {
+		t.Fatalf("second ensure other metadata: %v", err)
+	}
+	if repaired {
+		t.Fatal("complete other source metadata should not be rewritten")
 	}
 }
 
@@ -673,6 +773,13 @@ func TestSyncSeriesTitleRewritesSidecarsAndArchiveMetadata(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(seriesDir, "series.json"), []byte(`{"metadata":{"name":"旧名称","description_text":"简介"}}`), 0o644); err != nil {
 		t.Fatalf("write series.json: %v", err)
 	}
+	nfoPayload, err := marshalOtherNFO(OtherNFO{Title: "旧名称", OriginalTitle: "旧名称"})
+	if err != nil {
+		t.Fatalf("marshal NFO: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, otherNFOFileName), nfoPayload, 0o644); err != nil {
+		t.Fatalf("write NFO: %v", err)
+	}
 	writeArchive(filepath.Join(seriesDir, "第1话.cbz"), [][2]string{
 		{"ComicInfo.xml", `<?xml version="1.0"?><ComicInfo><Title>第1话</Title><Series>旧名称</Series></ComicInfo>`},
 		{"001.jpg", "image"},
@@ -700,6 +807,11 @@ func TestSyncSeriesTitleRewritesSidecarsAndArchiveMetadata(t *testing.T) {
 	seriesJSON, _ := os.ReadFile(filepath.Join(seriesDir, "series.json"))
 	if !bytes.Contains(seriesJSON, []byte(`"name": "夏日深处"`)) {
 		t.Fatalf("series.json title was not synchronized: %s", seriesJSON)
+	}
+	nfoRaw, _ := os.ReadFile(filepath.Join(seriesDir, otherNFOFileName))
+	var renamedNFO OtherNFO
+	if err := xml.Unmarshal(nfoRaw, &renamedNFO); err != nil || renamedNFO.Title != "夏日深处" || renamedNFO.OriginalTitle != "夏日深处" {
+		t.Fatalf("NFO title was not synchronized: %+v, %v", renamedNFO, err)
 	}
 	cbz := readZip(t, filepath.Join(seriesDir, "第1话.cbz"))
 	if !bytes.Contains(cbz["ComicInfo.xml"], []byte("<Series>夏日深处</Series>")) || !bytes.Contains(cbz["ComicInfo.xml"], []byte("<Title>第1话</Title>")) {

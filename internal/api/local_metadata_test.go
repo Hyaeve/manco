@@ -87,6 +87,40 @@ func TestApplyOPFMetaReadsEPUBPackageFields(t *testing.T) {
 	}
 }
 
+func TestApplyOtherNFOMetaReadsMediaMetadata(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tvshow.nfo")
+	payload := `<?xml version="1.0" encoding="UTF-8"?>
+<tvshow>
+  <title>其他源作品</title>
+  <plot>其他源简介</plot>
+  <year>2026</year>
+  <status>Continuing</status>
+  <studio>其他测试源</studio>
+  <genre>视频</genre>
+  <tag>测试</tag>
+  <uniqueid type="manco">other-source:video-7</uniqueid>
+  <actor><name>作者甲</name><role>作者</role></actor>
+</tvshow>`
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	item := localItemEntry{Title: "目录名", Kind: "comic"}
+	applyOtherNFO(path, &item)
+	if item.Kind != "other" || item.Title != "其他源作品" || item.Author != "作者甲" {
+		t.Fatalf("other NFO text = %+v", item)
+	}
+	if item.Description != "其他源简介" || item.Status != "连载中" || item.PublishedAt != "2026" {
+		t.Fatalf("other NFO labels = %+v", item)
+	}
+	if item.SourceID != "other-source" || item.ComicID != "video-7" {
+		t.Fatalf("other NFO identity = %q/%q", item.SourceID, item.ComicID)
+	}
+	if len(item.Tags) != 2 || item.Tags[0] != "视频" || item.Tags[1] != "测试" {
+		t.Fatalf("other NFO tags = %v", item.Tags)
+	}
+}
+
 func TestApplyComicMetaReadsEnhancedComicInfoFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ComicInfo.xml")

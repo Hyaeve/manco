@@ -58,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.5.3"
+	appVersion    = "v0.6.6"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -68,7 +68,7 @@ const (
 	discoverEnrichConcurrency = 3
 )
 
-var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary", "biquge"}
+var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "biquge", "zlibrary"}
 
 var sourceIconSources = map[string]string{
 	"picacg":   "https://bica.mom/favicon.jpeg",
@@ -2804,7 +2804,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enrichDiscoverItems(ctx context.Context, item source.Source, account source.Account, items []model.Comic) {
 	missing := make([]int, 0, discoverEnrichLimit)
 	for index := range items {
-		if strings.TrimSpace(items[index].Author) != "" &&
+		if strings.TrimSpace(items[index].Cover) != "" &&
+			strings.TrimSpace(items[index].Author) != "" &&
 			strings.TrimSpace(items[index].Description) != "" &&
 			strings.TrimSpace(items[index].Status) != "" {
 			continue
@@ -2832,6 +2833,9 @@ func (s *Server) enrichDiscoverItems(ctx context.Context, item source.Source, ac
 			}
 			mu.Lock()
 			defer mu.Unlock()
+			if strings.TrimSpace(items[index].Cover) == "" {
+				items[index].Cover = detail.Comic.Cover
+			}
 			if strings.TrimSpace(items[index].Author) == "" {
 				items[index].Author = detail.Comic.Author
 			}
@@ -2888,6 +2892,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			applyLatestChapterUpdatedAt(&cached)
 			writeJSON(w, http.StatusOK, convertComicDetail(cached, s.loadSettings(r.Context()).ConvertToSimplified))
 			if !refreshNeeded {
 				go s.refreshDiscoverDetail(sourceID, kind, comicID)
@@ -2937,8 +2942,26 @@ func (s *Server) loadComicDetail(ctx context.Context, item source.Source, accoun
 			last := detail.Chapters[len(detail.Chapters)-1]
 			detail.Comic.LatestChapterTitle = source.FirstNonEmpty(last.Title, last.ID)
 		}
+		applyLatestChapterUpdatedAt(&detail)
 	}
 	return detail, nil
+}
+
+func applyLatestChapterUpdatedAt(detail *model.ComicDetail) {
+	if detail == nil {
+		return
+	}
+	if updatedAt := source.NormalizeTimestamp(detail.Comic.UpdatedAt); updatedAt != "" {
+		detail.Comic.UpdatedAt = updatedAt
+		return
+	}
+	detail.Comic.UpdatedAt = ""
+	for index := len(detail.Chapters) - 1; index >= 0; index-- {
+		if updatedAt := source.NormalizeTimestamp(detail.Chapters[index].UpdatedAt); updatedAt != "" {
+			detail.Comic.UpdatedAt = updatedAt
+			return
+		}
+	}
 }
 
 func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
@@ -4870,6 +4893,10 @@ func (s *Server) scanLocalDir(root, name string) localItemEntry {
 			applySeriesMeta(filepath.Join(folder, file.Name()), &item)
 			kindFromMetadata = true
 			continue
+		case "tvshow.nfo":
+			applyOtherNFO(filepath.Join(folder, file.Name()), &item)
+			kindFromMetadata = true
+			continue
 		case "metadata.opf":
 			applyOPFMeta(filepath.Join(folder, file.Name()), &item)
 			kindFromMetadata = true
@@ -5115,6 +5142,46 @@ func applySeriesMeta(path string, item *localItemEntry) {
 	item.Language = strings.TrimSpace(meta.Language)
 	if meta.Year > 0 {
 		item.PublishedAt = fmt.Sprintf("%04d", meta.Year)
+	}
+}
+
+func applyOtherNFO(path string, item *localItemEntry) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var nfo downloader.OtherNFO
+	if xml.Unmarshal(raw, &nfo) != nil {
+		return
+	}
+	item.Kind = "other"
+	if title := strings.TrimSpace(nfo.Title); title != "" {
+		item.Title = title
+	}
+	if plot := strings.TrimSpace(nfo.Plot); plot != "" {
+		item.Description = plot
+	}
+	item.Tags = normalizeMetadataTags(append(append([]string{}, nfo.Genres...), nfo.Tags...))
+	item.Status = localStatusLabel(nfo.Status)
+	item.Publisher = strings.TrimSpace(nfo.Studio)
+	if nfo.Year > 0 {
+		item.PublishedAt = fmt.Sprintf("%04d", nfo.Year)
+	}
+	authors := make([]string, 0, len(nfo.Actors))
+	for _, actor := range nfo.Actors {
+		if name := strings.TrimSpace(actor.Name); name != "" {
+			authors = append(authors, name)
+		}
+	}
+	item.Author = strings.Join(normalizeMetadataTags(authors), ", ")
+	for _, uniqueID := range nfo.UniqueIDs {
+		sourceID, comicID, ok := strings.Cut(strings.TrimSpace(uniqueID.Value), ":")
+		if !ok {
+			continue
+		}
+		item.SourceID = strings.TrimSpace(sourceID)
+		item.ComicID = strings.TrimSpace(comicID)
+		break
 	}
 }
 

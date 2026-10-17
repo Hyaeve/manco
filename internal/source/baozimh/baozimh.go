@@ -234,8 +234,9 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 			metaContent(document, "og:image"),
 			imageFrom(document.Find(".comic-cover, .cover, .book-cover")),
 		)),
-		Tags:   splitList(source.FirstNonEmpty(metaContent(document, "og:novel:category"), listFrom(document, ".tags a, .tag, .categories a"))),
-		Status: source.FirstNonEmpty(metaContent(document, "og:novel:status"), strings.TrimSpace(document.Find(".status, .book-status").First().Text())),
+		Tags:      splitList(source.FirstNonEmpty(metaContent(document, "og:novel:category"), listFrom(document, ".tags a, .tag, .categories a"))),
+		Status:    source.FirstNonEmpty(metaContent(document, "og:novel:status"), strings.TrimSpace(document.Find(".status, .book-status").First().Text())),
+		UpdatedAt: detailUpdatedAt(document),
 	}
 	if comic.Title == "" {
 		comic.Title = strings.TrimSpace(document.Find("title").First().Text())
@@ -888,6 +889,14 @@ func metaContent(document *goquery.Document, name string) string {
 		attr(document, "meta[name='"+name+"']", "content"),
 		attr(document, "meta[property='"+name+"']", "content"),
 	)
+}
+
+func detailUpdatedAt(document *goquery.Document) string {
+	return source.NormalizeTimestamp(source.FirstNonEmpty(
+		metaContent(document, "og:novel:update_time"),
+		metaContent(document, "article:modified_time"),
+		metaContent(document, "og:updated_time"),
+	))
 }
 
 func attr(document *goquery.Document, selector, name string) string {

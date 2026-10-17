@@ -652,7 +652,7 @@ func (a *Adapter) detailAndChapters(ctx context.Context, account source.Account,
 			ComicID:   comicID,
 			Title:     chapterTitle(child),
 			Order:     number,
-			UpdatedAt: unixTime(child["uploadDate"]),
+			UpdatedAt: pluginTime(child["uploadDate"]),
 			URL:       stringValue(child["url"]),
 		})
 	}
@@ -693,6 +693,7 @@ func (a *Adapter) toComic(item map[string]any) model.Comic {
 		Author:             joinStrings(item["authors"]),
 		Tags:               tagTitles(item["tags"]),
 		LatestChapterTitle: firstNonEmpty(stringValue(item["latestChapterTitle"]), latestChapterTitle(item)),
+		UpdatedAt:          comicUpdatedAt(item),
 	}
 	if values, ok := item["chapters"].([]any); ok {
 		comic.ChapterCount = len(values)
@@ -845,12 +846,48 @@ func floatValue(value any) float64 {
 	}
 }
 
-func unixTime(value any) string {
-	seconds := int64(floatValue(value))
-	if seconds <= 0 {
-		return ""
+func pluginTime(value any) string {
+	raw := stringValue(value)
+	if raw == "" {
+		if number := floatValue(value); number > 0 {
+			raw = strconv.FormatFloat(number, 'f', -1, 64)
+		}
 	}
-	return time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+	return source.NormalizeTimestamp(raw)
+}
+
+func comicUpdatedAt(item map[string]any) string {
+	for _, key := range []string{
+		"updatedAt", "updated_at", "updateDate", "updateTime",
+		"lastUpdatedAt", "lastUpdated", "lastUpdate", "uploadDate",
+	} {
+		if value := pluginTime(item[key]); value != "" {
+			return value
+		}
+	}
+	values, _ := arrayField(item, "chapters")
+	updatedAt := ""
+	newestOrder := -1.0
+	for _, value := range values {
+		child, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		chapterTime := firstNonEmpty(
+			pluginTime(child["uploadDate"]),
+			pluginTime(child["updatedAt"]),
+			pluginTime(child["updateDate"]),
+		)
+		if chapterTime == "" {
+			continue
+		}
+		order := floatValue(child["number"])
+		if updatedAt == "" || order >= newestOrder {
+			updatedAt = chapterTime
+			newestOrder = order
+		}
+	}
+	return updatedAt
 }
 
 func chapterTitle(item map[string]any) string {

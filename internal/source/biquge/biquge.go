@@ -132,12 +132,13 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 		return model.Comic{}, err
 	}
 	book := model.Comic{
-		SourceID: sourceID,
-		ID:       id,
-		Title:    source.FirstNonEmpty(meta(document, "og:novel:book_name"), meta(document, "og:title"), document.Find("h1").First().Text()),
-		Author:   source.FirstNonEmpty(meta(document, "og:novel:author"), meta(document, "author")),
-		Cover:    source.Absolutize(base, meta(document, "og:image")),
-		Status:   meta(document, "og:novel:status"),
+		SourceID:  sourceID,
+		ID:        id,
+		Title:     source.FirstNonEmpty(meta(document, "og:novel:book_name"), meta(document, "og:title"), document.Find("h1").First().Text()),
+		Author:    source.FirstNonEmpty(meta(document, "og:novel:author"), meta(document, "author")),
+		Cover:     source.Absolutize(base, meta(document, "og:image")),
+		Status:    meta(document, "og:novel:status"),
+		UpdatedAt: detailUpdatedAt(document),
 	}
 	if book.Title == "" {
 		book.Title = "笔趣阁 " + id
@@ -150,7 +151,7 @@ func (s *Source) Detail(ctx context.Context, account source.Account, comicID str
 		book.ChapterCount = len(chapters)
 	}
 	if book.Cover == "" {
-		book.Cover = source.Absolutize(base, document.Find(".zhutu img").First().AttrOr("src", ""))
+		book.Cover = documentCover(document, base)
 	}
 	return book, nil
 }
@@ -326,7 +327,7 @@ func parseSearch(html, base string, page int) model.SearchResult {
 			ID:       id,
 			Title:    title,
 			Author:   strings.TrimSpace(selection.Parent().Find(".zuo").Text()),
-			Cover:    "",
+			Cover:    nearbyCover(selection, base),
 		})
 	})
 	return model.SearchResult{Items: items, Page: page, Total: len(items), HasMore: len(items) >= 30}
@@ -354,7 +355,7 @@ func parseList(html, base string, page int) model.SearchResult {
 			SourceID: sourceID,
 			ID:       id,
 			Title:    title,
-			Cover:    "",
+			Cover:    nearbyCover(selection, base),
 		})
 	})
 	hasMore := document.Find(fmt.Sprintf("a[href*='_%d/']", page+1)).Length() > 0
@@ -372,6 +373,73 @@ func meta(document *goquery.Document, name string) string {
 		return value
 	}
 	return strings.TrimSpace(document.Find(fmt.Sprintf(`meta[name="%s"]`, name)).First().AttrOr("content", ""))
+}
+
+func documentCover(document *goquery.Document, base string) string {
+	for _, selector := range []string{
+		".bookimg img",
+		".book-img img",
+		"#fmimg img",
+		".cover img",
+		".pic img",
+		".zhutu img",
+		"img.cover",
+	} {
+		if value := imageAddress(document.Find(selector).First(), base); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nearbyCover(selection *goquery.Selection, base string) string {
+	candidates := []*goquery.Selection{
+		selection.Find("img").First(),
+		selection.Parent().Find("img").First(),
+		selection.Closest("li").Find("img").First(),
+		selection.Closest(".item, .book, .book-item, .bookbox, .hot, .recommend, .grid").Find("img").First(),
+	}
+	for _, image := range candidates {
+		if value := imageAddress(image, base); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func imageAddress(image *goquery.Selection, base string) string {
+	if image == nil || image.Length() == 0 {
+		return ""
+	}
+	for _, attribute := range []string{
+		"data-original",
+		"data-src",
+		"data-lazy-src",
+		"data-echo",
+		"data-url",
+		"src",
+	} {
+		value := strings.TrimSpace(image.AttrOr(attribute, ""))
+		if value == "" || strings.HasPrefix(strings.ToLower(value), "data:") {
+			continue
+		}
+		return source.Absolutize(base, value)
+	}
+	if srcset := strings.TrimSpace(image.AttrOr("srcset", "")); srcset != "" {
+		candidate := strings.TrimSpace(strings.Split(srcset, ",")[0])
+		if fields := strings.Fields(candidate); len(fields) > 0 {
+			return source.Absolutize(base, fields[0])
+		}
+	}
+	return ""
+}
+
+func detailUpdatedAt(document *goquery.Document) string {
+	return source.NormalizeTimestamp(source.FirstNonEmpty(
+		meta(document, "og:novel:update_time"),
+		meta(document, "article:modified_time"),
+		meta(document, "og:updated_time"),
+	))
 }
 
 func normalizeBookID(value string) string {

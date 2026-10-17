@@ -64,7 +64,11 @@ func TestToComicExtractsLatestChapterTitleWithoutKeepingChapters(t *testing.T) {
 		"title": "示例作品",
 		"chapters": []any{
 			map[string]any{"title": "第2话", "number": float64(2)},
-			map[string]any{"title": "第10话 最终话", "number": float64(10)},
+			map[string]any{
+				"title":      "第10话 最终话",
+				"number":     float64(10),
+				"uploadDate": float64(1792209600000),
+			},
 			map[string]any{"title": "第1话", "number": float64(1)},
 		},
 	})
@@ -73,5 +77,8 @@ func TestToComicExtractsLatestChapterTitleWithoutKeepingChapters(t *testing.T) {
 	}
 	if comic.ChapterCount != 3 {
 		t.Fatalf("chapter count = %d, want 3", comic.ChapterCount)
+	}
+	if comic.UpdatedAt != "2026-10-17T04:00:00Z" {
+		t.Fatalf("updated at = %q, want newest chapter timestamp", comic.UpdatedAt)
 	}
 }
