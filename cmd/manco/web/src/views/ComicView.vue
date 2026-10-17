@@ -36,6 +36,7 @@ const isBook = ref(false)
 
 const detail = ref(null)
 const selected = ref(new Set())
+const chapterSelectionMode = ref(false)
 const loading = ref(true)
 const busy = ref(false)
 const error = ref('')
@@ -45,12 +46,20 @@ const queryInput = ref('')
 const appliedQuery = ref('')
 const heroTint = ref('')
 const downloadedChapters = ref(new Set())
+const previewOpen = ref(false)
+const previewLoading = ref(false)
+const previewError = ref('')
+const previewKind = ref('')
+const previewTitle = ref('')
+const previewText = ref('')
+const previewPages = ref([])
 // 从订阅清单的“归档集”进入时，章节下面要标出哪些章节有过下载记录。
 const archiveMode = computed(() => String(route.query.archive || '') === '1')
 
 const chapterRenderLimit = ref(80)
 let pageScroller = null
 let anchorIndex = -1
+let previewRequestSeq = 0
 
 const subscribeOpen = ref(false)
 const downloadOpen = ref(false)
@@ -125,6 +134,15 @@ function handlePageScroll(event) {
   }
 }
 
+function handleReaderKeydown(event) {
+  if (event.key !== 'Escape') return
+  if (previewOpen.value) {
+    closeChapterPreview()
+  } else if (chapterSelectionMode.value) {
+    clearChapterSelection()
+  }
+}
+
 function defaultCron() {
   const now = new Date()
   return `${now.getMinutes()} ${now.getHours()} * * ${now.getDay()}`
@@ -180,10 +198,13 @@ onMounted(async () => {
   if (comic.value?.cover) extractTint(cover())
   pageScroller = document.querySelector('.content-scroll')
   pageScroller?.addEventListener('scroll', handlePageScroll, { passive: true })
+  window.addEventListener('keydown', handleReaderKeydown)
 })
 
 onUnmounted(() => {
   pageScroller?.removeEventListener('scroll', handlePageScroll)
+  window.removeEventListener('keydown', handleReaderKeydown)
+  previewRequestSeq += 1
 })
 
 function extractTint(url) {
@@ -236,6 +257,7 @@ function searchAuthor(name) {
 }
 
 function handleChapterClick(event, chapter, index) {
+  if (!chapterSelectionMode.value || event.detail > 1) return
   const next = new Set(selected.value)
   if (event.shiftKey && anchorIndex >= 0) {
     const [start, end] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex]
@@ -251,16 +273,85 @@ function handleChapterClick(event, chapter, index) {
     anchorIndex = index
   }
   selected.value = next
+  if (!next.size) chapterSelectionMode.value = false
 }
 
 function toggleAll() {
-  if (allSelected.value) {
-    const next = new Set(selected.value)
-    for (const chapter of displayChapters.value) next.delete(chapter.id)
-    selected.value = next
+  if (!chapterSelectionMode.value) {
+    chapterSelectionMode.value = true
+    selected.value = new Set(displayChapters.value.map((item) => item.id))
+  } else if (allSelected.value) {
+    clearChapterSelection()
   } else {
     selected.value = new Set([...selected.value, ...displayChapters.value.map((item) => item.id)])
   }
+}
+
+function enterChapterSelection(event, chapter, index) {
+  event.preventDefault()
+  chapterSelectionMode.value = true
+  anchorIndex = index
+  if (!selected.value.has(chapter.id)) {
+    selected.value = new Set([...selected.value, chapter.id])
+  }
+}
+
+function clearChapterSelection() {
+  chapterSelectionMode.value = false
+  selected.value = new Set()
+  anchorIndex = -1
+}
+
+function previewPlainText(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const document = new DOMParser().parseFromString(raw, 'text/html')
+  document.querySelectorAll('br').forEach((node) => node.replaceWith('\n'))
+  document.querySelectorAll('p, div, section, article, li, h1, h2, h3, h4, h5, h6').forEach((node) => {
+    node.append('\n')
+  })
+  return String(document.body?.textContent || raw)
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+async function openChapterPreview(chapter) {
+  if (!chapter?.id || !comic.value) return
+  const requestSeq = ++previewRequestSeq
+  previewOpen.value = true
+  previewLoading.value = true
+  previewError.value = ''
+  previewKind.value = ''
+  previewTitle.value = chapter.title || chapter.id
+  previewText.value = ''
+  previewPages.value = []
+  try {
+    const payload = await api.chapterPreview(sourceId, comic.value.id, chapter)
+    if (requestSeq !== previewRequestSeq) return
+    previewKind.value = payload.kind || ''
+    previewTitle.value = payload.title || previewTitle.value
+    if (payload.kind === 'images') {
+      previewPages.value = Array.isArray(payload.pages) ? payload.pages : []
+    } else {
+      previewText.value = previewPlainText(payload.content)
+    }
+  } catch (err) {
+    if (requestSeq === previewRequestSeq) previewError.value = err.message
+  } finally {
+    if (requestSeq === previewRequestSeq) previewLoading.value = false
+  }
+}
+
+function closeChapterPreview() {
+  previewRequestSeq += 1
+  previewOpen.value = false
+  previewLoading.value = false
+  previewError.value = ''
+  previewKind.value = ''
+  previewText.value = ''
+  previewPages.value = []
 }
 
 function applyChapterSearch() {
@@ -409,6 +500,7 @@ async function downloadSelected() {
       [`已加入 ${queued} 个章节`, skipped ? `跳过 ${skipped} 个已下载章节` : ''].filter(Boolean).join('，'),
       'success',
     )
+    clearChapterSelection()
   } catch (err) {
     notify(err.message, 'error')
   } finally {
@@ -488,7 +580,12 @@ async function downloadSelected() {
 
     <section class="detail-chapters">
       <div class="detail-chapter-head">
-        <button class="btn ghost small select-all-btn" type="button" @click="toggleAll">
+        <button
+          class="btn ghost small select-all-btn"
+          :class="{ active: chapterSelectionMode }"
+          type="button"
+          @click="toggleAll"
+        >
           <component :is="allSelected ? SquareCheck : Square" :size="16" />
           <span>全选</span>
         </button>
@@ -511,11 +608,12 @@ async function downloadSelected() {
       </div>
 
       <div v-if="!displayChapters.length" class="empty">没有匹配的章节</div>
-      <div v-else class="chapter-grid">
+      <div v-else class="chapter-grid" :class="{ selecting: chapterSelectionMode }">
         <button
           v-for="(chapter, index) in renderedChapters"
           :key="chapter.id"
           class="chapter-tile"
+          title="双击预览章节"
           :class="{
             selected: selected.has(chapter.id),
             'is-downloaded': archiveMode && downloadedChapters.has(chapter.id),
@@ -523,6 +621,8 @@ async function downloadSelected() {
           }"
           type="button"
           @click="handleChapterClick($event, chapter, index)"
+          @contextmenu.prevent="enterChapterSelection($event, chapter, index)"
+          @dblclick.prevent.stop="openChapterPreview(chapter)"
         >
           <component :is="selected.has(chapter.id) ? SquareCheck : Square" :size="16" />
           <span class="chapter-tile-title">{{ chapter.title }}</span>
@@ -530,6 +630,41 @@ async function downloadSelected() {
         </button>
       </div>
     </section>
+  </div>
+
+  <div v-if="previewOpen" class="modal-backdrop reader-backdrop" @click.self="closeChapterPreview">
+    <div class="modal reader-modal remote-preview-modal">
+      <div class="modal-head">
+        <div>
+          <h2>{{ previewTitle }}</h2>
+          <p v-if="previewKind === 'images' && previewPages.length" class="muted small">
+            共 {{ previewPages.length }} 张 · 条漫预览
+          </p>
+          <p v-else-if="previewKind === 'text'" class="muted small">章节正文预览</p>
+        </div>
+        <button class="btn ghost icon" type="button" aria-label="关闭预览" @click="closeChapterPreview">
+          <X :size="18" />
+        </button>
+      </div>
+      <div v-if="previewLoading" class="empty">
+        <Loader2 :size="24" class="spin" />
+        <span>正在加载章节预览</span>
+      </div>
+      <div v-else-if="previewError" class="card empty">
+        <p>{{ previewError }}</p>
+      </div>
+      <div v-else-if="previewKind === 'images' && previewPages.length" class="reader-view">
+        <img
+          v-for="(page, index) in previewPages"
+          :key="page"
+          :src="page"
+          :alt="`第 ${index + 1} 张`"
+          loading="lazy"
+          decoding="async"
+        />
+      </div>
+      <pre v-else class="reader-text">{{ previewText || '（空章节）' }}</pre>
+    </div>
   </div>
 
   <div v-if="subscribeOpen" class="modal-backdrop detail-modal-backdrop" @click.self="subscribeOpen = false">

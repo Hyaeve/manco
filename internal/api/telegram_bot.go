@@ -58,6 +58,36 @@ func (s *Server) BotSearch(ctx context.Context, sourceID, query string, limit in
 	return items, nil
 }
 
+func (s *Server) BotBrowse(ctx context.Context, sourceID string, page int) (telegram.BotBrowsePage, error) {
+	if page < 1 {
+		page = 1
+	}
+	adapter, err := s.registry.Get(sourceID)
+	if err != nil {
+		return telegram.BotBrowsePage{}, err
+	}
+	account, err := s.registry.Account(ctx, sourceID)
+	if err != nil {
+		return telegram.BotBrowsePage{}, err
+	}
+	options := browseOptionsFromFilterValues(s.sourceBrowseFilters(ctx)[sourceID])
+	result, err := adapter.Browse(ctx, account, options, page)
+	if err != nil {
+		return telegram.BotBrowsePage{}, err
+	}
+	info := adapter.Info()
+	kind := source.KindOf(info)
+	items := make([]model.Comic, 0, len(result.Items))
+	for _, item := range result.Items {
+		items = append(items, s.annotateDiscover(info.ID, kind, item))
+	}
+	return telegram.BotBrowsePage{
+		Items:   items,
+		Page:    page,
+		HasMore: result.HasMore,
+	}, nil
+}
+
 // BotSubscribe creates a subscription with the same defaults the web UI uses:
 // source default download location, simplified conversion, historical chapters
 // and weekly automatic updates.
@@ -141,14 +171,65 @@ func (s *Server) BotSubscriptions(ctx context.Context) ([]telegram.BotSubscripti
 			name = adapter.Info().Name
 		}
 		result = append(result, telegram.BotSubscription{
-			ID:       item.ID,
-			Source:   name,
-			Title:    item.Title,
-			Enabled:  item.Enabled,
-			CronExpr: item.CronExpr,
+			ID:          item.ID,
+			Source:      name,
+			Title:       item.Title,
+			Enabled:     item.Enabled,
+			CronExpr:    item.CronExpr,
+			DownloadDir: item.DownloadDir,
+			ParentDir:   downloadParentDirName(item.DownloadDir),
 		})
 	}
 	return result, nil
+}
+
+func (s *Server) BotDownloading(ctx context.Context) (telegram.BotDownloadingSnapshot, error) {
+	running, err := s.store.ListRunningJobs(ctx)
+	if err != nil {
+		return telegram.BotDownloadingSnapshot{}, err
+	}
+	next, hasNext, err := s.store.NextQueuedJob(ctx)
+	if err != nil {
+		return telegram.BotDownloadingSnapshot{}, err
+	}
+	snapshot := telegram.BotDownloadingSnapshot{
+		Running: make([]telegram.BotDownloadItem, 0, len(running)),
+	}
+	for _, job := range running {
+		snapshot.Running = append(snapshot.Running, telegram.BotDownloadItem{
+			ComicTitle:   job.ComicTitle,
+			ChapterTitle: job.ChapterTitle,
+		})
+	}
+	now := time.Now()
+	var cooldownUntil time.Time
+	if hasNext {
+		snapshot.NextQueued = &telegram.BotDownloadItem{
+			ComicTitle:   next.ComicTitle,
+			ChapterTitle: next.ChapterTitle,
+		}
+		if s.engine != nil {
+			cooldownUntil = s.engine.CooldownUntil(next.SourceID)
+		}
+	} else if s.engine != nil {
+		cooldownUntil = s.engine.GlobalCooldown()
+	}
+	if wait := cooldownUntil.Sub(now); wait > 0 {
+		snapshot.CooldownMinutes = int((wait + time.Minute - 1) / time.Minute)
+	}
+	return snapshot, nil
+}
+
+func downloadParentDirName(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		return ""
+	}
+	if index := strings.LastIndex(value, "/"); index >= 0 {
+		return strings.TrimSpace(value[index+1:])
+	}
+	return value
 }
 
 // BotCheck runs one update check and also retries previously failed chapters.

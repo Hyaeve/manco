@@ -114,6 +114,9 @@ type SourceDownloadSettings struct {
 type Stats struct {
 	Subscriptions int `json:"subscriptions"`
 	ActiveJobs    int `json:"activeJobs"`
+	RunningJobs   int `json:"runningJobs"`
+	QueuedJobs    int `json:"queuedJobs"`
+	FailedJobs    int `json:"failedJobs"`
 	CompletedJobs int `json:"completedJobs"`
 	LibraryItems  int `json:"libraryItems"`
 }

@@ -129,6 +129,13 @@ func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].ID != queued.ID {
 		t.Fatalf("queued jobs = %v, want only job %d", jobs, queued.ID)
 	}
+	next, ok, err := repository.NextQueuedJob(ctx)
+	if err != nil {
+		t.Fatalf("next queued: %v", err)
+	}
+	if !ok || next.ID != queued.ID {
+		t.Fatalf("next queued = %+v, %v; want job %d", next, ok, queued.ID)
+	}
 
 	stored, err := repository.DownloadJob(ctx, running.ID)
 	if err != nil {

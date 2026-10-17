@@ -564,6 +564,7 @@ async function remove(item, removeFile) {
             <ContentLink
               class="download-work"
               :to="{ name: 'comic', params: { sourceId: entry.item.sourceId, comicId: entry.item.comicId } }"
+              :before-navigate="() => !selecting"
               :title="entry.item.comicTitle"
               @click.stop
             >

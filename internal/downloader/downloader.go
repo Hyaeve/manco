@@ -431,6 +431,32 @@ func (e *Engine) GlobalCooldown() time.Time {
 	return e.cooldownUntil
 }
 
+// CooldownUntil returns the effective batch-pause deadline for one source.
+// A global pause applies to every source, while a source-specific pause only
+// affects jobs from that source.
+func (e *Engine) CooldownUntil(sourceID string) time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var until time.Time
+	if e.batchSize > 0 && now.Before(e.cooldownUntil) {
+		until = e.cooldownUntil
+	}
+	batchSize := e.batchSize
+	if limit, ok := e.sourceBatchSize[sourceID]; ok {
+		batchSize = limit
+	}
+	if batchSize > 0 {
+		if sourceUntil := e.sourceCooldownUntil[sourceID]; now.Before(sourceUntil) && sourceUntil.After(until) {
+			until = sourceUntil
+		}
+	}
+	return until
+}
+
 // markCompleted 把任务标记为完成，并在成功后记一次批量暂停计数。
 func (e *Engine) markCompleted(ctx context.Context, job model.DownloadJob, total, done int, outputPath string) error {
 	err := e.store.UpdateDownloadJob(ctx, job.ID, "completed", total, done, outputPath, "")
@@ -2810,6 +2836,30 @@ func fetchPageImage(ctx context.Context, client *http.Client, account source.Acc
 	}
 	data, err := fetchImage(ctx, client, account, page)
 	return data, false, err
+}
+
+// PreviewPageImage materializes one source page for the authenticated reader
+// without writing it into a download job. Plugin pages are already fully
+// materialized by their runtime; regular pages may still require descrambling.
+func PreviewPageImage(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) ([]byte, string, error) {
+	data, materialized, err := fetchPageImage(ctx, client, account, item, comicID, chapter, page)
+	if err != nil {
+		return nil, "", err
+	}
+	if page.DescrambleParts > 0 && !materialized {
+		data, err = Descramble(data, page.DescrambleParts)
+		if err != nil {
+			return nil, "", fmt.Errorf("解扰失败: %w", err)
+		}
+	}
+	if len(data) == 0 {
+		return nil, "", errors.New("预览页面为空")
+	}
+	contentType := strings.TrimSpace(page.ContentType)
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	return data, contentType, nil
 }
 
 func openPageContent(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, string, error) {

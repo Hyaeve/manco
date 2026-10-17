@@ -26,8 +26,10 @@ import (
 type App interface {
 	BotSources(ctx context.Context) ([]BotSource, error)
 	BotSearch(ctx context.Context, sourceID, query string, limit int) ([]model.Comic, error)
+	BotBrowse(ctx context.Context, sourceID string, page int) (BotBrowsePage, error)
 	BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, int, error)
 	BotSubscriptions(ctx context.Context) ([]BotSubscription, error)
+	BotDownloading(ctx context.Context) (BotDownloadingSnapshot, error)
 	BotCheck(ctx context.Context, subscriptionID int64) (BotCheckResult, error)
 	BotArchive(ctx context.Context, subscriptionID int64) error
 	BotFill(ctx context.Context, subscriptionID int64) (int, int, error)
@@ -47,11 +49,30 @@ type BotSource struct {
 
 // BotSubscription is the display shape of a subscription for the bot.
 type BotSubscription struct {
-	ID       int64
-	Source   string
-	Title    string
-	Enabled  bool
-	CronExpr string
+	ID          int64
+	Source      string
+	Title       string
+	Enabled     bool
+	CronExpr    string
+	DownloadDir string
+	ParentDir   string
+}
+
+type BotDownloadItem struct {
+	ComicTitle   string
+	ChapterTitle string
+}
+
+type BotDownloadingSnapshot struct {
+	Running         []BotDownloadItem
+	NextQueued      *BotDownloadItem
+	CooldownMinutes int
+}
+
+type BotBrowsePage struct {
+	Items   []model.Comic
+	Page    int
+	HasMore bool
 }
 
 // BotCheckResult summarises one subscription check.
@@ -125,6 +146,17 @@ type session struct {
 	detailMessageID int64
 	detailPhoto     bool
 	detailIndex     int
+	browse          *browseSession
+}
+
+type browseSession struct {
+	SourceID   string
+	SourceName string
+	SourcePage int
+	Page       int
+	HasMore    bool
+	HasNext    bool
+	Pool       []resultEntry
 }
 
 type resultEntry struct {
@@ -302,10 +334,12 @@ func (s *Service) registerCommands(ctx context.Context) {
 	}
 	payload := `{"commands":[` +
 		`{"command":"start","description":"开始 / 查看帮助"},` +
-		`{"command":"subscriptions","description":"查看订阅清单"},` +
-		`{"command":"check","description":"检查已启用追更订阅"},` +
+		`{"command":"subscriptions","description":"查看全部或指定父目录订阅"},` +
+		`{"command":"check","description":"检查全部、父目录或指定作品"},` +
+		`{"command":"downloading","description":"查看正在下载和暂停状态"},` +
+		`{"command":"view","description":"查看指定内容源榜单"},` +
 		`{"command":"sources","description":"查看已添加内容源"},` +
-		`{"command":"s","description":"搜索作品"}` +
+		`{"command":"sh","description":"搜索作品"}` +
 		`]}`
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", token)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))

@@ -34,13 +34,17 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 	switch command {
 	case "/start", "开始", "start":
 		s.sendMessage(ctx, chat, helpText(), nil)
-	case "/subscriptions", "订阅", "subscriptions":
-		s.replySubscriptions(ctx, chat)
-	case "/check", "检查全部", "check":
+	case "/subscriptions", "订阅", "查看订阅", "subscriptions":
+		s.replySubscriptions(ctx, chat, argument)
+	case "/check", "检查全部", "检查", "check":
 		go s.replyCheck(ctx, chat, argument)
+	case "/downloading", "下载中", "正在下载", "downloading":
+		s.replyDownloading(ctx, chat)
+	case "/view", "查看榜单", "榜单", "view":
+		s.replyBrowse(ctx, chatID, argument)
 	case "/sources", "内容源", "sources":
 		s.replySources(ctx, chat)
-	case "/s", "搜索", "s":
+	case "/sh", "搜索", "sh":
 		s.replySearch(ctx, chatID, argument, "")
 	default:
 		if query, sourceName, ok := parseSearchText(text); ok {
@@ -120,13 +124,17 @@ func helpText() string {
 	return strings.Join([]string{
 		"<b>Manco 指令</b>",
 		"/start 开始",
-		"/subscriptions 查看订阅清单",
-		"/check [作品名] 检查已启用追更订阅或单项",
+		"/subscriptions [下载父目录] 查看全部订阅或指定父目录",
+		"/check [作品名或下载父目录] 检查全部、目录或单项",
+		"/downloading 查看正在下载与暂停状态",
+		"/view [内容源] 查看内容源榜单",
 		"/sources 查看已添加内容源",
-		"/s 关键词 全局搜索",
+		"/sh 关键词 全局搜索",
+		"查看订阅 [下载父目录]",
+		"查看榜单 包子",
 		"搜索漫画 关键词",
 		"包子搜索 关键词",
-		"检查 作品名",
+		"检查 [作品名或下载父目录]",
 		"补全 作品名",
 		"刮削 作品名",
 		"启用 作品名",
@@ -154,7 +162,7 @@ func (s *Service) replySources(ctx context.Context, chat string) {
 	s.sendMessage(ctx, chat, strings.Join(lines, "\n"), nil)
 }
 
-func (s *Service) replySubscriptions(ctx context.Context, chat string) {
+func (s *Service) replySubscriptions(ctx context.Context, chat, directory string) {
 	items, err := s.app.BotSubscriptions(ctx)
 	if err != nil {
 		s.sendMessage(ctx, chat, "读取订阅清单失败："+err.Error(), nil)
@@ -164,7 +172,41 @@ func (s *Service) replySubscriptions(ctx context.Context, chat string) {
 		s.sendMessage(ctx, chat, "订阅清单是空的。", nil)
 		return
 	}
-	s.sendMessage(ctx, chat, renderSubscriptionList(items), nil)
+	directory = strings.TrimSpace(directory)
+	if directory != "" {
+		filtered := subscriptionsInDownloadDirectory(items, directory)
+		if len(filtered) == 0 {
+			s.sendMessage(ctx, chat, fmt.Sprintf("没有找到下载父目录为「%s」的订阅。", directory), nil)
+			return
+		}
+		items = filtered
+	}
+	s.sendMessage(ctx, chat, renderSubscriptionList(items, directory), nil)
+}
+
+func subscriptionsInDownloadDirectory(items []BotSubscription, directory string) []BotSubscription {
+	query := normalizeDirectory(directory)
+	if query == "" {
+		return nil
+	}
+	result := make([]BotSubscription, 0, len(items))
+	for _, item := range items {
+		parent := normalizeDirectory(item.ParentDir)
+		full := normalizeDirectory(item.DownloadDir)
+		if parent == query || full == query || strings.HasSuffix(full, "/"+query) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func normalizeDirectory(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		return ""
+	}
+	return strings.ToLower(value)
 }
 
 type subscriptionCheckOutcome struct {
@@ -173,8 +215,61 @@ type subscriptionCheckOutcome struct {
 	Err          error
 }
 
-// replyCheck checks every enabled subscription by default. A supplied title
-// checks that single subscription, including a disabled one.
+func (s *Service) replyDownloading(ctx context.Context, chat string) {
+	snapshot, err := s.app.BotDownloading(ctx)
+	if err != nil {
+		s.sendMessage(ctx, chat, "读取下载状态失败："+err.Error(), nil)
+		return
+	}
+	s.sendMessage(ctx, chat, renderDownloading(snapshot), nil)
+}
+
+func renderDownloading(snapshot BotDownloadingSnapshot) string {
+	if snapshot.CooldownMinutes > 0 {
+		lines := []string{
+			"<b>处于暂停期</b>",
+			fmt.Sprintf("还有 %d 分钟后开始下载", snapshot.CooldownMinutes),
+		}
+		if snapshot.NextQueued != nil {
+			lines[1] += fmt.Sprintf(
+				"《%s》· %s",
+				html.EscapeString(snapshot.NextQueued.ComicTitle),
+				html.EscapeString(snapshot.NextQueued.ChapterTitle),
+			)
+		} else {
+			lines[1] += "；当前没有排队任务。"
+		}
+		if len(snapshot.Running) > 0 {
+			lines = append(lines, "", "<b>当前仍在下载</b>")
+			for index, item := range snapshot.Running {
+				lines = append(lines, fmt.Sprintf(
+					"%d. 《%s》· %s",
+					index+1,
+					html.EscapeString(item.ComicTitle),
+					html.EscapeString(item.ChapterTitle),
+				))
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	if len(snapshot.Running) == 0 {
+		return "当前没有正在下载的任务。"
+	}
+	lines := []string{fmt.Sprintf("<b>正在下载（%d）</b>", len(snapshot.Running))}
+	for index, item := range snapshot.Running {
+		lines = append(lines, fmt.Sprintf(
+			"%d. 《%s》· %s",
+			index+1,
+			html.EscapeString(item.ComicTitle),
+			html.EscapeString(item.ChapterTitle),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// replyCheck checks every subscription by default. A supplied exact title
+// checks one subscription; an exact download parent directory checks every
+// subscription below that directory.
 func (s *Service) replyCheck(ctx context.Context, chat, query string) {
 	allItems, err := s.app.BotSubscriptions(ctx)
 	if err != nil {
@@ -182,25 +277,32 @@ func (s *Service) replyCheck(ctx context.Context, chat, query string) {
 		return
 	}
 	query = strings.TrimSpace(query)
+	targetDirectory := checkTargetDirectory(allItems, query)
 	items := checkSubscriptionTargets(allItems, query)
 	if len(items) == 0 {
 		if query == "" {
-			s.sendMessage(ctx, chat, "订阅清单里没有已启用且配置追更的订阅。", nil)
+			s.sendMessage(ctx, chat, "订阅清单是空的。", nil)
 		} else {
 			s.sendMessage(ctx, chat, fmt.Sprintf("订阅清单里没有找到「%s」。", query), nil)
 		}
 		return
 	}
-	if query != "" && len(items) > 1 {
-		lines := []string{fmt.Sprintf("「%s」匹配到 %d 个订阅，请使用更完整的作品名称：", query, len(items))}
+	if query != "" && len(items) > 1 && targetDirectory == "" {
+		lines := []string{fmt.Sprintf("「%s」匹配到 %d 个订阅，请使用更完整的作品名称或下载父目录：", query, len(items))}
 		for _, item := range items {
 			lines = append(lines, "· "+item.Title)
 		}
 		s.sendMessage(ctx, chat, strings.Join(lines, "\n"), nil)
 		return
 	}
-	progress := fmt.Sprintf("<b>正在检查已启用的追更订阅</b>\n共 %d 个订阅，请稍候。", len(items))
-	if query != "" {
+	progress := fmt.Sprintf("<b>正在检查全部订阅</b>\n共 %d 个订阅，请稍候。", len(items))
+	if targetDirectory != "" {
+		progress = fmt.Sprintf(
+			"<b>正在检查下载目录「%s」</b>\n共 %d 个订阅，请稍候。",
+			html.EscapeString(targetDirectory),
+			len(items),
+		)
+	} else if query != "" && len(items) == 1 {
 		progress = fmt.Sprintf("<b>正在检查《%s》</b>", html.EscapeString(items[0].Title))
 	}
 	messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
@@ -248,20 +350,14 @@ func (s *Service) replyCheck(ctx context.Context, chat, query string) {
 	s.sendMessage(ctx, chat, report, nil)
 }
 
-// checkSubscriptionTargets returns enabled subscriptions with a Cron schedule
-// for a batch check.
-// When query is present, exact title matches win over partial matches, and
-// disabled subscriptions are eligible for a deliberate single-item check.
+// checkSubscriptionTargets returns every subscription for a default check.
+// Exact title matches win over directory matches; an exact parent directory
+// selects every subscription below it. Remaining matches are partial title or
+// parent-directory matches.
 func checkSubscriptionTargets(items []BotSubscription, query string) []BotSubscription {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		result := make([]BotSubscription, 0, len(items))
-		for _, item := range items {
-			if item.Enabled && strings.TrimSpace(item.CronExpr) != "" {
-				result = append(result, item)
-			}
-		}
-		return result
+		return append([]BotSubscription(nil), items...)
 	}
 	var exact []BotSubscription
 	var partial []BotSubscription
@@ -271,14 +367,40 @@ func checkSubscriptionTargets(items []BotSubscription, query string) []BotSubscr
 		switch {
 		case title == needle:
 			exact = append(exact, item)
-		case strings.Contains(title, needle):
+		case strings.Contains(title, needle) ||
+			strings.Contains(normalizeDirectory(item.ParentDir), normalizeDirectory(query)) ||
+			strings.Contains(normalizeDirectory(item.DownloadDir), normalizeDirectory(query)):
 			partial = append(partial, item)
 		}
 	}
 	if len(exact) > 0 {
 		return exact
 	}
+	if directoryMatches := subscriptionsInDownloadDirectory(items, query); len(directoryMatches) > 0 {
+		return directoryMatches
+	}
 	return partial
+}
+
+func checkTargetDirectory(items []BotSubscription, query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	needle := strings.ToLower(query)
+	for _, item := range items {
+		if strings.ToLower(strings.TrimSpace(item.Title)) == needle {
+			return ""
+		}
+	}
+	matches := subscriptionsInDownloadDirectory(items, query)
+	if len(matches) == 0 {
+		return ""
+	}
+	if parent := strings.TrimSpace(matches[0].ParentDir); parent != "" {
+		return parent
+	}
+	return query
 }
 
 func (s *Service) replySubscriptionAction(ctx context.Context, chat, action, title string) {
@@ -450,6 +572,209 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, sourceNa
 	s.mu.Unlock()
 }
 
+const browsePageSize = 10
+
+func (s *Service) replyBrowse(ctx context.Context, chatID int64, sourceQuery string) {
+	chat := strconv.FormatInt(chatID, 10)
+	sourceQuery = strings.TrimSpace(sourceQuery)
+	if sourceQuery == "" {
+		s.sendMessage(ctx, chat, "请加入具体内容源，例如：查看榜单 包子、/view 包子 或 查看榜单 拷贝。", nil)
+		return
+	}
+	sources, err := s.app.BotSources(ctx)
+	if err != nil {
+		s.sendMessage(ctx, chat, "读取内容源失败："+err.Error(), nil)
+		return
+	}
+	source, ok := matchViewSource(sources, sourceQuery)
+	if !ok {
+		s.sendMessage(ctx, chat, fmt.Sprintf(
+			"没有找到内容源「%s」。中文源请输入前两个字或全名，英文源至少输入前六个字母，不区分大小写。",
+			sourceQuery,
+		), nil)
+		return
+	}
+	firstPage, err := s.app.BotBrowse(ctx, source.ID, 1)
+	if err != nil {
+		s.sendMessage(ctx, chat, fmt.Sprintf("%s 榜单加载失败：%s", source.Name, err.Error()), nil)
+		return
+	}
+	pool := make([]resultEntry, 0, len(firstPage.Items))
+	for _, item := range firstPage.Items {
+		pool = append(pool, newResultEntry(source, item))
+	}
+	if len(pool) == 0 {
+		s.sendMessage(ctx, chat, fmt.Sprintf("%s 当前没有榜单内容。", source.Name), nil)
+		return
+	}
+	s.mu.Lock()
+	s.sessions[chatID] = &session{browse: &browseSession{
+		SourceID:   source.ID,
+		SourceName: source.Name,
+		SourcePage: 1,
+		Page:       1,
+		HasMore:    firstPage.HasMore,
+		Pool:       pool,
+	}}
+	s.mu.Unlock()
+	if err := s.showBrowsePage(ctx, chatID, chat, 1, 0); err != nil {
+		s.sendMessage(ctx, chat, "榜单发送失败："+err.Error(), nil)
+	}
+}
+
+func matchViewSource(sources []BotSource, value string) (BotSource, bool) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return BotSource{}, false
+	}
+	for _, source := range sources {
+		if strings.ToLower(strings.TrimSpace(source.Name)) == value {
+			return source, true
+		}
+	}
+	for _, source := range sources {
+		name := strings.ToLower(strings.TrimSpace(source.Name))
+		if name == "" {
+			continue
+		}
+		if asciiSourceName(name) {
+			prefix := 6
+			runes := []rune(name)
+			if len(runes) < prefix {
+				prefix = len(runes)
+			}
+			if len([]rune(value)) >= prefix && strings.HasPrefix(name, value) {
+				return source, true
+			}
+			continue
+		}
+		runes := []rune(name)
+		if len(runes) >= 2 && value == string(runes[:2]) {
+			return source, true
+		}
+	}
+	return BotSource{}, false
+}
+
+func asciiSourceName(value string) bool {
+	for _, r := range value {
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat string, page int, messageID int64) error {
+	if page < 1 {
+		page = 1
+	}
+	s.mu.RLock()
+	current := s.sessions[chatID]
+	if current == nil || current.browse == nil {
+		s.mu.RUnlock()
+		return fmt.Errorf("榜单会话已过期")
+	}
+	browse := *current.browse
+	browse.Pool = append([]resultEntry(nil), current.browse.Pool...)
+	s.mu.RUnlock()
+
+	for {
+		start := (page - 1) * browsePageSize
+		if start < len(browse.Pool) || !browse.HasMore {
+			break
+		}
+		browse.SourcePage++
+		next, err := s.app.BotBrowse(ctx, browse.SourceID, browse.SourcePage)
+		if err != nil {
+			return err
+		}
+		browse.HasMore = next.HasMore
+		if len(next.Items) == 0 {
+			browse.HasMore = false
+			break
+		}
+		source := BotSource{ID: browse.SourceID, Name: browse.SourceName}
+		for _, item := range next.Items {
+			browse.Pool = append(browse.Pool, newResultEntry(source, item))
+		}
+	}
+	start := (page - 1) * browsePageSize
+	if start >= len(browse.Pool) {
+		page = max(1, (len(browse.Pool)+browsePageSize-1)/browsePageSize)
+		start = (page - 1) * browsePageSize
+	}
+	end := min(len(browse.Pool), start+browsePageSize)
+	entries := append([]resultEntry(nil), browse.Pool[start:end]...)
+	hasNext := end < len(browse.Pool) || browse.HasMore
+	text := renderBrowseResults(browse.SourceName, page, start, entries)
+	keyboard := browseKeyboard(entries, page, hasNext)
+	if messageID == 0 {
+		newID, err := s.callMethod(ctx, "sendMessage", map[string]any{
+			"chat_id":      chat,
+			"text":         text,
+			"parse_mode":   "HTML",
+			"reply_markup": keyboard,
+		})
+		if err != nil {
+			return err
+		}
+		messageID = newID
+	} else if err := s.editMessage(ctx, chat, messageID, false, text, keyboard); err != nil {
+		newID, sendErr := s.callMethod(ctx, "sendMessage", map[string]any{
+			"chat_id":      chat,
+			"text":         text,
+			"parse_mode":   "HTML",
+			"reply_markup": keyboard,
+		})
+		if sendErr != nil {
+			return err
+		}
+		messageID = newID
+	}
+	browse.Page = page
+	browse.HasNext = hasNext
+	s.mu.Lock()
+	if existing := s.sessions[chatID]; existing != nil && existing.browse != nil {
+		existing.results = entries
+		existing.resultsText = text
+		existing.resultsMessageID = messageID
+		existing.browse = &browse
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func renderBrowseResults(sourceName string, page, start int, entries []resultEntry) string {
+	lines := []string{
+		fmt.Sprintf("<b>%s · 榜单</b>", html.EscapeString(sourceName)),
+		fmt.Sprintf("第 %d 页", page),
+	}
+	for index, entry := range entries {
+		lines = append(lines, fmt.Sprintf(
+			"%d. %s",
+			start+index+1,
+			html.EscapeString(truncate(entry.Title, titleLimit)),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func browseKeyboard(entries []resultEntry, page int, hasNext bool) any {
+	rows := resultRowsFrom(entries, (page-1)*browsePageSize)
+	navigation := make([]map[string]string, 0, 2)
+	if page > 1 {
+		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": "browse:prev"})
+	}
+	if hasNext {
+		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": "browse:next"})
+	}
+	if len(navigation) > 0 {
+		rows = append(rows, navigation)
+	}
+	return map[string]any{"inline_keyboard": rows}
+}
+
 func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 	if query == nil || query.Message == nil || query.Message.Chat == nil {
 		return
@@ -487,6 +812,26 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 			return
 		}
 		s.replySubscribe(ctx, chatID, chat, index, query.Message.MessageID)
+	case data == "browse:prev" || data == "browse:next":
+		s.mu.RLock()
+		current := s.sessions[chatID]
+		page := 0
+		if current != nil && current.browse != nil {
+			page = current.browse.Page
+		}
+		s.mu.RUnlock()
+		if page == 0 {
+			s.sendMessage(ctx, chat, "榜单会话已过期，请重新使用 /view。", nil)
+			return
+		}
+		if data == "browse:prev" {
+			page--
+		} else {
+			page++
+		}
+		if err := s.showBrowsePage(ctx, chatID, chat, page, query.Message.MessageID); err != nil {
+			s.logger.Printf("telegram: browse page: %v", err)
+		}
 	case data == "back":
 		// 收起详情，并把搜索结果重新发一份，供用户重新选择。
 		s.deleteMessageAsync(chat, query.Message.MessageID)
@@ -499,11 +844,12 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		if resultsText == "" {
 			resultsText = renderResults("", results)
 		}
+		keyboard := s.sessionResultsKeyboard(chatID, results)
 		messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
 			"chat_id":      chat,
 			"text":         resultsText,
 			"parse_mode":   "HTML",
-			"reply_markup": resultKeyboard(results),
+			"reply_markup": keyboard,
 		})
 		if err != nil {
 			s.logger.Printf("telegram: resend search results: %v", err)
@@ -538,6 +884,16 @@ func (s *Service) sessionResultsText(chatID int64) string {
 		return ""
 	}
 	return current.resultsText
+}
+
+func (s *Service) sessionResultsKeyboard(chatID int64, results []resultEntry) any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	current := s.sessions[chatID]
+	if current != nil && current.browse != nil {
+		return browseKeyboard(results, current.browse.Page, current.browse.HasNext)
+	}
+	return resultKeyboard(results)
 }
 
 func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat string, index int) {
@@ -779,8 +1135,16 @@ func renderResults(query string, entries []resultEntry) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderSubscriptionList(items []BotSubscription) string {
-	lines := []string{fmt.Sprintf("<b>订阅清单（%d）</b>", len(items))}
+func renderSubscriptionList(items []BotSubscription, directory ...string) string {
+	header := fmt.Sprintf("<b>订阅清单（%d）</b>", len(items))
+	if len(directory) > 0 && strings.TrimSpace(directory[0]) != "" {
+		header = fmt.Sprintf(
+			"<b>订阅清单 · %s（%d）</b>",
+			html.EscapeString(strings.TrimSpace(directory[0])),
+			len(items),
+		)
+	}
+	lines := []string{header}
 	for index, item := range items {
 		if index >= 40 {
 			lines = append(lines, fmt.Sprintf("… 其余 %d 项请在网页端查看", len(items)-40))
@@ -867,13 +1231,21 @@ func renderCheckReport(outcomes []subscriptionCheckOutcome, ctxErr error) string
 }
 
 func resultKeyboard(entries []resultEntry) any {
+	return map[string]any{"inline_keyboard": resultRows(entries)}
+}
+
+func resultRows(entries []resultEntry) [][]map[string]string {
+	return resultRowsFrom(entries, 0)
+}
+
+func resultRowsFrom(entries []resultEntry, offset int) [][]map[string]string {
 	rows := make([][]map[string]string, 0, len(entries))
 	for index, entry := range entries {
 		rows = append(rows, []map[string]string{
-			{"text": fmt.Sprintf("%d. %s", index+1, truncate(entry.Title, 18)), "callback_data": fmt.Sprintf("open:%d", index)},
+			{"text": fmt.Sprintf("%d. %s", offset+index+1, truncate(entry.Title, 18)), "callback_data": fmt.Sprintf("open:%d", index)},
 		})
 	}
-	return map[string]any{"inline_keyboard": rows}
+	return rows
 }
 
 // matchSource resolves a user supplied source name such as "包子" to a source.

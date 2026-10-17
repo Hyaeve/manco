@@ -97,6 +97,37 @@ func TestLoadComicDetailUsesCombinedSource(t *testing.T) {
 	}
 }
 
+func TestDownloadParentDirName(t *testing.T) {
+	tests := map[string]string{
+		"/downloads/国漫":  "国漫",
+		`D:\Manco\下载\日漫`: "日漫",
+		"/downloads/国漫/": "国漫",
+		"国漫":             "国漫",
+		"":               "",
+	}
+	for input, want := range tests {
+		if got := downloadParentDirName(input); got != want {
+			t.Fatalf("downloadParentDirName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestBrowseOptionsFromStoredFilters(t *testing.T) {
+	options := browseOptionsFromFilterValues(map[string]string{
+		"category": "lianai",
+		"sort":     "updated",
+		"state":    "serial",
+		"region":   "cn",
+		"theme":    "xuanhuan",
+	})
+	if options.Category != "lianai" || options.Sort != "updated" || options.State != "serial" || options.Region != "cn" {
+		t.Fatalf("browse options = %+v", options)
+	}
+	if options.Extra["theme"] != "xuanhuan" {
+		t.Fatalf("browse extras = %+v", options.Extra)
+	}
+}
+
 func TestLazyPluginFiltersCanBeNormalizedAndMarkedDisabled(t *testing.T) {
 	item := &lazyFilterFixture{
 		info: model.SourceInfo{ID: "plugin-source"},

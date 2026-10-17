@@ -1066,6 +1066,17 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	return jobs, rows.Err()
 }
 
+func (s *Store) NextQueuedJob(ctx context.Context) (model.DownloadJob, bool, error) {
+	job, err := scanJob(s.db.QueryRowContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC LIMIT 1`))
+	if errors.Is(err, ErrNotFound) {
+		return model.DownloadJob{}, false, nil
+	}
+	if err != nil {
+		return model.DownloadJob{}, false, err
+	}
+	return job, true, nil
+}
+
 // RequeueRunningJobs restores jobs interrupted by a process restart. Graceful
 // shutdown cancels active contexts, so canceled jobs are included alongside
 // running jobs. Page progress is preserved and the downloader resumes cached
@@ -1081,6 +1092,23 @@ func (s *Store) RequeueRunningJobs(ctx context.Context) error {
 
 func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error) {
 	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []model.DownloadJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+func (s *Store) ListRunningJobs(ctx context.Context) ([]model.DownloadJob, error) {
+	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE status = 'running' ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1310,6 +1338,9 @@ func (s *Store) Stats(ctx context.Context) (model.Stats, error) {
 	var stats model.Stats
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions`).Scan(&stats.Subscriptions)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued','running','waiting','paused')`).Scan(&stats.ActiveJobs)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'running'`).Scan(&stats.RunningJobs)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued','waiting','paused')`).Scan(&stats.QueuedJobs)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'failed'`).Scan(&stats.FailedJobs)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.CompletedJobs)
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.LibraryItems)
 	return stats, nil

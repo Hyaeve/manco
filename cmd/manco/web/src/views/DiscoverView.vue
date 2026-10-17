@@ -6,12 +6,14 @@ import {
   BookMarked,
   ChevronLeft,
   ChevronRight,
+  EyeOff,
   Film,
   Grid2X2,
   ImageOff,
   List,
   Loader2,
   RefreshCw,
+  Rss,
   Search,
   X,
 } from 'lucide-vue-next'
@@ -19,6 +21,7 @@ import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SourceIcon from '../components/SourceIcon.vue'
+import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import { rememberComicPreview } from '../stores/comicPreview'
 import {
@@ -36,6 +39,10 @@ const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
 const route = useRoute()
 const router = useRouter()
 const allSources = ref([])
+const sourceAccounts = ref({})
+const selectedItems = ref(new Set())
+const batchCoverBlur = ref(false)
+const batchSubscribing = ref(false)
 const activeKind = ref('comic')
 const activeId = ref('')
 const jumpInput = ref('')
@@ -52,6 +59,7 @@ const gridColumns = ref(7)
 const refreshRevealing = ref(false)
 const requestStates = new Map()
 let refreshRevealTimer = 0
+let selectionAnchor = -1
 
 const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
 const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
@@ -94,6 +102,11 @@ function persistFilters() {
   localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(savedFilters.value))
 }
 
+function persistSourceBrowseFilters(source, filters) {
+  if (!source?.id) return
+  void api.updateSource(source.id, { browseFilters: { ...filters } }).catch(() => {})
+}
+
 function sortOptions(options) {
   const list = (options || []).map((option) => ({ value: String(option.value), label: option.label }))
   if (!list.length) return [{ value: '', label: '最新' }]
@@ -129,7 +142,10 @@ async function ensureSourceFilters(source) {
     source.filtersLoaded = true
     source.filtersLoading = false
     const panel = panels.value[source.id]
-    if (panel) panel.filters = sourceFilters(source)
+    if (panel) {
+      panel.filters = sourceFilters(source)
+      persistSourceBrowseFilters(source, panel.filters)
+    }
   }
 }
 
@@ -160,6 +176,11 @@ const visibleItems = computed(() => {
   const start = (panel.page - 1) * pageSize.value
   return panel.items.slice(start, start + pageSize.value)
 })
+const discoverSelecting = computed(() => selectedItems.value.size > 0)
+const activeSourceDefaultDir = computed(() => {
+  const account = sourceAccounts.value[activeSource.value?.id]
+  return String(account?.settings?.defaultDownloadDir || '').trim()
+})
 const hasNextPage = computed(() => {
   const panel = activePanel.value
   if (!panel) return false
@@ -168,6 +189,7 @@ const hasNextPage = computed(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateStripBounds)
+  window.removeEventListener('keydown', handleDiscoverKeydown)
   window.clearTimeout(refreshRevealTimer)
   for (const state of requestStates.values()) state.controller.abort()
   requestStates.clear()
@@ -179,6 +201,7 @@ async function loadSources() {
   try {
     const payload = await api.sources()
     allSources.value = payload.items || []
+    sourceAccounts.value = payload.accounts || {}
     const requestedKind = ['comic', 'book', 'other'].includes(route.query.kind) ? route.query.kind : ''
     activeKind.value = requestedKind || (['book', 'other'].includes(nav.kind) ? nav.kind : 'comic')
     const preferred = typeof route.query.source === 'string' ? route.query.source : nav.source || ''
@@ -187,6 +210,7 @@ async function loadSources() {
     loadingSources.value = false
     if (activeId.value) {
       const panel = panelFor(activeSource.value)
+      persistSourceBrowseFilters(activeSource.value, panel.filters)
       const restorePage = nav.source === activeId.value && nav.page ? nav.page : panel.page || 1
       void ensure(activeSource.value, panel, restorePage).then(() => {
         if (nav.source === activeId.value && nav.scrollTop) {
@@ -208,11 +232,16 @@ async function loadSources() {
 
 onMounted(() => {
   window.addEventListener('resize', updateStripBounds)
+  window.addEventListener('keydown', handleDiscoverKeydown)
   loadSources().then(() => {
     nextTick(updateStripBounds)
     nextTick(measureGridColumns)
   })
 })
+
+function handleDiscoverKeydown(event) {
+  if (event.key === 'Escape' && discoverSelecting.value) clearDiscoverSelection()
+}
 
 watch(
   () => [route.query.kind, route.query.source],
@@ -282,6 +311,7 @@ watch(pageSize, () => {
 
 async function switchKind(kind) {
   if (!['comic', 'book', 'other'].includes(kind) || kind === activeKind.value) return
+  clearDiscoverSelection()
   activeKind.value = kind
   activeId.value = sources.value[0]?.id || ''
   if (route.query.kind !== kind || route.query.source !== activeId.value) {
@@ -294,11 +324,13 @@ async function switchKind(kind) {
 
 async function selectSource(id) {
   if (!sources.value.some((source) => source.id === id)) return
+  clearDiscoverSelection()
   activeId.value = id
   if (route.query.source !== id || route.query.kind !== activeKind.value) {
     router.replace({ name: 'discover', query: { kind: activeKind.value, source: id } })
   }
   const panel = panelFor(activeSource.value)
+  persistSourceBrowseFilters(activeSource.value, panel.filters)
   rememberPosition()
   scrollPageTop()
   if (!panel.loaded && !panel.loading) void ensure(activeSource.value, panel, 1)
@@ -383,6 +415,7 @@ function resetPanel(panel) {
 async function submitSearch() {
   const panel = activePanel.value
   if (!panel) return
+  clearDiscoverSelection()
   resetPanel(panel)
   panel.mode = panel.query.trim() ? 'search' : 'browse'
   await ensure(activeSource.value, panel, 1)
@@ -399,8 +432,10 @@ async function clearSourceSearch() {
 async function changeFilter() {
   const panel = activePanel.value
   if (!panel) return
+  clearDiscoverSelection()
   savedFilters.value[activeSource.value.id] = { ...panel.filters }
   persistFilters()
+  persistSourceBrowseFilters(activeSource.value, panel.filters)
   panel.query = ''
   panel.mode = 'browse'
   resetPanel(panel)
@@ -412,6 +447,7 @@ async function refreshCurrentPanel() {
   const source = activeSource.value
   const panel = activePanel.value
   if (!source || !panel || panel.loading) return
+  clearDiscoverSelection()
   refreshRevealing.value = false
   resetPanel(panel)
   await ensure(source, panel, 1)
@@ -428,6 +464,7 @@ async function refreshCurrentPanel() {
 async function goPage(page) {
   const panel = activePanel.value
   if (!panel || panel.loading) return
+  clearDiscoverSelection()
   const target = Math.max(1, Number(page) || 1)
   await ensure(activeSource.value, panel, target)
   afterLoad()
@@ -485,6 +522,131 @@ function filterOptions(group) {
 
 function sourceKindLabel(kind) {
   return { comic: '漫画源', book: '书籍源', other: '其他源' }[kind] || '来源'
+}
+
+function discoveryKey(item) {
+  return `${item.sourceId}:${item.id}`
+}
+
+function isDiscoverSelected(item) {
+  return selectedItems.value.has(discoveryKey(item))
+}
+
+function clearDiscoverSelection() {
+  selectedItems.value = new Set()
+  selectionAnchor = -1
+  batchCoverBlur.value = false
+}
+
+function enterDiscoverSelection(event, item, index) {
+  event.preventDefault()
+  const next = new Set(selectedItems.value)
+  if (event.shiftKey && selectionAnchor >= 0) {
+    const [start, end] = selectionAnchor < index ? [selectionAnchor, index] : [index, selectionAnchor]
+    for (let cursor = start; cursor <= end; cursor += 1) {
+      const row = visibleItems.value[cursor]
+      if (row) next.add(discoveryKey(row))
+    }
+  } else {
+    next.add(discoveryKey(item))
+  }
+  selectedItems.value = next
+  selectionAnchor = index
+}
+
+function handleDiscoverItemClick(event, item, index) {
+  if (!discoverSelecting.value) return
+  if (event?.button !== 0) return
+  const next = new Set(selectedItems.value)
+  if (event.shiftKey && selectionAnchor >= 0) {
+    const [start, end] = selectionAnchor < index ? [selectionAnchor, index] : [index, selectionAnchor]
+    for (let cursor = start; cursor <= end; cursor += 1) {
+      const row = visibleItems.value[cursor]
+      if (row) next.add(discoveryKey(row))
+    }
+  } else if (next.has(discoveryKey(item))) {
+    next.delete(discoveryKey(item))
+  } else {
+    next.add(discoveryKey(item))
+  }
+  selectedItems.value = next
+  selectionAnchor = index
+}
+
+function handleDiscoverCardClick(event, item, index) {
+  if (discoverSelecting.value) {
+    handleDiscoverItemClick(event, item, index)
+    return
+  }
+  openComic(item)
+}
+
+function toggleAllDiscoverItems() {
+  if (selectedItems.value.size < visibleItems.value.length) {
+    selectedItems.value = new Set(visibleItems.value.map(discoveryKey))
+  } else {
+    clearDiscoverSelection()
+  }
+}
+
+function defaultSubscriptionCron() {
+  const now = new Date()
+  return `${now.getMinutes()} ${now.getHours()} * * ${now.getDay()}`
+}
+
+async function batchSubscribeSelected() {
+  const rows = visibleItems.value.filter((item) => selectedItems.value.has(discoveryKey(item)))
+  const downloadDir = activeSourceDefaultDir.value
+  if (!rows.length || batchSubscribing.value) return
+  if (!downloadDir) {
+    notify('当前内容源未设置默认下载目录，无法批量订阅', 'warning')
+    return
+  }
+  const confirmed = await askConfirm({
+    title: '批量加入订阅',
+    message: `确定订阅所选 ${rows.length} 部作品吗？将使用当前内容源默认下载目录：${downloadDir}${batchCoverBlur.value ? '，并开启封面模糊。' : '。'}`,
+    confirmText: '批量订阅',
+  })
+  if (!confirmed) return
+  batchSubscribing.value = true
+  let succeeded = 0
+  let failed = 0
+  try {
+    for (const item of rows) {
+      try {
+        await api.createSubscription({
+          sourceId: item.sourceId,
+          comicId: item.id,
+          title: item.title,
+          cover: item.cover,
+          author: item.author,
+          autoDownload: true,
+          enabled: true,
+          baseline: '',
+          lastChapterOrder: 0,
+          allChapters: true,
+          cronExpr: defaultSubscriptionCron(),
+          downloadDir,
+          seriesDir: '',
+          convertToSimplified: true,
+          chapterMarker: false,
+          coverBlur: Boolean(batchCoverBlur.value),
+        })
+        succeeded += 1
+      } catch {
+        failed += 1
+      }
+    }
+  } finally {
+    batchSubscribing.value = false
+  }
+  clearDiscoverSelection()
+  notify(
+    failed
+      ? `批量订阅完成：成功 ${succeeded} 项，失败 ${failed} 项`
+      : `已批量订阅 ${succeeded} 部作品`,
+    failed ? 'warning' : 'success',
+  )
 }
 
 // 进入详情前把列表卡片数据留下来，详情页可以立刻渲染首屏。
@@ -605,7 +767,7 @@ function latestLabel(item) {
     <div v-if="sourcesError" class="alert error">{{ sourcesError }}</div>
     <div v-else-if="loadingSources" class="source-cat-loading source-cat-loading-resources">
       <div class="source-cat-loader">
-        <img src="/logo-icon.png" alt="" />
+        <img src="/loading-box-cat.png" alt="" />
       </div>
       <span>正在加载资源</span>
     </div>
@@ -643,7 +805,7 @@ function latestLabel(item) {
       <div v-if="activePanel.error" class="alert error">{{ activePanel.error }}</div>
       <div v-else-if="activePanel.loading" class="source-cat-loading">
         <div class="source-cat-loader">
-          <img src="/logo-icon.png" alt="" />
+          <img src="/loading-box-cat.png" alt="" />
         </div>
         <span>正在加载作品</span>
       </div>
@@ -658,11 +820,14 @@ function latestLabel(item) {
         :class="{ 'refresh-reveal': refreshRevealing }"
       >
         <ContentLink
-          v-for="item in visibleItems"
+          v-for="(item, index) in visibleItems"
           :key="`${item.sourceId}-${item.id}`"
           class="comic-card source-comic-card"
+          :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-          @click="openComic(item)"
+          :before-navigate="() => !discoverSelecting"
+          @click="handleDiscoverCardClick($event, item, index)"
+          @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
         >
           <div class="comic-cover">
             <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
@@ -676,11 +841,14 @@ function latestLabel(item) {
       </div>
       <div v-else class="source-list-view" :class="{ 'refresh-reveal': refreshRevealing }">
         <ContentLink
-          v-for="item in visibleItems"
+          v-for="(item, index) in visibleItems"
           :key="`${item.sourceId}-${item.id}`"
           class="source-list-card"
+          :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-          @click="openComic(item)"
+          :before-navigate="() => !discoverSelecting"
+          @click="handleDiscoverCardClick($event, item, index)"
+          @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
         >
           <div class="source-list-cover">
             <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
@@ -709,5 +877,36 @@ function latestLabel(item) {
         </form>
       </div>
     </section>
+  </div>
+
+  <div v-if="discoverSelecting" class="selection-pill selection-pill-flat discover-selection-bar">
+    <span class="selection-count">已选 {{ selectedItems.size }} 项</span>
+    <button class="btn ghost small" type="button" @click="toggleAllDiscoverItems">
+      {{ selectedItems.size === visibleItems.length ? '取消全选' : '全选' }}
+    </button>
+    <button class="btn ghost small" type="button" @click="clearDiscoverSelection">
+      <X :size="14" />
+      清除
+    </button>
+    <button
+      class="btn ghost small"
+      :class="{ active: batchCoverBlur }"
+      type="button"
+      @click="batchCoverBlur = !batchCoverBlur"
+    >
+      <EyeOff :size="14" />
+      封面模糊
+    </button>
+    <button
+      class="btn ghost small"
+      type="button"
+      :disabled="!selectedItems.size || !activeSourceDefaultDir || batchSubscribing"
+      :title="activeSourceDefaultDir ? '批量加入订阅' : '当前内容源未设置默认下载目录'"
+      @click="batchSubscribeSelected"
+    >
+      <Loader2 v-if="batchSubscribing" :size="14" class="spin" />
+      <Rss v-else :size="14" />
+      订阅
+    </button>
   </div>
 </template>

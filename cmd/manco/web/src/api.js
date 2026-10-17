@@ -113,6 +113,11 @@ export const api = {
   },
   comic: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}`),
+  chapterPreview: (id, comicId, chapter) =>
+    request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ chapter }),
+    }),
   comicDownloads: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/downloads`),
 
@@ -194,6 +199,7 @@ export const api = {
   version: () => request('/api/version'),
   checkUpdate: () => request('/api/update-check'),
   stats: () => request('/api/stats'),
+  dashboardUpcoming: (limit = 3) => request(`/api/dashboard/upcoming?limit=${limit}`),
   logs: (limit = 300) => request(`/api/logs?limit=${limit}`),
   activity: () => request('/api/activity'),
   downloadDirectories: (path = '') => {

@@ -1396,6 +1396,16 @@
   color: var(--text);
   text-align: left;
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.chapter-grid:not(.selecting) .chapter-tile {
+  cursor: default;
+}
+
+.chapter-grid.selecting .chapter-tile {
+  cursor: pointer;
 }
 
 .chapter-tile.selected {
@@ -2445,6 +2455,12 @@
   height: 34px;
   padding: 0 12px;
   white-space: nowrap;
+}
+
+.detail-chapter-head .btn.ghost.small.select-all-btn.active {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
+  background: var(--primary-soft);
+  color: var(--primary-strong);
 }
 
 /* 本地库详情：复用作品详情风格，章节海报网格 */
@@ -4910,8 +4926,8 @@ svg.source-editor-icon {
 .source-selection-bar,
 .local-selection-bar {
   border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 10px 14px;
+  border-radius: 999px;
+  padding: 6px 10px;
   background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(12px) saturate(1.08);
   -webkit-backdrop-filter: blur(12px) saturate(1.08);
@@ -4934,14 +4950,14 @@ svg.source-editor-icon {
 .source-selection-bar .btn.small,
 .local-selection-bar .btn,
 .local-selection-bar .btn.small {
-  min-height: 36px;
-  padding: 7px 11px;
+  min-height: 30px;
+  padding: 5px 9px;
   border: 0;
   border-radius: 999px;
   background: transparent;
   box-shadow: none;
   color: var(--text);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -4949,21 +4965,26 @@ svg.source-editor-icon {
 .selection-pill .btn svg,
 .source-selection-bar .btn svg,
 .local-selection-bar .btn svg {
-  flex: 0 0 17px;
-  width: 17px;
-  height: 17px;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
 }
 
 .selection-pill .selection-count,
 .source-selection-bar > span,
 .local-selection-count {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 650;
 }
 
 .local-selection-count svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
+}
+
+.selection-pill .btn.active {
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
+  color: var(--primary-strong);
 }
 
 .selection-pill .btn:hover:not(:disabled),
@@ -4989,6 +5010,28 @@ svg.source-editor-icon {
 .source-selection-bar .btn:disabled,
 .local-selection-bar .btn:disabled {
   opacity: 0.45;
+}
+
+.source-comic-card.selecting,
+.source-list-card.selecting {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.source-comic-card.selected,
+.source-list-card.selected {
+  border-color: color-mix(in srgb, var(--primary-strong) 76%, var(--border));
+  background: color-mix(in srgb, var(--primary-soft) 52%, var(--surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.source-comic-card.selected .comic-cover,
+.source-list-card.selected .source-list-cover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-strong) 52%, transparent);
+}
+
+.discover-selection-bar {
+  z-index: 130;
 }
 
 /* 任务列表 / 完成列表分页取数：滚到底或点按钮再补下一页。 */
@@ -5097,6 +5140,11 @@ svg.source-editor-icon {
   min-height: 47px;
   gap: 13px;
   font-size: 16px;
+}
+
+.sidebar {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .sidebar nav button svg {

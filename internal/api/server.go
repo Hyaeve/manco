@@ -58,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.6.2"
+	appVersion    = "v0.6.7"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -382,6 +382,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}", s.requireAuth(s.handleComic))
 	mux.HandleFunc("GET /api/discover/cover", s.requireAuth(s.handleDiscoverCover))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/chapters", s.requireAuth(s.handleChapters))
+	mux.HandleFunc("POST /api/sources/{id}/comics/{comicId}/preview", s.requireAuth(s.handleChapterPreview))
+	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/preview/image", s.requireAuth(s.handleChapterPreviewImage))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/downloads", s.requireAuth(s.handleComicDownloads))
 
 	mux.HandleFunc("GET /api/subscriptions", s.requireAuth(s.handleListSubscriptions))
@@ -418,6 +420,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/update-check", s.requireAuth(s.handleUpdateCheck))
 	mux.HandleFunc("PUT /api/settings", s.requireAuth(s.handlePutSettings))
 	mux.HandleFunc("GET /api/stats", s.requireAuth(s.handleStats))
+	mux.HandleFunc("GET /api/dashboard/upcoming", s.requireAuth(s.handleDashboardUpcoming))
 	mux.HandleFunc("GET /api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("GET /api/activity", s.requireAuth(s.handleActivity))
 	mux.HandleFunc("GET /api/download-directories", s.requireAuth(s.handleDownloadDirectories))
@@ -1278,6 +1281,54 @@ func (s *Server) disabledCategories(ctx context.Context) map[string][]string {
 	}
 	_ = json.Unmarshal([]byte(value), &disabled)
 	return disabled
+}
+
+func (s *Server) sourceBrowseFilters(ctx context.Context) map[string]map[string]string {
+	filters := map[string]map[string]string{}
+	value, err := s.store.Setting(ctx, "source_browse_filters")
+	if err != nil || strings.TrimSpace(value) == "" {
+		return filters
+	}
+	_ = json.Unmarshal([]byte(value), &filters)
+	return filters
+}
+
+func normalizeBrowseFilterValues(values map[string]string) map[string]string {
+	normalized := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			normalized[key] = value
+		}
+	}
+	return normalized
+}
+
+func browseOptionsFromFilterValues(values map[string]string) model.BrowseOptions {
+	options := model.BrowseOptions{}
+	for key, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		switch key {
+		case "category", "kind":
+			options.Category = value
+		case "sort", "order":
+			options.Sort = value
+		case "state":
+			options.State = value
+		case "region":
+			options.Region = value
+		default:
+			if options.Extra == nil {
+				options.Extra = map[string]string{}
+			}
+			options.Extra[key] = value
+		}
+	}
+	return options
 }
 
 // sourceFilterGroups returns the static filters advertised by a source, or
@@ -2360,15 +2411,16 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload struct {
-		Hidden             *bool     `json:"hidden"`
-		DisabledCategories *[]string `json:"disabledCategories"`
-		Order              *[]string `json:"order"`
+		Hidden             *bool              `json:"hidden"`
+		DisabledCategories *[]string          `json:"disabledCategories"`
+		Order              *[]string          `json:"order"`
+		BrowseFilters      *map[string]string `json:"browseFilters"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if payload.Hidden == nil && payload.DisabledCategories == nil && payload.Order == nil {
+	if payload.Hidden == nil && payload.DisabledCategories == nil && payload.Order == nil && payload.BrowseFilters == nil {
 		writeError(w, http.StatusBadRequest, "没有可更新的资源设置")
 		return
 	}
@@ -2448,10 +2500,29 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if payload.BrowseFilters != nil {
+		filters := s.sourceBrowseFilters(r.Context())
+		normalized := normalizeBrowseFilterValues(*payload.BrowseFilters)
+		if len(normalized) == 0 {
+			delete(filters, id)
+		} else {
+			filters[id] = normalized
+		}
+		raw, err := json.Marshal(filters)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "source_browse_filters", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                 true,
 		"hidden":             hidden[id],
 		"disabledCategories": s.disabledCategories(r.Context())[id],
+		"browseFilters":      s.sourceBrowseFilters(r.Context())[id],
 	})
 	_ = s.configs.PersistSettings(r.Context(), s.store)
 }
@@ -2629,14 +2700,27 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	info := item.Info()
 	kind := source.KindOf(info)
-	// 列表常常缺作者/简介/连载状态，这里按页补一次详情。
-	s.enrichDiscoverItems(r.Context(), item, account, result.Items)
 	for index := range result.Items {
 		result.Items[index] = s.annotateDiscover(info.ID, kind, result.Items[index])
 	}
 	s.cacheDiscoverItems(info, kind, result.Items)
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
+	// 作者、简介和连载状态属于次要字段，不能让它们阻塞搜索结果首屏。
+	// 后台补齐详情并回写搜索/发现缓存，下一次查询即可直接拿到完整信息。
+	enrichedItems := append([]model.Comic(nil), result.Items...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.enrichDiscoverItems(ctx, item, account, enrichedItems)
+		for index := range enrichedItems {
+			enrichedItems[index] = s.annotateDiscover(info.ID, kind, enrichedItems[index])
+		}
+		s.cacheDiscoverItems(info, kind, enrichedItems)
+		enrichedResult := result
+		enrichedResult.Items = enrichedItems
+		_ = s.cache.Set(cacheKey, enrichedResult)
+	}()
 }
 
 func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
@@ -2982,6 +3066,138 @@ func (s *Server) handleChapters(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": chapters})
+}
+
+type cachedChapterPreview struct {
+	SourceID  string        `json:"sourceId"`
+	ComicID   string        `json:"comicId"`
+	Chapter   model.Chapter `json:"chapter"`
+	Pages     []model.Page  `json:"pages"`
+	CreatedAt time.Time     `json:"createdAt"`
+}
+
+func (s *Server) handleChapterPreview(w http.ResponseWriter, r *http.Request) {
+	item, account, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	var payload struct {
+		Chapter model.Chapter `json:"chapter"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if strings.TrimSpace(payload.Chapter.ID) == "" {
+		writeError(w, http.StatusBadRequest, "缺少章节")
+		return
+	}
+	comicID := r.PathValue("comicId")
+	title := source.FirstNonEmpty(payload.Chapter.Title, payload.Chapter.ID)
+	if contentSource, ok := item.(source.ContentSource); ok && source.KindOf(item.Info()) == source.KindBook {
+		text, err := contentSource.ChapterContent(r.Context(), account, comicID, payload.Chapter)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "加载章节正文失败："+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":    "text",
+			"title":   title,
+			"content": text,
+		})
+		return
+	}
+	pages, err := item.Pages(r.Context(), account, comicID, payload.Chapter)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "加载章节页面失败："+err.Error())
+		return
+	}
+	if len(pages) == 0 {
+		writeError(w, http.StatusBadGateway, "该章节没有可预览的页面")
+		return
+	}
+	random := make([]byte, 18)
+	if _, err := rand.Read(random); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	token := hex.EncodeToString(random)
+	preview := cachedChapterPreview{
+		SourceID:  item.Info().ID,
+		ComicID:   comicID,
+		Chapter:   payload.Chapter,
+		Pages:     pages,
+		CreatedAt: time.Now(),
+	}
+	if err := s.cache.Set("chapter-preview:"+token, preview); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	urls := make([]string, 0, len(pages))
+	for index := range pages {
+		urls = append(urls, fmt.Sprintf(
+			"/api/sources/%s/comics/%s/preview/image?key=%s&index=%d",
+			url.PathEscape(item.Info().ID),
+			url.PathEscape(comicID),
+			token,
+			index,
+		))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":  "images",
+		"title": title,
+		"pages": urls,
+	})
+}
+
+func (s *Server) handleChapterPreviewImage(w http.ResponseWriter, r *http.Request) {
+	item, account, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("key"))
+	index := intParam(r, "index", -1)
+	if token == "" || index < 0 {
+		writeError(w, http.StatusBadRequest, "无效的预览页面")
+		return
+	}
+	raw, _, ok := s.cache.Get("chapter-preview:" + token)
+	if !ok {
+		writeError(w, http.StatusGone, "预览已过期，请重新打开章节")
+		return
+	}
+	var preview cachedChapterPreview
+	if json.Unmarshal(raw, &preview) != nil ||
+		preview.SourceID != item.Info().ID ||
+		preview.ComicID != r.PathValue("comicId") ||
+		index >= len(preview.Pages) {
+		writeError(w, http.StatusGone, "预览已过期，请重新打开章节")
+		return
+	}
+	client := s.registry.ClientForAccount(account)
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	data, contentType, err := downloader.PreviewPageImage(
+		r.Context(),
+		client,
+		account,
+		item,
+		preview.ComicID,
+		preview.Chapter,
+		preview.Pages[index],
+	)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "加载预览页面失败："+err.Error())
+		return
+	}
+	if strings.TrimSpace(contentType) == "" {
+		contentType = http.DetectContentType(data)
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 // handleComicDownloads 列出某作品已经下载完成的章节 ID，供归档集查看“哪些章节下过”。
@@ -6419,6 +6635,115 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func (s *Server) handleDashboardUpcoming(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 3)
+	if limit <= 0 {
+		limit = 3
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	subscriptions, err := s.store.ListSubscriptions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	type upcomingItem struct {
+		ID          int64     `json:"id"`
+		SourceID    string    `json:"sourceId"`
+		ComicID     string    `json:"comicId"`
+		Title       string    `json:"title"`
+		Cover       string    `json:"cover,omitempty"`
+		LocalCover  string    `json:"localCover,omitempty"`
+		Author      string    `json:"author,omitempty"`
+		Description string    `json:"description,omitempty"`
+		CronExpr    string    `json:"cronExpr"`
+		NextRun     time.Time `json:"nextRun"`
+	}
+	now := time.Now()
+	type candidate struct {
+		subscription model.Subscription
+		next         time.Time
+	}
+	candidates := make([]candidate, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		if !subscription.Enabled || strings.TrimSpace(subscription.CronExpr) == "" {
+			continue
+		}
+		next, err := cronutil.Next(subscription.CronExpr, now)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{subscription: subscription, next: next})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].next.Equal(candidates[j].next) {
+			return candidates[i].subscription.ID < candidates[j].subscription.ID
+		}
+		return candidates[i].next.Before(candidates[j].next)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	items := make([]upcomingItem, 0, len(candidates))
+	for _, candidate := range candidates {
+		item := s.subscriptionWithCovers(r.Context(), candidate.subscription)
+		author, description := s.subscriptionLocalMetadata(item)
+		if strings.TrimSpace(item.Author) == "" {
+			item.Author = author
+		}
+		if strings.TrimSpace(description) == "" && s.discover != nil {
+			if adapter, err := s.registry.Get(item.SourceID); err == nil {
+				kind := source.KindOf(adapter.Info())
+				if cached, ok := s.discover.Get(item.SourceID, kind, item.ComicID); ok {
+					description = strings.TrimSpace(cached.Comic.Description)
+				}
+			}
+		}
+		items = append(items, upcomingItem{
+			ID:          item.ID,
+			SourceID:    item.SourceID,
+			ComicID:     item.ComicID,
+			Title:       item.Title,
+			Cover:       item.Cover,
+			LocalCover:  item.LocalCover,
+			Author:      strings.TrimSpace(item.Author),
+			Description: strings.TrimSpace(description),
+			CronExpr:    item.CronExpr,
+			NextRun:     candidate.next,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) subscriptionLocalMetadata(subscription model.Subscription) (string, string) {
+	root, err := s.cleanDownloadDir(subscription.DownloadDir)
+	if err != nil {
+		return "", ""
+	}
+	series := strings.TrimSpace(subscription.SeriesDir)
+	if series == "" {
+		series = downloader.SeriesDirectoryName(subscription.Title, subscription.ConvertToSimplified)
+	}
+	folder := filepath.Join(root, downloader.SafeName(series))
+	item := localItemEntry{}
+	for _, name := range []string{"series.json", "ComicInfo.xml", "tvshow.nfo"} {
+		path := filepath.Join(folder, name)
+		switch name {
+		case "series.json":
+			applySeriesMeta(path, &item)
+		case "ComicInfo.xml":
+			applyComicMeta(path, &item)
+		case "tvshow.nfo":
+			applyOtherNFO(path, &item)
+		}
+		if strings.TrimSpace(item.Author) != "" && strings.TrimSpace(item.Description) != "" {
+			break
+		}
+	}
+	return strings.TrimSpace(item.Author), strings.TrimSpace(item.Description)
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {

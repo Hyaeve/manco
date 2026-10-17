@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -14,10 +15,15 @@ func TestSplitCommand(t *testing.T) {
 	}{
 		{"/start", "/start", ""},
 		{"/subscriptions@manco_bot", "/subscriptions", ""},
+		{"/subscriptions 国漫", "/subscriptions", "国漫"},
 		{"/check@manco_bot", "/check", ""},
 		{"/check 星海镖师", "/check", "星海镖师"},
-		{"/s 星海镖师", "/s", "星海镖师"},
+		{"/sh 星海镖师", "/sh", "星海镖师"},
+		{"/downloading", "/downloading", ""},
+		{"/view 包子", "/view", "包子"},
 		{"搜索", "搜索", ""},
+		{"查看订阅 国漫", "查看订阅", "国漫"},
+		{"查看榜单 拷贝", "查看榜单", "拷贝"},
 	}
 	for _, item := range cases {
 		command, arg := splitCommand(item.input)
@@ -29,19 +35,14 @@ func TestSplitCommand(t *testing.T) {
 
 func TestCheckSubscriptionTargets(t *testing.T) {
 	items := []BotSubscription{
-		{Title: "作品一", Source: "包子漫画", Enabled: true, CronExpr: "0 21 * * 5"},
-		{Title: "作品二", Source: "哔咔漫画", Enabled: false, CronExpr: "0 21 * * 5"},
-		{Title: "凡人修仙传", Source: "禁漫天堂", Enabled: true, CronExpr: "0 21 * * 5"},
-		{Title: "凡人修仙传外传", Source: "包子漫画", Enabled: true, CronExpr: ""},
+		{Title: "作品一", Source: "包子漫画", Enabled: true, CronExpr: "0 21 * * 5", ParentDir: "国漫", DownloadDir: "/downloads/国漫"},
+		{Title: "作品二", Source: "哔咔漫画", Enabled: false, CronExpr: "0 21 * * 5", ParentDir: "国漫", DownloadDir: "/downloads/国漫"},
+		{Title: "凡人修仙传", Source: "禁漫天堂", Enabled: true, CronExpr: "0 21 * * 5", ParentDir: "日漫", DownloadDir: "/downloads/日漫"},
+		{Title: "凡人修仙传外传", Source: "包子漫画", Enabled: true, CronExpr: "", ParentDir: "日漫", DownloadDir: "/downloads/日漫"},
 	}
-	enabled := checkSubscriptionTargets(items, "")
-	if len(enabled) != 2 {
-		t.Fatalf("enabled targets = %+v, want 2 scheduled subscriptions", enabled)
-	}
-	for _, item := range enabled {
-		if !item.Enabled || strings.TrimSpace(item.CronExpr) == "" {
-			t.Fatalf("batch check included non-tracking item: %+v", item)
-		}
+	all := checkSubscriptionTargets(items, "")
+	if len(all) != 4 {
+		t.Fatalf("default targets = %+v, want all 4 subscriptions", all)
 	}
 	single := checkSubscriptionTargets(items, "作品二")
 	if len(single) != 1 || single[0].Title != "作品二" || single[0].Enabled {
@@ -58,6 +59,27 @@ func TestCheckSubscriptionTargets(t *testing.T) {
 	partial := checkSubscriptionTargets(items, "作品")
 	if len(partial) != 2 {
 		t.Fatalf("partial targets = %+v, want 作品一 and 作品二", partial)
+	}
+	directory := checkSubscriptionTargets(items, "国漫")
+	if len(directory) != 2 || directory[0].Title != "作品一" || directory[1].Title != "作品二" {
+		t.Fatalf("directory targets = %+v, want both 国漫 subscriptions", directory)
+	}
+	if got := checkTargetDirectory(items, "国漫"); got != "国漫" {
+		t.Fatalf("checkTargetDirectory 国漫 = %q", got)
+	}
+	if got := checkTargetDirectory(items, "作品一"); got != "" {
+		t.Fatalf("exact title should win over directory scope, got %q", got)
+	}
+}
+
+func TestSubscriptionsInDownloadDirectory(t *testing.T) {
+	items := []BotSubscription{
+		{Title: "作品一", ParentDir: "国漫", DownloadDir: "/downloads/国漫"},
+		{Title: "作品二", ParentDir: "日漫", DownloadDir: "/downloads/日漫"},
+	}
+	got := subscriptionsInDownloadDirectory(items, "国漫")
+	if len(got) != 1 || got[0].Title != "作品一" {
+		t.Fatalf("subscriptionsInDownloadDirectory = %+v", got)
 	}
 }
 
@@ -146,6 +168,44 @@ func TestRenderSubscriptionListUsesShortSourceAndStatusDot(t *testing.T) {
 	}
 }
 
+func TestRenderSubscriptionListShowsDirectoryScope(t *testing.T) {
+	text := renderSubscriptionList([]BotSubscription{
+		{Title: "作品一", Source: "包子漫画", Enabled: true, ParentDir: "国漫"},
+	}, "国漫")
+	if !strings.Contains(text, "订阅清单 · 国漫（1）") {
+		t.Fatalf("directory scope missing:\n%s", text)
+	}
+}
+
+func TestRenderDownloadingRunningOnlyAndPauseNext(t *testing.T) {
+	running := renderDownloading(BotDownloadingSnapshot{
+		Running: []BotDownloadItem{
+			{ComicTitle: "作品甲", ChapterTitle: "第1话"},
+			{ComicTitle: "作品乙", ChapterTitle: "第2话"},
+		},
+	})
+	for _, want := range []string{"正在下载（2）", "《作品甲》· 第1话", "《作品乙》· 第2话"} {
+		if !strings.Contains(running, want) {
+			t.Fatalf("running status missing %q:\n%s", want, running)
+		}
+	}
+	queuedOnly := renderDownloading(BotDownloadingSnapshot{
+		NextQueued: &BotDownloadItem{ComicTitle: "排队作品", ChapterTitle: "第9话"},
+	})
+	if queuedOnly != "当前没有正在下载的任务。" || strings.Contains(queuedOnly, "排队作品") {
+		t.Fatalf("queued job leaked into running status: %s", queuedOnly)
+	}
+	paused := renderDownloading(BotDownloadingSnapshot{
+		CooldownMinutes: 7,
+		NextQueued:      &BotDownloadItem{ComicTitle: "待下载作品", ChapterTitle: "第3话"},
+	})
+	for _, want := range []string{"处于暂停期", "还有 7 分钟后开始下载《待下载作品》· 第3话"} {
+		if !strings.Contains(paused, want) {
+			t.Fatalf("pause status missing %q:\n%s", want, paused)
+		}
+	}
+}
+
 func TestRenderResultDetailIncludesChapterCountAndCleanSummary(t *testing.T) {
 	entry := resultEntry{
 		Title:        "星海镖师",
@@ -216,5 +276,63 @@ func TestMatchSource(t *testing.T) {
 	}
 	if _, ok := matchSource(sources, "不存在"); ok {
 		t.Fatal("matchSource 不存在 should fail")
+	}
+}
+
+func TestMatchViewSourceRules(t *testing.T) {
+	sources := []BotSource{
+		{ID: "baozimh", Name: "包子漫画"},
+		{ID: "copy", Name: "CopyManga"},
+		{ID: "jm", Name: "JMComic"},
+	}
+	for _, value := range []string{"包子", "包子漫画"} {
+		if source, ok := matchViewSource(sources, value); !ok || source.ID != "baozimh" {
+			t.Fatalf("matchViewSource(%q) = %+v, %v", value, source, ok)
+		}
+	}
+	if _, ok := matchViewSource(sources, "包"); ok {
+		t.Fatal("single Chinese character must not match")
+	}
+	if source, ok := matchViewSource(sources, "copyma"); !ok || source.ID != "copy" {
+		t.Fatalf("six-letter English prefix = %+v, %v", source, ok)
+	}
+	if _, ok := matchViewSource(sources, "copy"); ok {
+		t.Fatal("five-letter English prefix must not match")
+	}
+	if source, ok := matchViewSource(sources, "COP YMANGA"); ok || source.ID != "" {
+		t.Fatalf("invalid spaced query matched: %+v", source)
+	}
+}
+
+func TestBrowseKeyboardAndPageRules(t *testing.T) {
+	entries := []resultEntry{{Title: "作品一"}, {Title: "作品二"}}
+	first := browseKeyboard(entries, 1, true).(map[string]any)
+	rows := first["inline_keyboard"].([][]map[string]string)
+	if len(rows) != 3 {
+		t.Fatalf("first page keyboard rows = %d, want 2 results + next row", len(rows))
+	}
+	if rows[2][0]["callback_data"] != "browse:next" {
+		t.Fatalf("first page navigation = %+v", rows[2])
+	}
+	second := browseKeyboard(entries, 2, false).(map[string]any)
+	rows = second["inline_keyboard"].([][]map[string]string)
+	if rows[0][0]["text"] != "11. 作品一" {
+		t.Fatalf("second page result numbering = %+v", rows[0])
+	}
+	if rows[2][0]["callback_data"] != "browse:prev" {
+		t.Fatalf("second page navigation = %+v", rows[2])
+	}
+}
+
+func TestRenderBrowseResultsUsesTenItemPages(t *testing.T) {
+	entries := make([]resultEntry, 2)
+	for index := range entries {
+		entries[index].Title = fmt.Sprintf("作品%d", index+1)
+	}
+	text := renderBrowseResults("包子漫画", 2, 10, entries)
+	for _, want := range []string{"包子漫画 · 榜单", "第 2 页", "11. 作品1", "12. 作品2"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("browse text missing %q:\n%s", want, text)
+		}
 	}
 }
