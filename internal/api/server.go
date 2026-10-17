@@ -57,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.3"
+	appVersion    = "v0.6.4"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -157,6 +157,8 @@ type Settings struct {
 	BatchIntervalMinutes  int
 	ConvertToSimplified   bool
 	StaleDays             map[string]int
+	LogMaxEntries         int
+	LogRetentionDays      int
 	TelegramEnabled       bool
 	TelegramToken         string
 	TelegramChatIDs       []string
@@ -301,6 +303,18 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 			current.BatchIntervalMinutes = parsed
 		}
 	}
+	current.LogMaxEntries = 10000
+	if value, err := s.store.Setting(ctx, "log_max_entries"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			current.LogMaxEntries = parsed
+		}
+	}
+	current.LogRetentionDays = 30
+	if value, err := s.store.Setting(ctx, "log_retention_days"); err == nil && value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			current.LogRetentionDays = parsed
+		}
+	}
 	if value, err := s.store.Setting(ctx, "convert_to_simplified"); err == nil && value != "" {
 		current.ConvertToSimplified = value == "true"
 	}
@@ -340,6 +354,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/repositories/{id}", s.requireAuth(s.handleDeleteRepository))
 	mux.HandleFunc("POST /api/repositories/{id}/extensions/{extensionId}", s.requireAuth(s.handleImportRepositoryExtension))
 	mux.HandleFunc("POST /api/plugins/prune", s.requireAuth(s.handlePrunePlugins))
+	mux.HandleFunc("POST /api/plugins/install-apk", s.requireAuth(s.handleInstallAPK))
 	mux.HandleFunc("POST /api/custom-sources", s.requireAuth(s.handleCreateCustomSource))
 	mux.HandleFunc("GET /api/custom-sources/{id}", s.requireAuth(s.handleGetCustomSource))
 	mux.HandleFunc("PUT /api/custom-sources/{id}", s.requireAuth(s.handleUpdateCustomSource))
@@ -1849,6 +1864,72 @@ func (s *Server) handleImportRepositoryExtension(w http.ResponseWriter, r *http.
 // Reading a repository's candidate list requires installing its extensions, so
 // without this the sidecar would keep loading every enumerated extension on
 // every restart, which is what made the add-source dialog slow and heavy.
+// handleInstallAPK 接收用户上传的 .apk 插件源，装进 Mihon 运行时并返回它声明
+// 的内容源候选（与拓展仓库里的「加载内容源」同一套输出）。
+func (s *Server) handleInstallAPK(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil {
+		writeError(w, http.StatusBadRequest, "插件运行时未初始化")
+		return
+	}
+	if err := r.ParseMultipartForm(256 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "读取上传文件失败："+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "缺少 apk 文件")
+		return
+	}
+	defer file.Close()
+	temp, err := os.CreateTemp("", "manco-upload-*.apk")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if _, err := io.Copy(temp, io.LimitReader(file, 256<<20)); err != nil {
+		_ = temp.Close()
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = temp.Close()
+	base := strings.TrimSuffix(filepath.Base(header.Filename), filepath.Ext(header.Filename))
+	pluginID := "apk-" + repository.Slug(base)
+	sources, err := s.runtime.InstallFile(r.Context(), pluginID, tempPath, pluginruntime.RuntimeMihon)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "安装 APK 失败："+err.Error())
+		return
+	}
+	candidates := make([]map[string]any, 0, len(sources))
+	for _, parsed := range sources {
+		if strings.TrimSpace(parsed.Name) == "" {
+			continue
+		}
+		config, _ := json.Marshal(pluginruntime.Config{
+			Runtime:     pluginruntime.RuntimeMihon,
+			PluginID:    pluginID,
+			SourceName:  parsed.Name,
+			ContentType: parsed.ContentType,
+			Locale:      parsed.Locale,
+			Homepage:    parsed.Homepage,
+		})
+		candidates = append(candidates, map[string]any{
+			"id":          "ext-" + repository.Slug(pluginID+"-"+parsed.Name),
+			"name":        firstNonEmptyText(parsed.Title, parsed.Name),
+			"sourceName":  parsed.Name,
+			"kind":        pluginruntime.KindForContentType(parsed.ContentType),
+			"contentType": parsed.ContentType,
+			"locale":      parsed.Locale,
+			"homepage":    parsed.Homepage,
+			"config":      json.RawMessage(config),
+			"runtime":     pluginruntime.RuntimeMihon,
+			"pluginId":    pluginID,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"plugin": pluginID, "candidates": candidates, "sources": candidates})
+}
+
 // pendingPluginSources 返回插件运行时里目前声明、但还没被添加成内容源的那批
 // 来源。探测式枚举的差集为空时用它兜底（扩展之前已经装过的情况）。
 func (s *Server) pendingPluginSources(ctx context.Context) []pluginruntime.Source {
@@ -5716,6 +5797,8 @@ func (s *Server) settingsResponse(ctx context.Context, username string) map[stri
 		"batchIntervalMinutes":  current.BatchIntervalMinutes,
 		"convertToSimplified":   current.ConvertToSimplified,
 		"staleDays":             current.StaleDays,
+		"logMaxEntries":         current.LogMaxEntries,
+		"logRetentionDays":      current.LogRetentionDays,
 		"telegramEnabled":       current.TelegramEnabled,
 		"telegramToken":         current.TelegramToken,
 		"telegramChatIds":       current.TelegramChatIDs,
@@ -5757,6 +5840,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		BatchIntervalMinutes  *int           `json:"batchIntervalMinutes"`
 		ConvertToSimplified   *bool          `json:"convertToSimplified"`
 		StaleDays             map[string]int `json:"staleDays"`
+		LogMaxEntries         *int           `json:"logMaxEntries"`
+		LogRetentionDays      *int           `json:"logRetentionDays"`
 		Proxy                 *string        `json:"proxy"`
 		CookieSecure          bool           `json:"cookieSecure"`
 		Username              string         `json:"username"`
@@ -5954,6 +6039,32 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if payload.LogMaxEntries != nil {
+		if *payload.LogMaxEntries < 100 || *payload.LogMaxEntries > 200000 {
+			writeError(w, http.StatusBadRequest, "日志条数必须在 100 到 200000 之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "log_max_entries", strconv.Itoa(*payload.LogMaxEntries)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if s.logs != nil {
+			s.logs.SetMax(*payload.LogMaxEntries)
+		}
+	}
+	if payload.LogRetentionDays != nil {
+		if *payload.LogRetentionDays < 0 || *payload.LogRetentionDays > 3650 {
+			writeError(w, http.StatusBadRequest, "日志保留天数必须在 0 到 3650 之间")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "log_retention_days", strconv.Itoa(*payload.LogRetentionDays)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if s.logs != nil {
+			s.logs.SetFileSink(filepath.Join(s.cfg.DataDir, "logs"), *payload.LogRetentionDays)
+		}
+	}
 	if payload.StaleDays != nil {
 		normalized := map[string]int{}
 		for sourceID, days := range payload.StaleDays {
@@ -6052,7 +6163,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	limit := 300
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 2000 {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 200000 {
 			limit = parsed
 		}
 	}

@@ -51,6 +51,11 @@ export const api = {
   importRepositoryExtension: (repositoryId, extensionId) =>
     request(`/api/repositories/${encodeURIComponent(repositoryId)}/extensions/${encodeURIComponent(extensionId)}`, { method: 'POST' }),
   prunePlugins: () => request('/api/plugins/prune', { method: 'POST' }),
+  installAPK: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('/api/plugins/install-apk', { method: 'POST', body: form })
+  },
   createCustomSource: (payload) =>
     request('/api/custom-sources', { method: 'POST', body: JSON.stringify(payload) }),
   customSourceConfig: (id) => request(`/api/custom-sources/${encodeURIComponent(id)}`),

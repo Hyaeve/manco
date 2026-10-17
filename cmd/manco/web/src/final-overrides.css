@@ -1491,13 +1491,13 @@
 :root {
   --primary: #e8a35c;
   --primary-strong: #c87b34;
-  --primary-soft: #fff1df;
+  --primary-soft: #fdf0e5;
 }
 
 [data-theme='dark'] {
   --primary: #f2b544;
   --primary-strong: #ffd06a;
-  --primary-soft: #3f3220;
+  --primary-soft: #3a2f1c;
 }
 
 /* 所有滚动条统一为极浅灰色细条。 */
@@ -5010,6 +5010,116 @@ svg.source-editor-icon {
 /* 三点菜单：默认向上弹；上方空间不够时加 .opens-down 改为向下弹。 */
 /* ===== v0.6.1：下拉选择器配色、页面浮入与侧栏果冻动画 ===== */
 /* 本地仓库：目录胶囊与排序选择器同一行，排序贴在最右边。 */
+/* ===== v0.6.4：订阅/下载任务设置的功能项统一为订阅卡片编辑窗口那套圆角框 ===== */
+/* 侧栏选中态：更圆的淡橘框 + 橘色图标 + 深色文字，栏目字号/图标略放大。 */
+.sidebar nav button {
+  border-radius: 14px;
+  font-size: 14.5px;
+}
+
+.sidebar nav button svg {
+  width: 20px;
+  height: 20px;
+}
+
+.sidebar nav button.active {
+  color: #2f2a24;
+  background: #fdf0e5;
+}
+
+.sidebar nav button.active svg {
+  color: #e07a2f;
+}
+
+[data-theme='dark'] .sidebar nav button.active {
+  color: #ffd88a;
+  background: #3a2f1c;
+}
+
+/* 系统设置保存按钮：加宽，避免「保存」两个字挤在一起。 */
+.settings-save-button {
+  min-width: 88px;
+  padding-inline: 20px;
+}
+
+.function-option-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.function-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.function-option:hover {
+  border-color: var(--border-strong);
+}
+
+.function-option.active {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface-muted));
+  color: var(--text);
+}
+
+.function-option-check {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: #fff;
+}
+
+.function-option.active .function-option-check {
+  border-color: var(--primary-strong);
+  background: var(--primary-strong);
+}
+
+.function-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 二级排序选择器：选中/悬浮改为淡淡的橘色。 */
+.chapter-sort-group button:hover,
+.chapter-sort-group button.active {
+  background: color-mix(in srgb, #f26a12 14%, var(--surface));
+  color: var(--text);
+}
+
+.chapter-sort-trigger:hover,
+.chapter-sort-trigger[aria-expanded='true'] {
+  border-color: color-mix(in srgb, #f26a12 45%, var(--border));
+  background: color-mix(in srgb, #f26a12 12%, var(--surface));
+}
+
+@media (max-width: 720px) {
+  .function-option-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* 探索发现来源胶囊：最多 5 个汉字宽，超出省略。 */
 .discover-source-strip button {
   position: relative;

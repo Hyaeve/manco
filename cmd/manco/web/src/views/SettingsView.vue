@@ -44,6 +44,8 @@ const form = reactive({
   maxPageConcurrency: 2,
   batchSize: 30,
   batchIntervalMinutes: 5,
+  logMaxEntries: 10000,
+  logRetentionDays: 30,
 })
 
 onMounted(async () => {
@@ -84,6 +86,8 @@ async function load() {
     form.maxPageConcurrency = Number(payload.maxPageConcurrency) || 2
     form.batchSize = Number(payload.batchSize) || 0
     form.batchIntervalMinutes = Number(payload.batchIntervalMinutes) || 0
+    form.logMaxEntries = Number(payload.logMaxEntries) || 10000
+    form.logRetentionDays = Number(payload.logRetentionDays ?? 30)
     currentVersion.value = versionPayload.version || ''
   } catch (err) {
     notify(`设置加载失败：${err.message}`, 'error')
@@ -153,6 +157,21 @@ async function saveConvertToSimplified() {
 }
 
 // 全局下载设置：章节并发是整台实例的上限，不受内容源数量影响。
+async function saveLogs() {
+  saving.value = 'logs'
+  try {
+    await api.saveSettings({
+      logMaxEntries: Number(form.logMaxEntries) || 10000,
+      logRetentionDays: Number(form.logRetentionDays) || 0,
+    })
+    notify('运行日志设置已保存', 'success')
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    saving.value = ''
+  }
+}
+
 async function saveDownload() {
   saving.value = 'download'
   try {
@@ -298,6 +317,34 @@ async function checkUpdate() {
         </div>
       </section>
 
+    </div>
+
+    <div class="settings-pair settings-bottom-pair">
+      <section id="settings-logs" class="card card-pad settings-compact-card">
+        <div class="settings-card-title">
+          <div class="inline">
+            <RefreshCw :size="17" />
+            <h2>运行日志</h2>
+          </div>
+          <button class="btn settings-save-button" type="button" :disabled="saving === 'logs'" @click="saveLogs">
+            <Loader2 v-if="saving === 'logs'" :size="15" class="spin" />
+            保存
+          </button>
+        </div>
+        <p class="muted small settings-card-help">
+          内存中保留最近 N 条日志，超出上限丢弃最旧的；保存天数用于日志落盘后的清理，两者同时生效。
+        </p>
+        <div class="settings-form-stack" @keydown.enter.prevent="saveLogs">
+          <label class="field">
+            <span>保留日志条数</span>
+            <input v-model.number="form.logMaxEntries" class="input" type="number" min="100" max="200000" step="100" />
+          </label>
+          <label class="field">
+            <span>日志保存天数</span>
+            <input v-model.number="form.logRetentionDays" class="input" type="number" min="0" max="3650" />
+          </label>
+        </div>
+      </section>
     </div>
 
     <div class="settings-pair settings-bottom-pair">

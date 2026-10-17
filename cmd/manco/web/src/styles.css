@@ -9,10 +9,11 @@
   --text-muted: #64748b;
   --primary: #4f46e5;
   --primary-strong: #4338ca;
-  --primary-soft: #eef2ff;
-  --select-highlight: #fff8cc;
-  --select-highlight-strong: #dfd27a;
-  --select-highlight-text: #504a17;
+  /* 选中态统一成侧栏那块淡橘 */
+  --primary-soft: #fdf0e5;
+  --select-highlight: #fdf0e5;
+  --select-highlight-strong: #f2c6a1;
+  --select-highlight-text: #7a4a1f;
   --success: #15803d;
   --success-soft: #ecfdf5;
   --warning: #b45309;
@@ -62,10 +63,10 @@
     --text-muted: #c2ae93;
     --primary: #f2b544;
     --primary-strong: #ffd06a;
-    --primary-soft: #3f3220;
-    --select-highlight: #453a1e;
-    --select-highlight-strong: #8a763a;
-    --select-highlight-text: #ffe9a8;
+    --primary-soft: #3a2f1c;
+    --select-highlight: #3a2f1c;
+    --select-highlight-strong: #6b4f2a;
+    --select-highlight-text: #ffd88a;
     --success: #6ee7a8;
     --success-soft: #143021;
     --warning: #fcd34d;

@@ -88,6 +88,34 @@ const iconUploading = ref(false)
 const iconDownloading = ref(false)
 const iconUploadInput = ref(null)
 const candidateLoading = ref(false)
+// 添加 APK 源：选择本地 .apk 由后端安装并列出其中的内容源。
+const apkInput = ref(null)
+const apkUploading = ref(false)
+
+function chooseAPK() {
+  apkInput.value?.click()
+}
+
+async function uploadAPK(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  apkUploading.value = true
+  try {
+    const payload = await api.installAPK(file)
+    const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
+    if (candidates.length) {
+      extensionCandidates.value = [...extensionCandidates.value, ...candidates]
+      notify(`已从 APK 加载 ${candidates.length} 个内容源`, 'success')
+    } else {
+      notify('该 APK 没有声明可添加的内容源', 'info')
+    }
+  } catch (err) {
+    notify(`安装 APK 失败：${err.message}`, 'error')
+  } finally {
+    apkUploading.value = false
+    if (event.target) event.target.value = ''
+  }
+}
 // 命中本地缓存的仓库视为已加载，避免打开窗口时又整批重装插件。
 const candidateLoadedRepos = ref(new Set(Object.keys(candidateCache.value)))
 const candidateProgress = reactive({ done: 0, total: 0, label: '' })
@@ -1686,6 +1714,12 @@ function onDragEnd() {
             <X :size="14" />
             取消<template v-if="candidateProgress.total">（{{ candidateProgress.done }}/{{ candidateProgress.total }}）</template>
           </button>
+          <button class="btn small secondary" type="button" :disabled="apkUploading" @click="chooseAPK">
+            <Loader2 v-if="apkUploading" :size="14" class="spin" />
+            <PackagePlus v-else :size="14" />
+            添加 APK 源
+          </button>
+          <input ref="apkInput" type="file" accept=".apk" hidden @change="uploadAPK" />
         </div>
         <div v-if="candidateLoading && !visibleCandidates.length" class="empty compact">
           <Loader2 :size="20" class="spin" />

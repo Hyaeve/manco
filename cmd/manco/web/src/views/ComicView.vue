@@ -22,6 +22,7 @@ import timeSortAsc from '../assets/icons/time-sort-asc.png'
 import timeSortDesc from '../assets/icons/time-sort-desc.png'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
+import FunctionOption from '../components/FunctionOption.vue'
 import { notify } from '../stores/notices'
 import { comicPreview } from '../stores/comicPreview'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
@@ -567,52 +568,12 @@ async function downloadSelected() {
             @change="rememberSubscriptionDownloadDir"
           />
         </label>
-        <div class="subscription-action-toggles">
-          <button
-            class="function-toggle"
-            :class="{ active: subForm.chapterMarker }"
-            type="button"
-            @click="subForm.chapterMarker = !subForm.chapterMarker"
-          >
-            <BookOpen :size="16" />
-            <span>章节标符</span>
-          </button>
-          <button
-            class="function-toggle"
-            :class="{ active: subForm.coverBlur }"
-            type="button"
-            @click="subForm.coverBlur = !subForm.coverBlur"
-          >
-            <EyeOff :size="16" />
-            <span>封面模糊</span>
-          </button>
-          <button
-            class="function-toggle"
-            :class="{ active: subForm.convertToSimplified }"
-            type="button"
-            @click="subForm.convertToSimplified = !subForm.convertToSimplified"
-          >
-            <Languages :size="16" />
-            <span>繁转简</span>
-          </button>
-          <button
-            class="function-toggle"
-            :class="{ active: subForm.allChapters }"
-            type="button"
-            @click="subForm.allChapters = !subForm.allChapters"
-          >
-            <BookOpen :size="16" />
-            <span>历史章节</span>
-          </button>
-          <button
-            class="function-toggle"
-            :class="{ active: autoDownload }"
-            type="button"
-            @click="toggleAutoUpdate"
-          >
-            <Rss :size="16" />
-            <span>自动追更</span>
-          </button>
+        <div class="function-option-grid">
+          <FunctionOption label="章节标符" :active="subForm.chapterMarker" @toggle="subForm.chapterMarker = !subForm.chapterMarker" />
+          <FunctionOption label="封面模糊" :active="subForm.coverBlur" @toggle="subForm.coverBlur = !subForm.coverBlur" />
+          <FunctionOption label="繁转简" :active="subForm.convertToSimplified" @toggle="subForm.convertToSimplified = !subForm.convertToSimplified" />
+          <FunctionOption label="历史章节" :active="subForm.allChapters" @toggle="subForm.allChapters = !subForm.allChapters" />
+          <FunctionOption label="自动追更" :active="autoDownload" @toggle="toggleAutoUpdate" />
         </div>
       </div>
       <div class="modal-foot">
@@ -650,34 +611,10 @@ async function downloadSelected() {
             @change="rememberSubscriptionDownloadDir"
           />
         </label>
-        <div class="subscription-action-toggles download-action-toggles">
-          <button
-            class="function-toggle"
-            :class="{ active: downloadForm.chapterMarker }"
-            type="button"
-            @click="downloadForm.chapterMarker = !downloadForm.chapterMarker"
-          >
-            <BookOpen :size="16" />
-            <span>章节标符</span>
-          </button>
-          <button
-            class="function-toggle"
-            :class="{ active: downloadForm.convertToSimplified }"
-            type="button"
-            @click="downloadForm.convertToSimplified = !downloadForm.convertToSimplified"
-          >
-            <Languages :size="16" />
-            <span>繁转简</span>
-          </button>
-          <button
-            class="function-toggle merge-download-toggle"
-            :class="{ active: downloadForm.mergeChapters }"
-            type="button"
-            @click="downloadForm.mergeChapters = !downloadForm.mergeChapters"
-          >
-            <Merge :size="16" />
-            <span>合并下载</span>
-          </button>
+        <div class="function-option-grid">
+          <FunctionOption label="章节标符" :active="downloadForm.chapterMarker" @toggle="downloadForm.chapterMarker = !downloadForm.chapterMarker" />
+          <FunctionOption label="繁转简" :active="downloadForm.convertToSimplified" @toggle="downloadForm.convertToSimplified = !downloadForm.convertToSimplified" />
+          <FunctionOption label="合并下载" :active="downloadForm.mergeChapters" @toggle="downloadForm.mergeChapters = !downloadForm.mergeChapters" />
         </div>
       </div>
       <div class="modal-foot">

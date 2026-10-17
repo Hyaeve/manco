@@ -36,7 +36,7 @@ import (
 var embedded embed.FS
 
 func main() {
-	logs := logbuf.New(500, os.Stdout)
+	logs := logbuf.New(10000, os.Stdout)
 	logger := log.New(logs, "", log.LstdFlags|log.Lmsgprefix)
 	if err := run(logger, logs); err != nil {
 		logger.Fatalf("manco: %v", err)
@@ -203,6 +203,8 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		logger.Printf("manco: load settings: %v", err)
 	} else {
 		engine.SetConcurrency(settings.MaxChapterConcurrency, settings.MaxPageConcurrency)
+		logs.SetMax(settings.LogMaxEntries)
+		logs.SetFileSink(filepath.Join(cfg.DataDir, "logs"), settings.LogRetentionDays)
 		engine.SetSourceConcurrency(settings.SourceConcurrency)
 		engine.SetSourceSettings(server.SourceSettings(ctx))
 		engine.SetDownloadPolicy(settings.BatchSize, settings.BatchIntervalMinutes, settings.ConvertToSimplified)

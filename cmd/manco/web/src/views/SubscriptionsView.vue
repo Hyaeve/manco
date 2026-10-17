@@ -23,6 +23,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
+import FunctionOption from '../components/FunctionOption.vue'
 import SortMenu from '../components/SortMenu.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
@@ -715,27 +716,29 @@ function batchDelete() {
       <Archive :size="15" />
       归档集
         </ContentLink>
-      <SortMenu
-        class="subscription-sort"
-        :options="sortOptions"
-        :mode="sortMode"
-        :desc="sortDesc"
-        @change="onSortChange"
-      />
   </div>
 
-  <div v-if="downloadDirs.length" class="local-root-strip" aria-label="订阅目录">
-    <button type="button" :class="{ active: !activeDir }" @click="activeDir = ''">全部</button>
-    <button
-      v-for="dir in downloadDirs"
-      :key="dir"
-      type="button"
-      :class="{ active: activeDir === dir }"
-      :title="dir"
-      @click="activeDir = dir"
-    >
-      {{ dirLabel(dir) }}
-    </button>
+  <div v-if="downloadDirs.length" class="local-root-row">
+    <div class="local-root-strip" aria-label="订阅目录">
+      <button type="button" :class="{ active: !activeDir }" @click="activeDir = ''">全部</button>
+      <button
+        v-for="dir in downloadDirs"
+        :key="dir"
+        type="button"
+        :class="{ active: activeDir === dir }"
+        :title="dir"
+        @click="activeDir = dir"
+      >
+        {{ dirLabel(dir) }}
+      </button>
+    </div>
+    <SortMenu
+      class="local-library-sort"
+      :options="sortOptions"
+      :mode="sortMode"
+      :desc="sortDesc"
+      @change="onSortChange"
+    />
   </div>
 
   <div v-if="loading && !items.length" class="empty">
@@ -884,19 +887,10 @@ function batchDelete() {
             placeholder="选择下载位置"
           />
         </label>
-        <div class="subscription-toggle-grid">
-          <label class="switch-row">
-            <input v-model="form.chapterMarker" type="checkbox" />
-            <span>章节标符</span>
-          </label>
-          <label class="switch-row">
-            <input v-model="form.coverBlur" type="checkbox" />
-            <span>封面模糊</span>
-          </label>
-          <label class="switch-row">
-            <input v-model="form.convertToSimplified" type="checkbox" />
-            <span>繁转简</span>
-          </label>
+        <div class="function-option-grid">
+          <FunctionOption label="章节标符" :active="form.chapterMarker" @toggle="form.chapterMarker = !form.chapterMarker" />
+          <FunctionOption label="封面模糊" :active="form.coverBlur" @toggle="form.coverBlur = !form.coverBlur" />
+          <FunctionOption label="繁转简" :active="form.convertToSimplified" @toggle="form.convertToSimplified = !form.convertToSimplified" />
         </div>
       </div>
       <div class="modal-foot">

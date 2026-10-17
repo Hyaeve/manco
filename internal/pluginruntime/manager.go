@@ -537,6 +537,108 @@ func (m *Manager) CleanImageCache(maxAge time.Duration) (int, int64, error) {
 	return removed, freed, nil
 }
 
+// InstallFile 安装本地上传的 .apk / .jar（添加 APK 源用），流程与
+// InstallWithRuntime 相同，只是插件文件来自本地而不是下载地址。
+func (m *Manager) InstallFile(ctx context.Context, id, localPath, runtimeType string) ([]Source, error) {
+	runtimeType = normalizeRuntime(runtimeType)
+	id = strings.TrimSpace(id)
+	if !pluginIDPattern.MatchString(id) {
+		return nil, fmt.Errorf("插件 ID 无效: %q", id)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errors.New("plugin runtime 已关闭")
+	}
+	if err := os.MkdirAll(filepath.Join(m.configDir, "plugins"), 0o755); err != nil {
+		return nil, err
+	}
+	extension := ".jar"
+	if runtimeType == RuntimeMihon {
+		extension = ".apk"
+	}
+	target := filepath.Join(m.configDir, "plugins", safeFileName(id)+extension)
+	temporary := target + ".part"
+	source, err := os.Open(localPath)
+	if err != nil {
+		return nil, err
+	}
+	output, err := os.Create(temporary)
+	if err != nil {
+		_ = source.Close()
+		return nil, err
+	}
+	_, copyErr := io.Copy(output, io.LimitReader(source, 256<<20))
+	_ = output.Close()
+	_ = source.Close()
+	if copyErr != nil {
+		_ = os.Remove(temporary)
+		return nil, copyErr
+	}
+	backup := target + ".backup"
+	_ = os.Remove(backup)
+	if _, err := os.Stat(target); err == nil {
+		if err := os.Rename(target, backup); err != nil {
+			_ = os.Remove(temporary)
+			return nil, err
+		}
+	}
+	if err := os.Rename(temporary, target); err != nil {
+		_ = os.Rename(backup, target)
+		return nil, err
+	}
+	previousPlugins := append([]pluginRecord(nil), m.plugins...)
+	record := pluginRecord{ID: id, Path: filepath.ToSlash(filepath.Join("plugins", filepath.Base(target))), Type: runtimeType}
+	replaced := false
+	for index := range m.plugins {
+		if m.plugins[index].ID == id {
+			m.plugins[index] = record
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		m.plugins = append(m.plugins, record)
+	}
+	sort.SliceStable(m.plugins, func(i, j int) bool { return m.plugins[i].ID < m.plugins[j].ID })
+	if err := m.writeConfigLocked(); err != nil {
+		m.plugins = previousPlugins
+		_ = os.Remove(target)
+		if _, statErr := os.Stat(backup); statErr == nil {
+			_ = os.Rename(backup, target)
+		}
+		return nil, err
+	}
+	if err := m.restartLocked(runtimeType); err != nil {
+		m.plugins = previousPlugins
+		_ = os.Remove(target)
+		if _, statErr := os.Stat(backup); statErr == nil {
+			_ = os.Rename(backup, target)
+		}
+		_ = m.writeConfigLocked()
+		_ = m.restartLocked(runtimeType)
+		return nil, err
+	}
+	metadata, err := m.callRuntimeLocked(ctx, runtimeType, "metadata", nil)
+	if err != nil {
+		m.plugins = previousPlugins
+		_ = os.Remove(target)
+		if _, statErr := os.Stat(backup); statErr == nil {
+			_ = os.Rename(backup, target)
+		}
+		_ = m.writeConfigLocked()
+		_ = m.restartLocked(runtimeType)
+		return nil, err
+	}
+	sources, err := decodeSources(metadata)
+	if err != nil {
+		return nil, err
+	}
+	m.rememberSourcesLocked(runtimeType, sources)
+	_ = os.Remove(backup)
+	return sources, nil
+}
+
 func (m *Manager) Call(ctx context.Context, operation string, fields map[string]any) (map[string]any, error) {
 	return m.CallWithProxy(ctx, operation, fields, nil)
 }
