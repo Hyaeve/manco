@@ -156,19 +156,19 @@ func (s *Server) BotCheck(ctx context.Context, subscriptionID int64) (telegram.B
 	if err != nil {
 		return telegram.BotCheckResult{}, err
 	}
-	before, _ := s.store.CompletedDownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
-	if err := s.scheduler.CheckOne(ctx, subscriptionID); err != nil {
+	checked, err := s.scheduler.CheckOneDetailed(ctx, subscriptionID)
+	if err != nil {
 		return telegram.BotCheckResult{}, err
 	}
-	s.retryFailedForSubscription(ctx, subscription)
+	retried := s.retryFailedForSubscription(ctx, subscription)
 	updated, _ := s.store.Subscription(ctx, subscriptionID)
-	result := telegram.BotCheckResult{Title: subscription.Title}
-	if updated.LastCheckedAt != nil {
-		result.New = len(before)
-	}
-	result.Queued = 0
-	result.Completed = strings.EqualFold(updated.ComicStatus, "已完结")
-	return result, nil
+	return telegram.BotCheckResult{
+		Title:     source.FirstNonEmpty(updated.Title, subscription.Title),
+		New:       checked.NewChapters,
+		Queued:    checked.Queued,
+		Retried:   retried,
+		Completed: updated.CompletedAt != nil || strings.EqualFold(updated.ComicStatus, "已完结"),
+	}, nil
 }
 
 // BotArchive archives one subscription.
@@ -220,6 +220,9 @@ func (s *Server) BotComicDetail(ctx context.Context, sourceID, comicID string) (
 	comic := detail.Comic
 	if strings.TrimSpace(comic.LatestChapterTitle) == "" && len(detail.Chapters) > 0 {
 		comic.LatestChapterTitle = detail.Chapters[len(detail.Chapters)-1].Title
+	}
+	if comic.ChapterCount <= 0 && len(detail.Chapters) > 0 {
+		comic.ChapterCount = len(detail.Chapters)
 	}
 	return comic, nil
 }

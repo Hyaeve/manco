@@ -58,6 +58,7 @@ type BotCheckResult struct {
 	Title     string
 	New       int
 	Queued    int
+	Retried   int
 	Completed bool
 }
 
@@ -115,21 +116,26 @@ type Service struct {
 
 type session struct {
 	results []resultEntry
+	// 搜索结果的原始列表文本，返回时直接复用，不再重新拼接。
+	resultsText string
 	// 搜索结果的 message_id：订阅成功后要把那条消息删掉。
 	resultsMessageID int64
 	// 作品详情的 message_id：返回时删掉它，再重新发一份搜索结果。
 	detailMessageID int64
+	detailPhoto     bool
+	detailIndex     int
 }
 
 type resultEntry struct {
-	SourceID   string
-	SourceName string
-	ComicID    string
-	Title      string
-	Author     string
-	Latest     string
-	Cover      string
-	Summary    string
+	SourceID     string
+	SourceName   string
+	ComicID      string
+	Title        string
+	Author       string
+	Latest       string
+	ChapterCount int
+	Cover        string
+	Summary      string
 }
 
 // callMethod 调用一个 Bot API 方法并返回 result.message_id（没有则返回 0）。
@@ -184,6 +190,18 @@ func (s *Service) deleteMessage(ctx context.Context, chat string, messageID int6
 	if _, err := s.callMethod(ctx, "deleteMessage", map[string]any{"chat_id": chat, "message_id": messageID}); err != nil {
 		s.logger.Printf("telegram: deleteMessage: %v", err)
 	}
+}
+
+// deleteMessageAsync 让「切换消息框」不必等待删除请求结束。
+func (s *Service) deleteMessageAsync(chat string, messageID int64) {
+	if messageID == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		s.deleteMessage(ctx, chat, messageID)
+	}()
 }
 
 // New creates a bot service. The app binding is set later with SetApp so the
@@ -284,6 +302,7 @@ func (s *Service) registerCommands(ctx context.Context) {
 	payload := `{"commands":[` +
 		`{"command":"start","description":"开始 / 查看帮助"},` +
 		`{"command":"subscriptions","description":"查看订阅清单"},` +
+		`{"command":"check","description":"检查全部订阅更新"},` +
 		`{"command":"sources","description":"查看已添加内容源"},` +
 		`{"command":"s","description":"搜索作品"}` +
 		`]}`
@@ -480,6 +499,39 @@ func (s *Service) answerCallback(ctx context.Context, callbackID string) {
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+}
+
+// answerCallbackAsync 先让消息更新和回调应答并行，减少按钮点击后的等待。
+func (s *Service) answerCallbackAsync(callbackID string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s.answerCallback(ctx, callbackID)
+	}()
+}
+
+// editMessage 原位更新作品详情或检查结果，photo 表示消息是否带图片。
+func (s *Service) editMessage(ctx context.Context, chat string, messageID int64, photo bool, text string, keyboard any) error {
+	if messageID == 0 || strings.TrimSpace(text) == "" {
+		return nil
+	}
+	method := "editMessageText"
+	textKey := "text"
+	if photo {
+		method = "editMessageCaption"
+		textKey = "caption"
+	}
+	payload := map[string]any{
+		"chat_id":    chat,
+		"message_id": messageID,
+		textKey:      text,
+		"parse_mode": "HTML",
+	}
+	if keyboard != nil {
+		payload["reply_markup"] = keyboard
+	}
+	_, err := s.callMethod(ctx, method, payload)
+	return err
 }
 
 var errNoResults = errors.New("没有搜索结果")

@@ -3,9 +3,13 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"html"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -19,6 +23,8 @@ const (
 	summaryLimit      = 160
 )
 
+var htmlTagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
+
 func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 	if text == "" {
 		return
@@ -30,6 +36,8 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 		s.sendMessage(ctx, chat, helpText(), nil)
 	case "/subscriptions", "订阅", "subscriptions":
 		s.replySubscriptions(ctx, chat)
+	case "/check", "检查全部", "check":
+		go s.replyCheckAll(ctx, chat)
 	case "/sources", "内容源", "sources":
 		s.replySources(ctx, chat)
 	case "/s", "搜索", "s":
@@ -113,6 +121,7 @@ func helpText() string {
 		"<b>Manco 指令</b>",
 		"/start 开始",
 		"/subscriptions 查看订阅清单",
+		"/check 检查全部订阅更新",
 		"/sources 查看已添加内容源",
 		"/s 关键词 全局搜索",
 		"搜索漫画 关键词",
@@ -155,20 +164,69 @@ func (s *Service) replySubscriptions(ctx context.Context, chat string) {
 		s.sendMessage(ctx, chat, "订阅清单是空的。", nil)
 		return
 	}
-	lines := []string{fmt.Sprintf("<b>订阅清单（%d）</b>", len(items))}
-	for index, item := range items {
-		if index >= 40 {
-			lines = append(lines, fmt.Sprintf("… 其余 %d 项请在网页端查看", len(items)-40))
-			break
-		}
-		state := "已启用"
-		if !item.Enabled {
-			state = "已停用"
-		}
-		// 用连续序号而不是数据库 ID：以前这里是订阅主键，看起来像序号却是内部 ID。
-		lines = append(lines, fmt.Sprintf("%d. %s（%s）· %s", index+1, item.Title, item.Source, state))
+	s.sendMessage(ctx, chat, renderSubscriptionList(items), nil)
+}
+
+type subscriptionCheckOutcome struct {
+	Subscription BotSubscription
+	Result       BotCheckResult
+	Err          error
+}
+
+// replyCheckAll 检查全部订阅卡片，并复用同一条消息展示汇总结果。
+func (s *Service) replyCheckAll(ctx context.Context, chat string) {
+	items, err := s.app.BotSubscriptions(ctx)
+	if err != nil {
+		s.sendMessage(ctx, chat, "读取订阅清单失败："+err.Error(), nil)
+		return
 	}
-	s.sendMessage(ctx, chat, strings.Join(lines, "\n"), nil)
+	if len(items) == 0 {
+		s.sendMessage(ctx, chat, "订阅清单是空的。", nil)
+		return
+	}
+	messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
+		"chat_id":    chat,
+		"text":       fmt.Sprintf("<b>正在检查订阅更新</b>\n共 %d 个订阅，请稍候。", len(items)),
+		"parse_mode": "HTML",
+	})
+	if err != nil {
+		s.logger.Printf("telegram: send check progress: %v", err)
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	defer cancel()
+	outcomes := make([]subscriptionCheckOutcome, len(items))
+	work := make(chan int)
+	workers := 4
+	if len(items) < workers {
+		workers = len(items)
+	}
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wg.Done()
+			for index := range work {
+				item := items[index]
+				result, checkErr := s.app.BotCheck(checkCtx, item.ID)
+				outcomes[index] = subscriptionCheckOutcome{Subscription: item, Result: result, Err: checkErr}
+			}
+		}()
+	}
+	for index := range items {
+		work <- index
+	}
+	close(work)
+	wg.Wait()
+
+	report := renderCheckReport(outcomes, checkCtx.Err())
+	if messageID != 0 {
+		if err := s.editMessage(ctx, chat, messageID, false, report, nil); err == nil {
+			return
+		} else {
+			s.logger.Printf("telegram: edit check report: %v", err)
+		}
+	}
+	s.sendMessage(ctx, chat, report, nil)
 }
 
 func (s *Service) replySubscriptionAction(ctx context.Context, chat, action, title string) {
@@ -207,7 +265,11 @@ func (s *Service) runAction(ctx context.Context, chat, action string, subscripti
 			s.sendMessage(ctx, chat, "检查失败："+err.Error(), nil)
 			return
 		}
-		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》检查完成：新章节 %d，已入队 %d。", result.Title, result.New, result.Queued), nil)
+		message := fmt.Sprintf("《%s》检查完成：新章节 %d，已入队 %d", result.Title, result.New, result.Queued)
+		if result.Retried > 0 {
+			message += fmt.Sprintf("，重试失败章节 %d", result.Retried)
+		}
+		s.sendMessage(ctx, chat, message+"。", nil)
 	case "archive":
 		if err := s.app.BotArchive(ctx, subscription.ID); err != nil {
 			s.sendMessage(ctx, chat, "归档失败："+err.Error(), nil)
@@ -320,13 +382,11 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, sourceNa
 		s.sendMessage(ctx, chat, fmt.Sprintf("没有搜到「%s」的结果。", query), nil)
 		return
 	}
-	s.mu.Lock()
-	s.sessions[chatID] = &session{results: entries}
-	s.mu.Unlock()
 	// 记下搜索结果消息的 message_id：订阅成功后要把这条消息删掉。
+	text := renderResults(query, entries)
 	messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
 		"chat_id":      chat,
-		"text":         renderResults(query, entries),
+		"text":         text,
 		"parse_mode":   "HTML",
 		"reply_markup": resultKeyboard(entries),
 	})
@@ -334,7 +394,7 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, sourceNa
 		s.logger.Printf("telegram: send search results: %v", err)
 	}
 	s.mu.Lock()
-	s.sessions[chatID] = &session{results: entries, resultsMessageID: messageID}
+	s.sessions[chatID] = &session{results: entries, resultsText: text, resultsMessageID: messageID}
 	s.mu.Unlock()
 }
 
@@ -344,7 +404,7 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 	}
 	chatID := query.Message.Chat.ID
 	chat := strconv.FormatInt(chatID, 10)
-	s.answerCallback(ctx, query.ID)
+	s.answerCallbackAsync(query.ID)
 	if !s.allowed(chatID) {
 		return
 	}
@@ -362,7 +422,7 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 			resultsMessageID = current.resultsMessageID
 		}
 		s.mu.RUnlock()
-		s.deleteMessage(ctx, chat, resultsMessageID)
+		s.deleteMessageAsync(chat, resultsMessageID)
 		s.mu.Lock()
 		if current := s.sessions[chatID]; current != nil {
 			current.resultsMessageID = 0
@@ -377,15 +437,19 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		s.replySubscribe(ctx, chatID, chat, index, query.Message.MessageID)
 	case data == "back":
 		// 收起详情，并把搜索结果重新发一份，供用户重新选择。
-		s.deleteMessage(ctx, chat, query.Message.MessageID)
+		s.deleteMessageAsync(chat, query.Message.MessageID)
 		results := s.sessionResults(chatID)
 		if len(results) == 0 {
 			s.sendMessage(ctx, chat, "没有可返回的搜索结果。", nil)
 			return
 		}
+		resultsText := s.sessionResultsText(chatID)
+		if resultsText == "" {
+			resultsText = renderResults("", results)
+		}
 		messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
 			"chat_id":      chat,
-			"text":         renderResults("", results),
+			"text":         resultsText,
 			"parse_mode":   "HTML",
 			"reply_markup": resultKeyboard(results),
 		})
@@ -397,6 +461,8 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		if current := s.sessions[chatID]; current != nil {
 			current.resultsMessageID = messageID
 			current.detailMessageID = 0
+			current.detailPhoto = false
+			current.detailIndex = 0
 		}
 		s.mu.Unlock()
 	}
@@ -409,7 +475,17 @@ func (s *Service) sessionResults(chatID int64) []resultEntry {
 	if current == nil {
 		return nil
 	}
-	return current.results
+	return append([]resultEntry(nil), current.results...)
+}
+
+func (s *Service) sessionResultsText(chatID int64) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	current := s.sessions[chatID]
+	if current == nil {
+		return ""
+	}
+	return current.resultsText
 }
 
 func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat string, index int) {
@@ -419,29 +495,28 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 		return
 	}
 	entry := results[index]
-	// 列表结果通常不带作者/简介，这里再拉一次详情补齐（和网页端同一条链路）。
-	if detail, err := s.app.BotComicDetail(ctx, entry.SourceID, entry.ComicID); err == nil {
-		if strings.TrimSpace(detail.Author) != "" {
-			entry.Author = detail.Author
-		}
-		if strings.TrimSpace(detail.Description) != "" {
-			entry.Summary = detail.Description
-		}
-		if strings.TrimSpace(detail.LatestChapterTitle) != "" {
-			entry.Latest = detail.LatestChapterTitle
-		}
-		if strings.TrimSpace(entry.Cover) == "" && strings.TrimSpace(detail.Cover) != "" {
-			entry.Cover = detail.Cover
-		}
-	} else if err != nil {
-		s.logger.Printf("telegram: comic detail %s/%s: %v", entry.SourceID, entry.ComicID, err)
+	// 先用搜索结果里的缓存数据立刻建框，再异步拉详情并原位更新。
+	caption := renderResultDetail(entry, true)
+	keyboard := resultDetailKeyboard(index)
+	messageID, photo := s.sendResultDetail(ctx, chat, caption, entry.Cover, keyboard)
+	if messageID == 0 {
+		s.sendMessage(ctx, chat, "作品详情发送失败，请稍后重试。", nil)
+		return
 	}
-	lines := []string{
-		fmt.Sprintf("<b>%s</b>（%s）", entry.Title, entry.SourceName),
-		"作者：" + fallback(entry.Author, "未知"),
-		"最新章节：" + fallback(entry.Latest, "未知"),
+	s.mu.Lock()
+	if current := s.sessions[chatID]; current != nil {
+		current.detailMessageID = messageID
+		current.detailPhoto = photo
+		current.detailIndex = index
 	}
-	keyboard := map[string]any{
+	s.mu.Unlock()
+	if resultNeedsDetail(entry) {
+		go s.enrichResultDetail(ctx, chatID, chat, index, messageID, photo)
+	}
+}
+
+func resultDetailKeyboard(index int) any {
+	return map[string]any{
 		"inline_keyboard": [][]map[string]string{
 			{
 				{"text": "返回", "callback_data": "back"},
@@ -449,38 +524,122 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 			},
 		},
 	}
-	caption := strings.Join(lines, "\n")
-	if summary := strings.TrimSpace(entry.Summary); summary != "" {
-		caption += "\n\n" + truncate(summary, summaryLimit)
+}
+
+func resultNeedsDetail(entry resultEntry) bool {
+	return strings.TrimSpace(entry.Author) == "" ||
+		strings.TrimSpace(entry.Latest) == "" ||
+		strings.TrimSpace(entry.Summary) == "" ||
+		entry.ChapterCount <= 0
+}
+
+func renderResultDetail(entry resultEntry, loading bool) string {
+	author := fallback(entry.Author, "未知")
+	latest := fallback(entry.Latest, "未知")
+	if loading {
+		if strings.TrimSpace(entry.Author) == "" {
+			author = "获取中…"
+		}
+		if strings.TrimSpace(entry.Latest) == "" {
+			latest = "获取中…"
+		}
 	}
-	// 有封面就带图发送；没有则退回纯文本。始终是新消息，搜索结果原样保留。
-	messageID := int64(0)
-	if cover := strings.TrimSpace(entry.Cover); cover != "" {
-		if id, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+	lines := []string{
+		fmt.Sprintf("<b>%s</b>（%s）", html.EscapeString(entry.Title), html.EscapeString(entry.SourceName)),
+		"作者：" + html.EscapeString(author),
+		"最新章节：" + html.EscapeString(latest),
+		"章节数量：" + chapterCountLabel(entry.ChapterCount, loading),
+	}
+	caption := strings.Join(lines, "\n")
+	if summary := cleanComicSummary(entry.Title, entry.Summary); summary != "" {
+		caption += "\n\n" + html.EscapeString(truncate(summary, summaryLimit))
+	}
+	return caption
+}
+
+func chapterCountLabel(count int, loading bool) string {
+	if count > 0 {
+		return fmt.Sprintf("共 %d 章", count)
+	}
+	if loading {
+		return "获取中…"
+	}
+	return "未知"
+}
+
+func (s *Service) sendResultDetail(ctx context.Context, chat, caption, cover string, keyboard any) (int64, bool) {
+	if cover = strings.TrimSpace(cover); cover != "" {
+		photoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		id, err := s.callMethod(photoCtx, "sendPhoto", map[string]any{
 			"chat_id":      chat,
 			"photo":        cover,
 			"caption":      caption,
 			"parse_mode":   "HTML",
 			"reply_markup": keyboard,
-		}); err == nil {
-			messageID = id
+		})
+		cancel()
+		if err == nil && id != 0 {
+			return id, true
 		}
+		s.logger.Printf("telegram: send detail photo: %v", err)
 	}
-	if messageID == 0 {
-		if id, err := s.callMethod(ctx, "sendMessage", map[string]any{
-			"chat_id":      chat,
-			"text":         caption,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
-		}); err == nil {
-			messageID = id
-		}
+	id, err := s.callMethod(ctx, "sendMessage", map[string]any{
+		"chat_id":      chat,
+		"text":         caption,
+		"parse_mode":   "HTML",
+		"reply_markup": keyboard,
+	})
+	if err != nil {
+		s.logger.Printf("telegram: send detail text: %v", err)
+		return 0, false
 	}
+	return id, false
+}
+
+func (s *Service) enrichResultDetail(ctx context.Context, chatID int64, chat string, index int, messageID int64, photo bool) {
+	results := s.sessionResults(chatID)
+	if index < 0 || index >= len(results) {
+		return
+	}
+	entry := results[index]
+	detailCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	detail, err := s.app.BotComicDetail(detailCtx, entry.SourceID, entry.ComicID)
+	if err != nil {
+		s.logger.Printf("telegram: comic detail %s/%s: %v", entry.SourceID, entry.ComicID, err)
+		return
+	}
+	if strings.TrimSpace(detail.Author) != "" {
+		entry.Author = detail.Author
+	}
+	if strings.TrimSpace(detail.LatestChapterTitle) != "" {
+		entry.Latest = detail.LatestChapterTitle
+	}
+	if strings.TrimSpace(detail.Cover) != "" && strings.TrimSpace(entry.Cover) == "" {
+		entry.Cover = detail.Cover
+	}
+	if detail.ChapterCount > 0 {
+		entry.ChapterCount = detail.ChapterCount
+	}
+	if summary := cleanComicSummary(entry.Title, detail.Description); summary != "" {
+		entry.Summary = summary
+	}
+
 	s.mu.Lock()
-	if current := s.sessions[chatID]; current != nil {
-		current.detailMessageID = messageID
+	current := s.sessions[chatID]
+	if current == nil || current.detailMessageID != messageID || current.detailIndex != index {
+		s.mu.Unlock()
+		return
 	}
+	current.results[index] = entry
 	s.mu.Unlock()
+
+	caption := renderResultDetail(entry, false)
+	editCtx, editCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer editCancel()
+	if err := s.editMessage(editCtx, chat, messageID, photo, caption, resultDetailKeyboard(index)); err != nil {
+		s.logger.Printf("telegram: edit detail %s/%s: %v", entry.SourceID, entry.ComicID, err)
+	}
 }
 
 func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string, index int, detailMessageID int64) {
@@ -540,24 +699,117 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 
 func newResultEntry(source BotSource, comic model.Comic) resultEntry {
 	return resultEntry{
-		SourceID:   source.ID,
-		SourceName: shortSourceName(source.Name),
-		ComicID:    comic.ID,
-		Title:      comic.Title,
-		Author:     comic.Author,
-		Latest:     comic.LatestChapterTitle,
-		Cover:      comic.Cover,
-		Summary:    comic.Description,
+		SourceID:     source.ID,
+		SourceName:   shortSourceName(source.Name),
+		ComicID:      comic.ID,
+		Title:        comic.Title,
+		Author:       comic.Author,
+		Latest:       comic.LatestChapterTitle,
+		ChapterCount: comic.ChapterCount,
+		Cover:        comic.Cover,
+		Summary:      cleanComicSummary(comic.Title, comic.Description),
 	}
 }
 
 func renderResults(query string, entries []resultEntry) string {
 	lines := []string{}
 	if query != "" {
-		lines = append(lines, fmt.Sprintf("<b>搜索：%s</b>", query))
+		lines = append(lines, fmt.Sprintf("<b>搜索：%s</b>", html.EscapeString(query)))
 	}
 	for index, entry := range entries {
-		lines = append(lines, fmt.Sprintf("%d. %s（%s）", index+1, truncate(entry.Title, titleLimit), entry.SourceName))
+		lines = append(lines, fmt.Sprintf(
+			"%d. %s（%s）",
+			index+1,
+			html.EscapeString(truncate(entry.Title, titleLimit)),
+			html.EscapeString(entry.SourceName),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSubscriptionList(items []BotSubscription) string {
+	lines := []string{fmt.Sprintf("<b>订阅清单（%d）</b>", len(items))}
+	for index, item := range items {
+		if index >= 40 {
+			lines = append(lines, fmt.Sprintf("… 其余 %d 项请在网页端查看", len(items)-40))
+			break
+		}
+		lines = append(lines, fmt.Sprintf(
+			"%d. %s（%s）%s",
+			index+1,
+			html.EscapeString(truncate(item.Title, titleLimit)),
+			html.EscapeString(shortSourceName(item.Source)),
+			subscriptionStateDot(item.Enabled),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func subscriptionStateDot(enabled bool) string {
+	if enabled {
+		return "🟢"
+	}
+	return "⚪"
+}
+
+func renderCheckReport(outcomes []subscriptionCheckOutcome, ctxErr error) string {
+	success := 0
+	failed := 0
+	newChapters := 0
+	queued := 0
+	retried := 0
+	for _, outcome := range outcomes {
+		if outcome.Err != nil {
+			failed++
+			continue
+		}
+		success++
+		newChapters += outcome.Result.New
+		queued += outcome.Result.Queued
+		retried += outcome.Result.Retried
+	}
+	lines := []string{
+		fmt.Sprintf("<b>检查更新完成（%d）</b>", len(outcomes)),
+		fmt.Sprintf("成功 %d · 失败 %d · 新章节 %d · 入队 %d · 重试 %d", success, failed, newChapters, queued, retried),
+	}
+	if ctxErr != nil {
+		lines = append(lines, "检查已超时，未完成的订阅按失败计。")
+	}
+	limit := len(outcomes)
+	if limit > 20 {
+		limit = 20
+	}
+	for index := 0; index < limit; index++ {
+		outcome := outcomes[index]
+		item := outcome.Subscription
+		prefix := fmt.Sprintf(
+			"%d. %s %s（%s）",
+			index+1,
+			subscriptionStateDot(item.Enabled),
+			html.EscapeString(truncate(item.Title, titleLimit)),
+			html.EscapeString(shortSourceName(item.Source)),
+		)
+		if outcome.Err != nil {
+			lines = append(lines, prefix+" · 失败："+html.EscapeString(truncate(outcome.Err.Error(), 60)))
+			continue
+		}
+		detail := []string{}
+		if outcome.Result.New > 0 {
+			detail = append(detail, fmt.Sprintf("新 %d", outcome.Result.New))
+		}
+		if outcome.Result.Queued > 0 {
+			detail = append(detail, fmt.Sprintf("入队 %d", outcome.Result.Queued))
+		}
+		if outcome.Result.Retried > 0 {
+			detail = append(detail, fmt.Sprintf("重试 %d", outcome.Result.Retried))
+		}
+		if len(detail) == 0 {
+			detail = append(detail, "无更新")
+		}
+		lines = append(lines, prefix+" · "+strings.Join(detail, " / "))
+	}
+	if len(outcomes) > limit {
+		lines = append(lines, fmt.Sprintf("… 其余 %d 项已计入上方汇总", len(outcomes)-limit))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -620,6 +872,10 @@ func shortSourceName(name string) string {
 		}
 	}
 	if ascii {
+		runes := []rune(name)
+		if len(runes) > 4 {
+			return string(runes[:4])
+		}
 		return name
 	}
 	runes := []rune(name)
@@ -627,6 +883,40 @@ func shortSourceName(name string) string {
 		return name
 	}
 	return string(runes[:2])
+}
+
+func cleanComicSummary(title, summary string) string {
+	summary = htmlTagPattern.ReplaceAllString(summary, " ")
+	summary = html.UnescapeString(summary)
+	summary = strings.ReplaceAll(summary, "\u00a0", " ")
+	summary = strings.Join(strings.Fields(summary), " ")
+	if summary == "" {
+		return ""
+	}
+	title = strings.TrimSpace(title)
+	if title != "" {
+		for _, marker := range []string{
+			"作品讲述了", "作品讲述", "作品简介", "内容简介", "故事简介", "故事讲述", "讲述了", "简介：", "简介:",
+		} {
+			pos := strings.Index(summary, marker)
+			if pos <= 0 || pos > 240 {
+				continue
+			}
+			prefix := summary[:pos]
+			if strings.Contains(prefix, title) || strings.Contains(prefix, "全集") || strings.Contains(prefix, "最新章节") {
+				summary = summary[pos:]
+				break
+			}
+		}
+	}
+	summary = strings.TrimLeft(summary, " \t\r\n,，:：;；。.!！?？-—")
+	for _, prefix := range []string{"作品简介：", "作品简介:", "内容简介：", "内容简介:", "简介：", "简介:"} {
+		if strings.HasPrefix(summary, prefix) {
+			summary = strings.TrimSpace(strings.TrimPrefix(summary, prefix))
+			break
+		}
+	}
+	return strings.TrimSpace(summary)
 }
 
 func truncate(value string, limit int) string {

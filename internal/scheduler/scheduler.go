@@ -35,6 +35,12 @@ type Notifier interface {
 	SubscriptionChecked(ctx context.Context, subscription model.Subscription, queued int, titles []string)
 }
 
+// SubscriptionCheckResult reports what one subscription check discovered.
+type SubscriptionCheckResult struct {
+	NewChapters int
+	Queued      int
+}
+
 type Scheduler struct {
 	registry      *sources.Registry
 	subscriptions Subscriptions
@@ -114,20 +120,21 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 		if !subscription.Enabled {
 			continue
 		}
-		if err := s.check(ctx, subscription); err != nil {
+		if _, err := s.check(ctx, subscription); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		}
 	}
 }
 
-func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) error {
+func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) (SubscriptionCheckResult, error) {
+	result := SubscriptionCheckResult{}
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
-		return err
+		return result, err
 	}
 	account, err := s.registry.Account(ctx, subscription.SourceID)
 	if err != nil {
-		return err
+		return result, err
 	}
 	// Repair series-level cover/metadata if a previous download lost them,
 	// so subscriptions self-heal on every scheduled or manual check.
@@ -138,31 +145,31 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 	}
 	chapters, err := item.Chapters(ctx, account, subscription.ComicID)
 	if err != nil {
-		return err
+		return result, err
 	}
 	comicStatus := subscription.ComicStatus
 	if detail, detailErr := item.Detail(ctx, account, subscription.ComicID); detailErr == nil && strings.TrimSpace(detail.Status) != "" {
 		comicStatus = strings.TrimSpace(detail.Status)
 	}
 	if len(chapters) == 0 {
-		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
+		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
 	}
 	newest := chapters[len(chapters)-1]
 	// 每次成功拉到章节列表都刷新总章节数，供订阅卡片的「共 N 话」使用。
 	if err := s.subscriptions.UpdateSubscriptionChapterCount(ctx, subscription.ID, len(chapters)); err != nil {
-		return err
+		return result, err
 	}
 	if subscription.LastChapterID == "" {
 		// First observation only records a baseline.
-		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), false)
+		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), false)
 	}
-	if subscription.AutoDownload {
-		queued := 0
-		queuedTitles := make([]string, 0, 4)
-		for _, chapter := range chapters {
-			if !isNewer(chapter, subscription) {
-				continue
-			}
+	queuedTitles := make([]string, 0, 4)
+	for _, chapter := range chapters {
+		if !isNewer(chapter, subscription) {
+			continue
+		}
+		result.NewChapters++
+		if subscription.AutoDownload {
 			_, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
 				SourceID:            subscription.SourceID,
 				ComicID:             subscription.ComicID,
@@ -180,22 +187,24 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 				s.logger.Printf("scheduler: queue %s/%s: %v", subscription.Title, chapter.Title, err)
 				continue
 			}
-			queued++
+			result.Queued++
 			title := strings.TrimSpace(chapter.Title)
 			if title == "" {
 				title = chapter.ID
 			}
 			queuedTitles = append(queuedTitles, title)
 		}
+	}
+	if result.Queued > 0 {
 		s.downloads.Notify()
-		if queued > 0 && s.notifier != nil {
-			s.notifier.SubscriptionChecked(ctx, subscription, queued, queuedTitles)
+		if s.notifier != nil {
+			s.notifier.SubscriptionChecked(ctx, subscription, result.Queued, queuedTitles)
 		}
 	}
 	if isNewer(newest, subscription) {
-		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), true)
+		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), true)
 	}
-	return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
+	return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
 }
 
 func subscriptionSeriesDir(subscription model.Subscription) string {
@@ -349,7 +358,7 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 		if !subscription.Enabled || !s.due(subscription, now) {
 			continue
 		}
-		if err := s.check(ctx, subscription); err != nil {
+		if _, err := s.check(ctx, subscription); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		}
 		if retried, err := s.downloads.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
@@ -378,9 +387,16 @@ func (s *Scheduler) due(subscription model.Subscription, now time.Time) bool {
 
 // CheckOne checks a single subscription immediately.
 func (s *Scheduler) CheckOne(ctx context.Context, id int64) error {
+	_, err := s.CheckOneDetailed(ctx, id)
+	return err
+}
+
+// CheckOneDetailed checks one subscription and returns how many new chapters
+// were discovered and queued.
+func (s *Scheduler) CheckOneDetailed(ctx context.Context, id int64) (SubscriptionCheckResult, error) {
 	subscription, err := s.subscriptions.Subscription(ctx, id)
 	if err != nil {
-		return err
+		return SubscriptionCheckResult{}, err
 	}
 	return s.check(ctx, subscription)
 }

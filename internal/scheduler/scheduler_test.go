@@ -180,6 +180,28 @@ func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
 	}
 }
 
+func TestCheckOneDetailedReportsNewAndQueued(t *testing.T) {
+	subscriptions := &stubSubscriptions{items: []model.Subscription{{
+		ID:               1,
+		SourceID:         "stub",
+		ComicID:          "1",
+		Title:            "测试作品",
+		Enabled:          true,
+		AutoDownload:     true,
+		LastChapterID:    "1",
+		LastChapterTitle: "第1话",
+		LastChapterOrder: 1,
+	}}}
+	downloads := &stubDownloads{}
+	result, err := newTestScheduler(testChapters(), subscriptions, downloads).CheckOneDetailed(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("CheckOneDetailed returned error: %v", err)
+	}
+	if result.NewChapters != 2 || result.Queued != 2 {
+		t.Fatalf("check result = %+v, want 2 new and 2 queued", result)
+	}
+}
+
 func TestQueueLatestDownloadsNewestEvenWhenAutoDownloadDisabled(t *testing.T) {
 	subscription := model.Subscription{
 		ID:           1,

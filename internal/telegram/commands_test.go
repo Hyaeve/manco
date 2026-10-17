@@ -1,6 +1,10 @@
 package telegram
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestSplitCommand(t *testing.T) {
 	cases := []struct {
@@ -10,6 +14,7 @@ func TestSplitCommand(t *testing.T) {
 	}{
 		{"/start", "/start", ""},
 		{"/subscriptions@manco_bot", "/subscriptions", ""},
+		{"/check@manco_bot", "/check", ""},
 		{"/s 星海镖师", "/s", "星海镖师"},
 		{"搜索", "搜索", ""},
 	}
@@ -67,12 +72,86 @@ func TestShortSourceName(t *testing.T) {
 	cases := map[string]string{
 		"包子漫画":      "包子",
 		"禁漫天堂":      "禁漫",
-		"CopyManga": "CopyManga",
+		"CopyManga": "Copy",
 		"JM":        "JM",
 	}
 	for input, want := range cases {
 		if got := shortSourceName(input); got != want {
 			t.Fatalf("shortSourceName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestCleanComicSummaryRemovesSourcePrefix(t *testing.T) {
+	input := "《星海镖师》第277话2地图,《星海镖师》全集,作品讲述了D.B星河纪元3000年左右的人类进入第二次大开发时代。"
+	got := cleanComicSummary("星海镖师", input)
+	want := "作品讲述了D.B星河纪元3000年左右的人类进入第二次大开发时代。"
+	if got != want {
+		t.Fatalf("cleanComicSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestRenderSubscriptionListUsesShortSourceAndStatusDot(t *testing.T) {
+	text := renderSubscriptionList([]BotSubscription{
+		{Title: "欲海交锋/Moby Dick", Source: "哔咔漫画", Enabled: true},
+		{Title: "死灵法师！我即是天灾", Source: "包子漫画", Enabled: false},
+		{Title: "One Punch Man", Source: "CopyManga", Enabled: true},
+	})
+	for _, want := range []string{
+		"1. 欲海交锋/Moby Dick（哔咔）🟢",
+		"2. 死灵法师！我即是天灾（包子）⚪",
+		"3. One Punch Man（Copy）🟢",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("subscription list missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "已启用") || strings.Contains(text, "已停用") {
+		t.Fatalf("subscription list still uses verbose status text:\n%s", text)
+	}
+}
+
+func TestRenderResultDetailIncludesChapterCountAndCleanSummary(t *testing.T) {
+	entry := resultEntry{
+		Title:        "星海镖师",
+		SourceName:   "包子",
+		Author:       "漫言星空",
+		Latest:       "第277话2 地图",
+		ChapterCount: 277,
+		Summary:      "《星海镖师》第277话2地图,《星海镖师》全集,作品讲述了热血冒险故事。",
+	}
+	text := renderResultDetail(entry, false)
+	for _, want := range []string{
+		"作者：漫言星空",
+		"最新章节：第277话2 地图",
+		"章节数量：共 277 章",
+		"作品讲述了热血冒险故事。",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("detail missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "《星海镖师》第277话2地图,《星海镖师》全集") {
+		t.Fatalf("detail retained source prefix:\n%s", text)
+	}
+}
+
+func TestRenderCheckReportAggregatesAllSubscriptions(t *testing.T) {
+	outcomes := []subscriptionCheckOutcome{
+		{Subscription: BotSubscription{Title: "作品一", Source: "包子漫画", Enabled: true}, Result: BotCheckResult{New: 2, Queued: 2}},
+		{Subscription: BotSubscription{Title: "作品二", Source: "哔咔漫画", Enabled: false}, Result: BotCheckResult{Retried: 1}},
+		{Subscription: BotSubscription{Title: "作品三", Source: "禁漫天堂", Enabled: true}, Err: errors.New("timeout")},
+	}
+	text := renderCheckReport(outcomes, nil)
+	for _, want := range []string{
+		"检查更新完成（3）",
+		"成功 2 · 失败 1 · 新章节 2 · 入队 2 · 重试 1",
+		"作品一（包子） · 新 2 / 入队 2",
+		"作品二（哔咔） · 重试 1",
+		"作品三（禁漫） · 失败：timeout",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("check report missing %q:\n%s", want, text)
 		}
 	}
 }
