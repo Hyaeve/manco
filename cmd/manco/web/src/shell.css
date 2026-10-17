@@ -491,6 +491,18 @@ body,
   background: #fff;
 }
 
+.preview-stream-hint {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  background: #111318;
+  font-size: 12px;
+}
+
 .reader-text {
   width: 100%;
   max-height: calc(100dvh - 180px);

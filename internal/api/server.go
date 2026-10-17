@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.8"
+	appVersion    = "v0.6.9"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -112,6 +112,9 @@ type Server struct {
 	// filepath.Glob 在 NAS 上会被放大成「订阅数 × 轮询次数」次目录扫描。
 	coverCacheMu sync.Mutex
 	coverCache   map[string]coverCacheEntry
+
+	imageHostMu        sync.RWMutex
+	imageHostsBySource map[string]map[string]struct{}
 
 	initialDownloadMu sync.Mutex
 
@@ -1734,7 +1737,8 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 	}
 	// 只装这一个扩展，并且只返回它新引入的来源：sidecar 的 metadata 会报告
 	// 整个运行时里所有插件的内容源，不做差集就会把别的插件来源算到它头上。
-	sources, err := s.runtime.InstallIsolated(r.Context(), pluginID, selected.InstallURL, runtimeType)
+	pluginName := firstNonEmptyText(selected.Name, selected.PackageName, selected.ID)
+	sources, err := s.runtime.InstallIsolated(r.Context(), pluginID, selected.InstallURL, runtimeType, pluginName)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "安装插件失败："+err.Error())
 		return
@@ -1762,6 +1766,7 @@ func (s *Server) importRepositoryPlugin(w http.ResponseWriter, r *http.Request, 
 		config, _ := json.Marshal(pluginruntime.Config{
 			Runtime:     runtimeType,
 			PluginID:    pluginID,
+			PluginName:  pluginName,
 			SourceName:  parsed.Name,
 			ContentType: parsed.ContentType,
 			Locale:      parsed.Locale,
@@ -2081,7 +2086,7 @@ func (s *Server) handleInstallAPK(w http.ResponseWriter, r *http.Request) {
 	_ = temp.Close()
 	base := strings.TrimSuffix(filepath.Base(header.Filename), filepath.Ext(header.Filename))
 	pluginID := "apk-" + repository.Slug(base)
-	sources, err := s.runtime.InstallFile(r.Context(), pluginID, tempPath, pluginruntime.RuntimeMihon)
+	sources, err := s.runtime.InstallFile(r.Context(), pluginID, tempPath, pluginruntime.RuntimeMihon, base)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "安装 APK 失败："+err.Error())
 		return
@@ -2094,6 +2099,7 @@ func (s *Server) handleInstallAPK(w http.ResponseWriter, r *http.Request) {
 		config, _ := json.Marshal(pluginruntime.Config{
 			Runtime:     pluginruntime.RuntimeMihon,
 			PluginID:    pluginID,
+			PluginName:  base,
 			SourceName:  parsed.Name,
 			ContentType: parsed.ContentType,
 			Locale:      parsed.Locale,
@@ -2223,7 +2229,7 @@ func (s *Server) RestorePluginSources(ctx context.Context) (int, error) {
 		if s.runtime.HasPlugin(pluginID) {
 			continue
 		}
-		if err := s.runtime.EnsureWithRuntime(ctx, pluginID, installURL, config.Runtime); err != nil {
+		if err := s.runtime.EnsureWithRuntime(ctx, pluginID, installURL, config.Runtime, config.PluginName); err != nil {
 			s.logger.Printf("plugins: restore %s: %v", pluginID, err)
 			continue
 		}
@@ -2354,7 +2360,7 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 		}
 		// 枚举用的插件在批量加载结束后会被清理，添加来源时按需补装回来。
 		if installURL := strings.TrimSpace(runtimeConfig.InstallURL); installURL != "" && s.runtime != nil {
-			if err := s.runtime.EnsureWithRuntime(r.Context(), runtimeConfig.PluginID, installURL, runtimeConfig.Runtime); err != nil {
+			if err := s.runtime.EnsureWithRuntime(r.Context(), runtimeConfig.PluginID, installURL, runtimeConfig.Runtime, runtimeConfig.PluginName); err != nil {
 				writeError(w, http.StatusBadGateway, "安装插件失败："+err.Error())
 				return
 			}
@@ -3026,6 +3032,8 @@ func (s *Server) loadComicDetail(ctx context.Context, item source.Source, accoun
 		}
 		detail = model.ComicDetail{Comic: comic, Chapters: chapters}
 	}
+	detail.Comic.SourceID = source.FirstNonEmpty(detail.Comic.SourceID, item.Info().ID)
+	s.allowImageURL(detail.Comic.SourceID, detail.Comic.Cover)
 	if len(detail.Chapters) > 0 {
 		downloader.SortChapters(detail.Chapters)
 		if strings.TrimSpace(detail.Comic.LatestChapterTitle) == "" {
@@ -3347,12 +3355,14 @@ func (s *Server) putDiscoverCard(ctx context.Context, sourceID, sourceName, kind
 }
 
 func (s *Server) annotateDiscover(sourceID, kind string, comic model.Comic) model.Comic {
-
 	comic.SourceID = source.FirstNonEmpty(comic.SourceID, sourceID)
+	s.allowImageURL(comic.SourceID, comic.Cover)
 	if s.discover == nil {
 		return comic
 	}
-	return s.discover.AnnotateKind(kind, comic)
+	comic = s.discover.AnnotateKind(kind, comic)
+	s.allowImageURL(comic.SourceID, comic.Cover)
+	return comic
 }
 
 func (s *Server) refreshDiscoverDetail(sourceID, kind, comicID string) {
@@ -3719,7 +3729,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	s.flushSubscriptionCoverIndex()
 	if payload.AllChapters {
 		s.registerInitialDownloadNotice(r.Context(), saved)
-		queued, skipped, queueErr := s.scheduler.QueueAll(r.Context(), saved)
+		queued, skipped, queueErr := s.scheduler.QueueAllManual(r.Context(), saved)
 		if queueErr != nil {
 			s.logger.Printf("api: queue all subscription %d: %v", saved.ID, queueErr)
 			response["queueError"] = queueErr.Error()
@@ -4073,7 +4083,7 @@ func (s *Server) fullRefreshSubscription(ctx context.Context, subscription model
 	if _, err := s.store.DeleteDownloadJobsForComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
 		return 0, removedFiles, len(jobs), err
 	}
-	queued, _, err = s.scheduler.QueueAll(ctx, subscription)
+	queued, _, err = s.scheduler.QueueAllManual(ctx, subscription)
 	if err != nil {
 		return 0, removedFiles, len(jobs), err
 	}
@@ -4530,7 +4540,7 @@ func (s *Server) handleCheckSubscription(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "无效的订阅 ID")
 		return
 	}
-	if err := s.scheduler.CheckOne(r.Context(), id); err != nil {
+	if err := s.scheduler.CheckOneManual(r.Context(), id); err != nil {
 		writeError(w, http.StatusBadGateway, "检查更新失败："+err.Error())
 		return
 	}
@@ -4554,7 +4564,7 @@ func (s *Server) handleCheckSubscription(w http.ResponseWriter, r *http.Request)
 // subscribed work. It is used by the card check button so a single click also
 // recovers previously failed downloads.
 func (s *Server) retryFailedForSubscription(ctx context.Context, subscription model.Subscription) int {
-	retried, err := s.engine.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID)
+	retried, err := s.engine.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID, model.QueuePriorityManual)
 	if err != nil {
 		s.logger.Printf("api: retry failed jobs %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
 	}
@@ -4578,7 +4588,7 @@ func (s *Server) handleFillSubscription(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	queued, skipped, err := s.scheduler.QueueAll(r.Context(), subscription)
+	queued, skipped, err := s.scheduler.QueueAllManual(r.Context(), subscription)
 	if err != nil {
 		if errors.Is(err, scheduler.ErrNoChapters) {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -4925,6 +4935,7 @@ func resolveLocalCover(root, folder string) string {
 }
 
 func (s *Server) subscriptionWithCovers(ctx context.Context, subscription model.Subscription) model.Subscription {
+	s.allowImageURL(subscription.SourceID, subscription.Cover)
 	subscription.LocalCover = s.localCoverForSubscription(subscription)
 	indexedCover := ""
 	if s.subscriptionCovers != nil {
@@ -5121,6 +5132,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 			DownloadDir:         downloadDir,
 			ConvertToSimplified: convertToSimplified,
 			ChapterMarker:       chapterMarker,
+			QueuePriority:       model.QueuePriorityManual,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -5148,6 +5160,7 @@ func (s *Server) handleCreateDownload(w http.ResponseWriter, r *http.Request) {
 				DownloadDir:         downloadDir,
 				ConvertToSimplified: convertToSimplified,
 				ChapterMarker:       chapterMarker,
+				QueuePriority:       model.QueuePriorityManual,
 			})
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -5254,6 +5267,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 		if job.Status != "completed" {
 			continue
 		}
+		s.allowImageURL(job.SourceID, job.ComicCover)
 		key := job.SourceID + "\x00" + job.ComicID
 		position, ok := index[key]
 		if !ok {
@@ -5396,6 +5410,7 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 					item.CachedCover = s.discover.CachedCoverURL(sourceID, comicID)
 				}
 				item.SourceCover = fallbacks[sourceID+"\x00"+comicID]
+				s.allowImageURL(sourceID, item.SourceCover)
 				item.CoverBlur = coverBlurByComic[sourceID+"\x00"+comicID]
 			}
 			for i := range item.Files {
@@ -7228,6 +7243,45 @@ func inferLogModule(message string) string {
 	}
 }
 
+func (s *Server) allowImageURL(sourceID, raw string) {
+	sourceID = strings.TrimSpace(sourceID)
+	raw = strings.TrimSpace(raw)
+	if sourceID == "" || raw == "" {
+		return
+	}
+	target, err := url.Parse(raw)
+	if err != nil {
+		return
+	}
+	host := strings.ToLower(strings.TrimSpace(target.Hostname()))
+	if host == "" {
+		return
+	}
+	s.imageHostMu.Lock()
+	if s.imageHostsBySource == nil {
+		s.imageHostsBySource = map[string]map[string]struct{}{}
+	}
+	hosts := s.imageHostsBySource[sourceID]
+	if hosts == nil {
+		hosts = map[string]struct{}{}
+		s.imageHostsBySource[sourceID] = hosts
+	}
+	hosts[host] = struct{}{}
+	s.imageHostMu.Unlock()
+}
+
+func (s *Server) allowImageHostForSource(sourceID, host string) bool {
+	sourceID = strings.TrimSpace(sourceID)
+	host = strings.ToLower(strings.TrimSpace(host))
+	if sourceID == "" || host == "" {
+		return false
+	}
+	s.imageHostMu.RLock()
+	_, ok := s.imageHostsBySource[sourceID][host]
+	s.imageHostMu.RUnlock()
+	return ok
+}
+
 func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	raw := strings.TrimSpace(r.URL.Query().Get("url"))
 	if raw == "" {
@@ -7239,7 +7293,8 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效的图片地址")
 		return
 	}
-	if !s.registry.AllowedImageHost(target.Hostname()) {
+	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	if !s.registry.AllowedImageHost(target.Hostname()) && !s.allowImageHostForSource(sourceID, target.Hostname()) {
 		writeError(w, http.StatusForbidden, "该域名不在允许的图片源白名单内")
 		return
 	}
@@ -7258,7 +7313,6 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	if referer != "" {
 		request.Header.Set("Referer", referer)
 	}
-	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
 	imageAccount := source.Account{}
 	if sourceID != "" {
 		if account, err := s.registry.Account(r.Context(), sourceID); err == nil {

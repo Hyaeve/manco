@@ -136,6 +136,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			chapter_title TEXT NOT NULL,
 			chapter_order REAL NOT NULL DEFAULT 0,
 			merge_chapters_json TEXT NOT NULL DEFAULT '[]',
+			queue_priority INTEGER NOT NULL DEFAULT 0,
 			status TEXT NOT NULL DEFAULT 'queued',
 			total_pages INTEGER NOT NULL DEFAULT 0,
 			completed_pages INTEGER NOT NULL DEFAULT 0,
@@ -268,6 +269,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "download_jobs", "merge_chapters_json", `TEXT NOT NULL DEFAULT '[]'`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "download_jobs", "queue_priority", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, `
 		UPDATE download_jobs
 		SET comic_author = COALESCE((
@@ -294,6 +298,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "download_jobs", "chapter_marker", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_download_jobs_queue_priority
+		ON download_jobs(queue_priority DESC, id ASC)
+		WHERE status = 'queued'`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "extension_repositories", "custom_name", `TEXT NOT NULL DEFAULT ''`); err != nil {
@@ -1209,8 +1219,8 @@ func (s *Store) CreateDownloadJob(ctx context.Context, job model.DownloadJob) (m
 		return model.DownloadJob{}, err
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, download_dir, convert_to_simplified, chapter_marker, status)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
+INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, download_dir, convert_to_simplified, chapter_marker, queue_priority, status)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 		ON CONFLICT(source_id, comic_id, chapter_id) DO UPDATE SET
 			comic_title = excluded.comic_title,
 			comic_cover = excluded.comic_cover,
@@ -1222,12 +1232,16 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 			merge_chapters_json = excluded.merge_chapters_json,
 			download_dir = excluded.download_dir,
 			convert_to_simplified = excluded.convert_to_simplified,
+			queue_priority = CASE
+				WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.queue_priority
+				ELSE MAX(download_jobs.queue_priority, excluded.queue_priority)
+			END,
 			status = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.status ELSE 'queued' END,
 			error = CASE WHEN download_jobs.status = 'completed' THEN download_jobs.error ELSE '' END,
 			retry_count = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.retry_count ELSE 0 END,
 			next_retry_at = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.next_retry_at ELSE NULL END,
 			updated_at = CURRENT_TIMESTAMP`,
-		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ComicDescription, string(comicTags), job.ChapterID, job.ChapterTitle, job.ChapterOrder, string(mergeChapters), job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker)
+		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ComicDescription, string(comicTags), job.ChapterID, job.ChapterTitle, job.ChapterOrder, string(mergeChapters), job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker, job.QueuePriority)
 	if err != nil {
 		return model.DownloadJob{}, err
 	}
@@ -1258,10 +1272,9 @@ func (s *Store) DownloadJobPage(ctx context.Context, status string, limit, offse
 		offset = 0
 	}
 	where := `status <> 'completed'`
-	// 同一状态内：排队/下载中按 id 升序（先入先出，和实际执行顺序一致），
-	// 失败记录才用 id 降序把最新的放前面。之前统一 id DESC，导致手动「全量/
-	// 检查/补全/刮削」新入队的任务显示在列表最前面，看起来像插队。
-	order := `CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, CASE WHEN status IN ('failed', 'canceled') THEN id ELSE -id END DESC`
+	// 同一状态内：手动操作入队的章节先执行，同优先级保持 id 升序；失败记录
+	// 仍按最新优先展示。
+	order := `CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, CASE WHEN status = 'queued' THEN queue_priority ELSE 0 END DESC, CASE WHEN status IN ('failed', 'canceled') THEN -id ELSE id END ASC`
 	if strings.EqualFold(strings.TrimSpace(status), "completed") {
 		where = `status = 'completed'`
 		order = `COALESCE(finished_at, updated_at, created_at) DESC, id DESC`
@@ -1295,21 +1308,21 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	// 排队任务挤出结果集，因此三类记录各自使用独立的 LIMIT。
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT * FROM (
-			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, queue_priority, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status NOT IN ('completed', 'failed', 'canceled')
-			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, id ASC
+			ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, CASE WHEN status = 'queued' THEN queue_priority ELSE 0 END DESC, id ASC
 			LIMIT ?
 		)
 		UNION ALL
 		SELECT * FROM (
-			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, queue_priority, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status IN ('failed', 'canceled')
 			ORDER BY id DESC
 			LIMIT ?
 		)
 		UNION ALL
 		SELECT * FROM (
-			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
+			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, queue_priority, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status = 'completed'
 			ORDER BY COALESCE(finished_at, updated_at, created_at) DESC, id DESC
 			LIMIT ?
@@ -1330,7 +1343,7 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 }
 
 func (s *Store) NextQueuedJob(ctx context.Context) (model.DownloadJob, bool, error) {
-	job, err := scanJob(s.reader().QueryRowContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC LIMIT 1`))
+	job, err := scanJob(s.reader().QueryRowContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY queue_priority DESC, id ASC LIMIT 1`))
 	if errors.Is(err, ErrNotFound) {
 		return model.DownloadJob{}, false, nil
 	}
@@ -1354,7 +1367,7 @@ func (s *Store) RequeueRunningJobs(ctx context.Context) error {
 }
 
 func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error) {
-	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC`)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY queue_priority DESC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1407,12 +1420,12 @@ func (s *Store) ListInterruptedJobs(ctx context.Context) ([]model.DownloadJob, e
 	return jobs, rows.Err()
 }
 
-const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at FROM download_jobs`
+const jobSelect = `SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, queue_priority, created_at, updated_at, started_at, finished_at FROM download_jobs`
 
 func scanJob(row rowScanner) (model.DownloadJob, error) {
 	var job model.DownloadJob
 	var mergeChapters, comicTags string
-	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ComicAuthor, &job.ComicDescription, &comicTags, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &mergeChapters, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.DownloadDir, &job.ConvertToSimplified, &job.ChapterMarker, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
+	err := row.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicCover, &job.ComicAuthor, &job.ComicDescription, &comicTags, &job.ChapterID, &job.ChapterTitle, &job.ChapterOrder, &mergeChapters, &job.Status, &job.TotalPages, &job.CompletedPages, &job.FilePath, &job.Error, &job.RetryCount, &job.NextRetryAt, &job.DownloadDir, &job.ConvertToSimplified, &job.ChapterMarker, &job.QueuePriority, &job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.FinishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.DownloadJob{}, ErrNotFound
 	}
@@ -1441,9 +1454,10 @@ func (s *Store) SetDownloadJobLocation(ctx context.Context, id int64, downloadDi
 func (s *Store) UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE download_jobs SET status = ?, total_pages = ?, completed_pages = ?, file_path = ?, error = ?, updated_at = CURRENT_TIMESTAMP,
+			queue_priority = CASE WHEN ? IN ('completed', 'failed', 'canceled') THEN 0 ELSE queue_priority END,
 			started_at = CASE WHEN ? = 'running' THEN COALESCE(started_at, CURRENT_TIMESTAMP) ELSE started_at END,
 			finished_at = CASE WHEN ? IN ('completed', 'failed', 'canceled') THEN CURRENT_TIMESTAMP ELSE finished_at END
-		WHERE id = ?`, status, totalPages, completedPages, filePath, jobError, status, status, id)
+		WHERE id = ?`, status, totalPages, completedPages, filePath, jobError, status, status, status, id)
 	return err
 }
 
@@ -1451,17 +1465,17 @@ func (s *Store) UpdateDownloadJob(ctx context.Context, id int64, status string, 
 func (s *Store) FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE download_jobs SET status = 'failed', total_pages = ?, completed_pages = ?, error = ?,
-			retry_count = ?, next_retry_at = ?, updated_at = CURRENT_TIMESTAMP,
+			retry_count = ?, next_retry_at = ?, queue_priority = 0, updated_at = CURRENT_TIMESTAMP,
 			finished_at = CURRENT_TIMESTAMP
 		WHERE id = ?`, totalPages, completedPages, jobError, retryCount, nextRetryAt, id)
 	return err
 }
 
-// ResetDownloadJob queues a task manually and restarts its retry budget.
-func (s *Store) ResetDownloadJob(ctx context.Context, id int64) error {
+// ResetDownloadJob queues a task and restarts its retry budget.
+func (s *Store) ResetDownloadJob(ctx context.Context, id int64, queuePriority int) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE download_jobs SET status = 'queued', completed_pages = 0, error = '', retry_count = 0,
-			next_retry_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+			next_retry_at = NULL, queue_priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, queuePriority, id)
 	return err
 }
 

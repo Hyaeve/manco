@@ -129,7 +129,7 @@ func (m *memoryJobs) FailDownloadJob(_ context.Context, id int64, totalPages, co
 	return fmt.Errorf("job %d not found", id)
 }
 
-func (m *memoryJobs) ResetDownloadJob(_ context.Context, id int64) error {
+func (m *memoryJobs) ResetDownloadJob(_ context.Context, id int64, queuePriority int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for index := range m.jobs {
@@ -141,6 +141,7 @@ func (m *memoryJobs) ResetDownloadJob(_ context.Context, id int64) error {
 		m.jobs[index].Error = ""
 		m.jobs[index].RetryCount = 0
 		m.jobs[index].NextRetryAt = nil
+		m.jobs[index].QueuePriority = queuePriority
 		return nil
 	}
 	return fmt.Errorf("job %d not found", id)
@@ -1689,7 +1690,7 @@ func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
 	}}
 	engine := NewEngine(sources.NewRegistry(nil, nil, nil), jobs, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
 
-	retried, err := engine.RetryFailedByComic(context.Background(), "stub", "1")
+	retried, err := engine.RetryFailedByComic(context.Background(), "stub", "1", model.QueuePriorityManual)
 	if err != nil {
 		t.Fatalf("RetryFailedByComic() error = %v", err)
 	}
@@ -1700,7 +1701,7 @@ func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
 	if !ok {
 		t.Fatal("failed job disappeared")
 	}
-	if job.Status != "queued" || job.RetryCount != 0 || job.NextRetryAt != nil {
+	if job.Status != "queued" || job.RetryCount != 0 || job.NextRetryAt != nil || job.QueuePriority != model.QueuePriorityManual {
 		t.Fatalf("reset job = %#v, want queued with a fresh retry budget", job)
 	}
 	other, _ := jobs.find(3)

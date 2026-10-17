@@ -154,7 +154,7 @@ type Jobs interface {
 	DownloadJob(ctx context.Context, id int64) (model.DownloadJob, error)
 	UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error
 	FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error
-	ResetDownloadJob(ctx context.Context, id int64) error
+	ResetDownloadJob(ctx context.Context, id int64, queuePriority int) error
 	ActivateDueRetries(ctx context.Context, now time.Time) (int64, error)
 	UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error
 	FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error)
@@ -243,7 +243,7 @@ func (e *Engine) Retry(ctx context.Context, id int64) error {
 	if _, err := e.store.DownloadJob(ctx, id); err != nil {
 		return err
 	}
-	if err := e.store.ResetDownloadJob(ctx, id); err != nil {
+	if err := e.store.ResetDownloadJob(ctx, id, model.QueuePriorityManual); err != nil {
 		return err
 	}
 	e.Notify()
@@ -253,7 +253,7 @@ func (e *Engine) Retry(ctx context.Context, id int64) error {
 // RetryFailedByComic restarts the automatic retry budget for failed or
 // canceled chapters of one work. The scheduler uses it on cron checks so a
 // later scheduled run can recover failures that exhausted their first budget.
-func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID string) (int, error) {
+func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID string, queuePriority int) (int, error) {
 	jobs, err := e.store.FailedDownloadJobsByComic(ctx, sourceID, comicID)
 	if err != nil {
 		return 0, err
@@ -261,7 +261,7 @@ func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID strin
 	retried := 0
 	var firstErr error
 	for _, job := range jobs {
-		if err := e.store.ResetDownloadJob(ctx, job.ID); err != nil {
+		if err := e.store.ResetDownloadJob(ctx, job.ID, queuePriority); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}

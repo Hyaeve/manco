@@ -329,6 +329,20 @@ func TestLocalizeCustomSourceIconSavesDataURIIcon(t *testing.T) {
 	}
 }
 
+func TestDynamicImageHostAllowlistIsSourceScoped(t *testing.T) {
+	server := &Server{}
+	server.allowImageURL("plugin-a", "https://cdn-a.example.com/cover.jpg")
+	if !server.allowImageHostForSource("plugin-a", "cdn-a.example.com") {
+		t.Fatal("source-provided cover host was not registered")
+	}
+	if server.allowImageHostForSource("plugin-b", "cdn-a.example.com") {
+		t.Fatal("cover host leaked into another source scope")
+	}
+	if server.allowImageHostForSource("plugin-a", "other.example.com") {
+		t.Fatal("unregistered host was allowed")
+	}
+}
+
 func TestEnsureCustomSourceIconsBackfillsExistingSources(t *testing.T) {
 	ctx := context.Background()
 	repository, err := store.Open(filepath.Join(t.TempDir(), "manco.db"))

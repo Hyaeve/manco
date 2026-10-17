@@ -147,6 +147,7 @@ type session struct {
 	detailPhoto     bool
 	detailIndex     int
 	browse          *browseSession
+	globalSearch    *globalSearchPager
 }
 
 type browseSession struct {
@@ -157,6 +158,18 @@ type browseSession struct {
 	HasMore    bool
 	HasNext    bool
 	Pool       []resultEntry
+}
+
+type globalSearchPager struct {
+	Query string
+	Page  int
+	Pages []globalSearchPage
+}
+
+type globalSearchPage struct {
+	Kind    string
+	Label   string
+	Entries []resultEntry
 }
 
 type resultEntry struct {
@@ -345,7 +358,7 @@ func (s *Service) registerCommands(ctx context.Context) {
 		`{"command":"downloading","description":"查看正在下载和暂停状态"},` +
 		`{"command":"view","description":"查看指定内容源榜单"},` +
 		`{"command":"sources","description":"查看已添加内容源"},` +
-		`{"command":"sh","description":"搜索作品"}` +
+		`{"command":"sh","description":"全部来源分类型搜索"}` +
 		`]}`
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", token)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))

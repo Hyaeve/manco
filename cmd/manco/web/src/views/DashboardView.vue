@@ -32,7 +32,9 @@ const error = ref('')
 const sourceTab = ref('comic')
 const heroIndex = ref(0)
 const heroHovering = ref(false)
+const heroDirection = ref('next')
 let heroTimer = 0
+const HERO_ROTATION_MS = 10000
 
 const sourceTabs = [
   { value: 'comic', label: '漫画源' },
@@ -108,11 +110,14 @@ function restartHeroRotation() {
   stopHeroRotation()
   if (heroHovering.value || latest.value.length <= 1) return
   heroTimer = window.setInterval(() => {
+    heroDirection.value = 'next'
     heroIndex.value = (heroIndex.value + 1) % latest.value.length
-  }, 6500)
+  }, HERO_ROTATION_MS)
 }
 
 function selectHero(index) {
+  if (index === heroIndex.value) return
+  heroDirection.value = index < heroIndex.value ? 'prev' : 'next'
   heroIndex.value = index
   restartHeroRotation()
 }
@@ -197,10 +202,11 @@ function formatNextRun(value) {
     <div class="overview-top">
       <section
         class="overview-window overview-hero"
+        :class="{ 'is-empty': !heroComic }"
         @mouseenter="pauseHeroRotation"
         @mouseleave="resumeHeroRotation"
       >
-        <Transition name="overview-hero-bg">
+        <Transition :name="`overview-hero-bg-${heroDirection}`">
           <div
             v-if="heroComic"
             :key="heroKey"
@@ -209,22 +215,26 @@ function formatNextRun(value) {
           />
         </Transition>
         <template v-if="heroComic">
-          <div :key="heroKey" class="overview-hero-content">
-            <div class="overview-hero-poster" :class="{ blurred: heroComic.coverBlur }">
-              <img :src="heroCover" :alt="heroComic.title" />
-            </div>
-            <div class="overview-hero-copy">
-              <h1>{{ heroComic.title }}</h1>
-              <strong>{{ heroComic.author || '未知作者' }}</strong>
-              <p>{{ heroComic.description || '暂无简介' }}</p>
-              <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
-                <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag">{{ tag }}</span>
+          <div class="overview-hero-slide-stage">
+            <Transition :name="`overview-hero-slide-${heroDirection}`">
+              <div :key="heroKey" class="overview-hero-content">
+                <div class="overview-hero-poster" :class="{ blurred: heroComic.coverBlur }">
+                  <img :src="heroCover" :alt="heroComic.title" />
+                </div>
+                <div class="overview-hero-copy">
+                  <h1>{{ heroComic.title }}</h1>
+                  <strong>{{ heroComic.author || '未知作者' }}</strong>
+                  <p>{{ heroComic.description || '暂无简介' }}</p>
+                  <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
+                    <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag">{{ tag }}</span>
+                  </div>
+                  <ContentLink class="btn secondary small overview-hero-link" to="/local">
+                    <Library :size="15" />
+                    查看本地仓库
+                  </ContentLink>
+                </div>
               </div>
-              <ContentLink class="btn secondary small overview-hero-link" to="/local">
-                <Library :size="15" />
-                查看本地仓库
-              </ContentLink>
-            </div>
+            </Transition>
           </div>
           <div class="overview-hero-dots" aria-label="最近下载作品">
             <button
@@ -250,38 +260,38 @@ function formatNextRun(value) {
       <section class="overview-window overview-stats">
         <header class="overview-window-head">
           <div class="overview-window-title">
-            <ChartNoAxesCombined :size="19" :stroke-width="1.8" />
+            <ChartNoAxesCombined :size="30" :stroke-width="1.8" />
             <span>统计总览</span>
           </div>
         </header>
         <div class="overview-stat-grid">
           <div class="overview-stat">
-            <Rss :size="25" :stroke-width="1.65" />
+            <Rss :size="30" :stroke-width="1.65" />
             <strong>{{ stats.subscriptions || 0 }}</strong>
             <span>订阅作品</span>
           </div>
           <div class="overview-stat">
-            <Library :size="25" :stroke-width="1.65" />
+            <Library :size="30" :stroke-width="1.65" />
             <strong>{{ libraryTotal }}</strong>
             <span>本地仓库</span>
           </div>
           <div class="overview-stat is-success">
-            <CheckCircle2 :size="25" :stroke-width="1.65" />
+            <CheckCircle2 :size="30" :stroke-width="1.65" />
             <strong>{{ stats.completedJobs || 0 }}</strong>
             <span>完成章节</span>
           </div>
           <div class="overview-stat is-danger">
-            <AlertTriangle :size="25" :stroke-width="1.65" />
+            <AlertTriangle :size="30" :stroke-width="1.65" />
             <strong>{{ stats.failedJobs || 0 }}</strong>
             <span>失败章节</span>
           </div>
           <div class="overview-stat">
-            <ArrowDownToLine :size="25" :stroke-width="1.65" />
+            <ArrowDownToLine :size="30" :stroke-width="1.65" />
             <strong>{{ stats.runningJobs || 0 }}</strong>
             <span>正在下载</span>
           </div>
           <div class="overview-stat">
-            <ListOrdered :size="25" :stroke-width="1.65" />
+            <ListOrdered :size="30" :stroke-width="1.65" />
             <strong>{{ stats.queuedJobs || 0 }}</strong>
             <span>排队章节</span>
           </div>
@@ -293,7 +303,7 @@ function formatNextRun(value) {
       <section class="overview-window overview-sources">
         <header class="overview-window-head">
           <ContentLink class="overview-window-title" to="/sources">
-            <Blocks :size="18" :stroke-width="1.8" />
+            <Blocks :size="30" :stroke-width="1.8" />
             <span>资源拓展</span>
           </ContentLink>
           <ContentLink class="overview-head-link" to="/sources">管理</ContentLink>
@@ -332,7 +342,7 @@ function formatNextRun(value) {
       <section class="overview-window overview-tasks">
         <header class="overview-window-head">
           <ContentLink class="overview-window-title" to="/downloads">
-            <ListChecks :size="18" :stroke-width="1.8" />
+            <ListChecks :size="30" :stroke-width="1.8" />
             <span>下载队列</span>
           </ContentLink>
           <ContentLink class="overview-head-link" to="/downloads">查看全部</ContentLink>
@@ -350,15 +360,18 @@ function formatNextRun(value) {
             <span class="overview-task-copy">
               <strong>{{ item.comicTitle || '未命名作品' }}</strong>
               <small>{{ item.chapterTitle || '章节' }}</small>
-              <span
-                class="overview-task-progress"
-                :class="`is-${taskStatus(item).className}`"
-                role="progressbar"
-                :aria-valuenow="progressPercent(item)"
-                aria-valuemin="0"
-                aria-valuemax="100"
-              >
-                <span :style="{ width: `${progressPercent(item)}%` }" />
+              <span class="overview-task-progress-wrap">
+                <em>{{ progressPercent(item) }}%</em>
+                <span
+                  class="overview-task-progress"
+                  :class="`is-${taskStatus(item).className}`"
+                  role="progressbar"
+                  :aria-valuenow="progressPercent(item)"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                >
+                  <span :style="{ width: `${progressPercent(item)}%` }" />
+                </span>
               </span>
             </span>
           </ContentLink>
@@ -377,7 +390,7 @@ function formatNextRun(value) {
       <section class="overview-window overview-upcoming">
         <header class="overview-window-head">
           <ContentLink class="overview-window-title" to="/subscriptions">
-            <CalendarClock :size="18" :stroke-width="1.8" />
+            <CalendarClock :size="30" :stroke-width="1.8" />
             <span>订阅计划</span>
           </ContentLink>
           <ContentLink class="overview-head-link" to="/subscriptions">查看全部</ContentLink>
@@ -417,19 +430,21 @@ function formatNextRun(value) {
   display: grid;
   width: 100%;
   min-width: 0;
-  gap: 16px;
+  gap: 12px;
 }
 
 .overview-top {
   display: grid;
   grid-template-columns: minmax(0, 1.75fr) minmax(300px, 0.85fr);
-  gap: 16px;
+  gap: 12px;
+  height: clamp(260px, 31vh, 330px);
 }
 
 .overview-bottom {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
+  height: clamp(300px, 38vh, 350px);
 }
 
 .overview-window {
@@ -443,65 +458,172 @@ function formatNextRun(value) {
 
 .overview-hero {
   position: relative;
-  min-height: 390px;
-  color: #fff;
-  background: #332c25;
+  height: 100%;
+  min-height: 0;
+  color: var(--text);
+  background: color-mix(in srgb, #fffef8 97%, #fbf4cf);
 }
 
 .overview-hero-backdrop {
   position: absolute;
-  inset: -24px;
+  inset: -30px;
   background-image: var(--overview-hero-image);
   background-position: center;
   background-size: cover;
-  filter: blur(25px) saturate(0.9);
-  opacity: 0.66;
-  transform: scale(1.1);
+  filter: blur(30px) saturate(1.08) brightness(1.06);
+  opacity: 0.46;
+  transform: scale(1.16);
   will-change: opacity, transform;
 }
 
-.overview-hero-bg-enter-active,
-.overview-hero-bg-leave-active {
+.overview-hero-bg-next-enter-active,
+.overview-hero-bg-next-leave-active,
+.overview-hero-bg-prev-enter-active,
+.overview-hero-bg-prev-leave-active {
   transition: opacity 0.72s cubic-bezier(0.22, 1, 0.36, 1), transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.overview-hero-bg-enter-from {
+.overview-hero-bg-next-enter-from,
+.overview-hero-bg-prev-enter-from {
   opacity: 0;
-  transform: scale(1.15);
 }
 
-.overview-hero-bg-leave-to {
+.overview-hero-bg-next-leave-to,
+.overview-hero-bg-prev-leave-to {
   opacity: 0;
-  transform: scale(1.06);
+}
+
+.overview-hero-bg-next-enter-from {
+  transform: translateX(4%) scale(1.12);
+}
+
+.overview-hero-bg-next-leave-to {
+  transform: translateX(-4%) scale(1.06);
+}
+
+.overview-hero-bg-prev-enter-from {
+  transform: translateX(-4%) scale(1.12);
+}
+
+.overview-hero-bg-prev-leave-to {
+  transform: translateX(4%) scale(1.06);
+}
+
+.overview-hero-slide-stage {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.overview-hero-slide-next-enter-active,
+.overview-hero-slide-next-leave-active,
+.overview-hero-slide-prev-enter-active,
+.overview-hero-slide-prev-leave-active {
+  transition:
+    opacity 0.46s ease,
+    filter 0.46s ease,
+    transform 0.58s cubic-bezier(0.22, 0.82, 0.24, 1);
+}
+
+.overview-hero-slide-next-enter-from,
+.overview-hero-slide-prev-enter-from,
+.overview-hero-slide-next-leave-to,
+.overview-hero-slide-prev-leave-to {
+  opacity: 0;
+  filter: blur(4px);
+}
+
+.overview-hero-slide-next-enter-from {
+  transform: translate3d(7%, 0, 0);
+}
+
+.overview-hero-slide-next-leave-to {
+  transform: translate3d(-7%, 0, 0);
+}
+
+.overview-hero-slide-prev-enter-from {
+  transform: translate3d(-7%, 0, 0);
+}
+
+.overview-hero-slide-prev-leave-to {
+  transform: translate3d(7%, 0, 0);
+}
+
+.overview-hero.is-empty {
+  color: var(--text);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--primary-soft) 58%, var(--surface)), var(--surface) 58%),
+    var(--surface);
+}
+
+.overview-hero.is-empty::after {
+  background:
+    radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 34%),
+    linear-gradient(135deg, transparent, color-mix(in srgb, var(--primary-soft) 28%, transparent));
+}
+
+.overview-hero.is-empty .overview-hero-empty h2 {
+  color: var(--text);
+}
+
+.overview-hero.is-empty .overview-hero-empty p {
+  color: var(--text-muted);
+}
+
+.overview-hero.is-empty .overview-lazy-cat {
+  background: color-mix(in srgb, var(--primary-soft) 78%, var(--surface));
+  box-shadow: 0 16px 38px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.overview-hero.is-empty .overview-hero-empty {
+  color: var(--text);
+}
+
+.overview-hero.is-empty::before {
+  position: absolute;
+  inset: 18px;
+  border: 1px dashed color-mix(in srgb, var(--primary) 18%, var(--border));
+  border-radius: 9px;
+  content: '';
+  pointer-events: none;
 }
 
 .overview-hero::after {
   position: absolute;
   inset: 0;
   content: '';
-  background: linear-gradient(90deg, rgba(22, 19, 16, 0.82), rgba(22, 19, 16, 0.54) 56%, rgba(22, 19, 16, 0.32));
+  background:
+    linear-gradient(90deg, rgba(255, 254, 248, 0.93), rgba(255, 251, 238, 0.84) 54%, rgba(255, 253, 247, 0.68)),
+    color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
 }
 
 .overview-hero-content {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: 176px minmax(0, 1fr);
-  gap: 24px;
-  min-height: 390px;
+  grid-template-columns: 138px minmax(0, 1fr);
+  gap: 20px;
+  height: 100%;
+  min-height: 0;
   align-items: center;
-  padding: 28px 34px;
-  animation: overview-hero-content-in 0.58s cubic-bezier(0.22, 1, 0.36, 1) both;
+  padding: 18px 26px;
+  will-change: opacity, filter, transform;
 }
 
 .overview-hero-poster {
-  width: 176px;
+  position: relative;
+  width: 138px;
   aspect-ratio: 2 / 3;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.1);
-  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 18px 38px rgba(91, 66, 39, 0.2);
 }
 
 .overview-hero-poster img {
@@ -523,23 +645,50 @@ function formatNextRun(value) {
   transform: scale(1.04);
 }
 
+.overview-hero-poster.blurred::after,
+.overview-upcoming-cover.blurred::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.12) 0 1px,
+      rgba(255, 255, 255, 0) 1px 4px
+    ),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(69, 61, 50, 0.16));
+  backdrop-filter: blur(2px) saturate(0.8);
+  -webkit-backdrop-filter: blur(2px) saturate(0.8);
+  content: '';
+  pointer-events: none;
+  transition: opacity 0.32s ease;
+}
+
+.overview-hero-poster.blurred:hover::after,
+.overview-hero-poster.blurred:focus-within::after,
+.overview-upcoming-cover.blurred:hover::after,
+.overview-upcoming-cover.blurred:focus-within::after {
+  opacity: 0;
+}
+
 .overview-hero-copy {
   display: grid;
   align-content: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
 }
 
 .overview-hero-copy h1 {
   margin: 0;
-  color: #fff;
-  font-size: clamp(25px, 2.4vw, 38px);
+  color: var(--text);
+  font-size: clamp(24px, 2.1vw, 32px);
   font-weight: 760;
   line-height: 1.15;
 }
 
 .overview-hero-copy strong {
-  color: rgba(255, 255, 255, 0.86);
+  color: color-mix(in srgb, var(--text) 76%, var(--text-muted));
   font-size: 14px;
   font-weight: 550;
 }
@@ -549,27 +698,29 @@ function formatNextRun(value) {
   max-width: 660px;
   margin: 2px 0 5px;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--text-muted);
   font-size: 13px;
-  line-height: 1.68;
+  line-height: 1.55;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
 }
 
 .overview-hero-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
+  max-height: 48px;
+  overflow: hidden;
 }
 
 .overview-hero-tags span {
   max-width: 150px;
   padding: 3px 9px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border));
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.88);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  color: color-mix(in srgb, var(--text) 76%, var(--text-muted));
   font-size: 11px;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -596,7 +747,7 @@ function formatNextRun(value) {
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.35);
+  background: color-mix(in srgb, var(--primary-strong) 28%, transparent);
   cursor: pointer;
   transform: translateZ(0);
   transition:
@@ -611,8 +762,8 @@ function formatNextRun(value) {
 .overview-hero-dots button:hover,
 .overview-hero-dots button:focus-visible {
   width: 22px;
-  background: #fff;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+  background: var(--primary-strong);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
   outline: none;
   transform: scaleY(1.08);
 }
@@ -621,7 +772,8 @@ function formatNextRun(value) {
   position: relative;
   z-index: 1;
   display: grid;
-  min-height: 390px;
+  height: 100%;
+  min-height: 0;
   place-items: center;
   align-content: center;
   gap: 8px;
@@ -638,7 +790,12 @@ function formatNextRun(value) {
 }
 
 .overview-stats {
-  padding: 18px 18px 20px;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  padding: 12px 14px;
+  overflow: hidden;
 }
 
 .overview-window-head {
@@ -652,15 +809,17 @@ function formatNextRun(value) {
   display: inline-flex;
   min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   color: var(--text);
-  font-size: 16px;
+  font-size: 28px;
   font-weight: 720;
   line-height: 1.2;
 }
 
 .overview-window-title svg {
   flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
   color: var(--primary-strong);
 }
 
@@ -674,22 +833,26 @@ function formatNextRun(value) {
   color: var(--primary-strong);
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .overview-stat-grid {
   display: grid;
+  flex: 1;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 15px;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-height: 0;
+  margin-top: 10px;
 }
 
 .overview-stat {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 3px 12px;
-  min-height: 78px;
-  padding: 13px 16px 13px 20px;
+  gap: 2px 10px;
+  min-height: 0;
+  padding: 8px 12px 8px 16px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface-muted);
@@ -697,18 +860,20 @@ function formatNextRun(value) {
 
 .overview-stat svg {
   grid-row: 1 / span 2;
+  width: 30px;
+  height: 30px;
   color: var(--primary-strong);
   filter: drop-shadow(0 2px 5px color-mix(in srgb, var(--primary) 16%, transparent));
 }
 
 .overview-stat strong {
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1;
 }
 
 .overview-stat span {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .overview-stat.is-success svg {
@@ -721,9 +886,10 @@ function formatNextRun(value) {
 
 .overview-bottom > .overview-window {
   display: flex;
-  height: 370px;
+  height: 100%;
   flex-direction: column;
-  padding: 16px;
+  min-height: 0;
+  padding: 14px;
   overflow: hidden;
 }
 
@@ -731,14 +897,14 @@ function formatNextRun(value) {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 4px;
-  margin-top: 14px;
+  margin-top: 10px;
   padding: 4px;
   border-radius: 9px;
   background: var(--surface-muted);
 }
 
 .overview-source-tabs button {
-  min-height: 30px;
+  min-height: 28px;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -756,17 +922,21 @@ function formatNextRun(value) {
 
 .overview-source-grid {
   display: grid;
+  flex: 1;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px 8px;
-  margin-top: 17px;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+  min-height: 0;
+  margin-top: 10px;
 }
 
 .overview-source-item {
   display: grid;
   justify-items: center;
-  gap: 7px;
+  align-content: center;
+  gap: 4px;
   min-width: 0;
-  padding: 5px 3px;
+  padding: 2px 3px;
   border-radius: 8px;
   color: var(--text);
   font-size: 11px;
@@ -788,36 +958,48 @@ function formatNextRun(value) {
 
 .overview-source-icon {
   display: grid;
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
+  width: 50px;
+  height: 50px;
+  flex: 0 0 50px;
   place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-muted);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
-.overview-source-icon :deep(img),
-.overview-source-icon :deep(svg) {
-  width: 30px;
-  height: 30px;
+.overview-source-icon :deep(img) {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
   object-fit: contain;
+  box-shadow: 0 5px 14px rgba(48, 39, 28, 0.14);
+}
+
+.overview-source-icon :deep(svg) {
+  width: 44px;
+  height: 44px;
+  padding: 9px;
+  border-radius: 14px;
+  background: var(--surface-muted);
 }
 
 .overview-task-list,
 .overview-upcoming-list {
   display: grid;
-  gap: 8px;
-  margin-top: 14px;
+  flex: 1;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 6px;
+  min-height: 0;
+  margin-top: 10px;
 }
 
 .overview-task-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
-  min-height: 52px;
-  padding: 8px 10px;
+  gap: 8px;
+  min-height: 0;
+  padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
@@ -832,12 +1014,12 @@ function formatNextRun(value) {
 }
 
 .overview-task-state {
-  min-width: 48px;
+  min-width: 44px;
   padding: 3px 7px;
   border-radius: 999px;
   background: var(--surface-muted);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 9.5px;
   text-align: center;
 }
 
@@ -880,12 +1062,28 @@ function formatNextRun(value) {
   white-space: nowrap;
 }
 
+.overview-task-progress-wrap {
+  display: grid;
+  justify-items: stretch;
+  gap: 1px;
+  min-width: 0;
+}
+
+.overview-task-progress-wrap em {
+  justify-self: end;
+  color: color-mix(in srgb, var(--primary-strong) 74%, var(--text-muted));
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .overview-task-progress {
   position: relative;
   display: block;
   width: 100%;
-  height: 5px;
-  margin-top: 2px;
+  height: 4px;
+  margin-top: 0;
   overflow: hidden;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text-muted) 18%, transparent);
@@ -964,10 +1162,10 @@ function formatNextRun(value) {
 
 .overview-upcoming-card {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 10px;
-  min-height: 68px;
-  padding: 8px;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 9px;
+  min-height: 0;
+  padding: 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
@@ -975,9 +1173,12 @@ function formatNextRun(value) {
 }
 
 .overview-upcoming-cover {
+  position: relative;
   display: grid;
-  width: 48px;
-  height: 52px;
+  width: auto;
+  height: 100%;
+  aspect-ratio: 2 / 3;
+  justify-self: center;
   place-items: center;
   overflow: hidden;
   border-radius: 6px;
@@ -1005,7 +1206,7 @@ function formatNextRun(value) {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin-top: 3px;
+  margin-top: 1px;
   overflow: hidden;
   color: color-mix(in srgb, var(--primary-strong) 74%, var(--text-muted));
   font-size: 11px;
@@ -1013,27 +1214,32 @@ function formatNextRun(value) {
   white-space: nowrap;
 }
 
-@keyframes overview-hero-content-in {
-  from {
-    opacity: 0;
-    filter: blur(5px);
-    transform: translate3d(14px, 6px, 0);
-  }
-
-  to {
-    opacity: 1;
-    filter: blur(0);
-    transform: translate3d(0, 0, 0);
-  }
-}
-
 @media (max-width: 1180px) {
   .overview-top {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .overview-hero {
+    height: clamp(260px, 34vh, 330px);
+  }
+
+  .overview-stats {
+    height: auto;
+  }
+
+  .overview-stat-grid {
+    flex: none;
+    grid-template-rows: repeat(3, minmax(58px, auto));
   }
 
   .overview-bottom {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    height: auto;
+  }
+
+  .overview-bottom > .overview-window {
+    height: clamp(300px, 38vh, 350px);
   }
 
   .overview-bottom > :last-child {
@@ -1050,6 +1256,16 @@ function formatNextRun(value) {
 
   .overview-bottom {
     grid-template-columns: 1fr;
+  }
+
+  .overview-window-title {
+    gap: 8px;
+    font-size: 24px;
+  }
+
+  .overview-window-title svg {
+    width: 27px;
+    height: 27px;
   }
 
   .overview-bottom > :last-child {
@@ -1102,18 +1318,84 @@ function formatNextRun(value) {
   }
 
   .overview-source-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
-:global([data-theme='dark']) .overview-stat,
-:global([data-theme='dark']) .overview-source-tabs,
-:global([data-theme='dark']) .overview-source-icon,
-:global([data-theme='dark']) .overview-upcoming-cover {
+:global([data-theme='dark'] .overview-stat),
+:global([data-theme='dark'] .overview-source-tabs),
+:global([data-theme='dark'] .overview-source-icon),
+:global([data-theme='dark'] .overview-upcoming-cover) {
   background: #302a22;
 }
 
-:global([data-theme='dark']) .overview-hero {
+:global([data-theme='dark'] .overview-hero) {
+  color: #fff;
   background: #191714;
+}
+
+:global([data-theme='dark'] .overview-hero-backdrop) {
+  inset: -24px;
+  filter: blur(25px) saturate(0.9);
+  opacity: 0.66;
+  transform: scale(1.1);
+}
+
+:global([data-theme='dark'] .overview-hero::after) {
+  background: linear-gradient(90deg, rgba(22, 19, 16, 0.82), rgba(22, 19, 16, 0.54) 56%, rgba(22, 19, 16, 0.32));
+}
+
+:global([data-theme='dark'] .overview-hero-copy h1) {
+  color: #fff;
+}
+
+:global([data-theme='dark'] .overview-hero-copy strong) {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+:global([data-theme='dark'] .overview-hero-copy p) {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+:global([data-theme='dark'] .overview-hero-tags span) {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+:global([data-theme='dark'] .overview-hero-poster) {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
+}
+
+:global([data-theme='dark'] .overview-hero-dots button) {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+:global([data-theme='dark'] .overview-hero-dots button.active),
+:global([data-theme='dark'] .overview-hero-dots button:hover),
+:global([data-theme='dark'] .overview-hero-dots button:focus-visible) {
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+}
+
+:global([data-theme='dark'] .overview-hero.is-empty::after) {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(183, 123, 69, 0.12), transparent 34%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.02), rgba(183, 123, 69, 0.06));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overview-hero-bg-next-enter-active,
+  .overview-hero-bg-next-leave-active,
+  .overview-hero-bg-prev-enter-active,
+  .overview-hero-bg-prev-leave-active,
+  .overview-hero-slide-next-enter-active,
+  .overview-hero-slide-next-leave-active,
+  .overview-hero-slide-prev-enter-active,
+  .overview-hero-slide-prev-leave-active {
+    transition-duration: 0.01ms;
+  }
 }
 </style>

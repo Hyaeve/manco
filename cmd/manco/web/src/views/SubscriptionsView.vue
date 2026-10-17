@@ -4,6 +4,7 @@ import {
   Archive,
   BookOpen,
   CalendarClock,
+  EyeOff,
   Film,
   FolderOpen,
   History,
@@ -11,6 +12,7 @@ import {
   Layers3,
   ListChecks,
   Loader2,
+  MoreHorizontal,
   MoreVertical,
   Pencil,
   RefreshCcw,
@@ -50,6 +52,7 @@ const editorOpen = ref(false)
 const editing = ref(null)
 const selectionMode = ref(false)
 const selected = ref(new Set())
+const selectionMenuOpen = ref(false)
 // 真正虚拟化：只渲染视口附近的订阅行，避免滚动时持续堆积 DOM。
 const gridRef = ref(null)
 const gridColumns = ref(3)
@@ -73,6 +76,10 @@ let selectAnchor = -1
 let timer = 0
 let scrollFrame = 0
 let loadGeneration = 0
+let viewSwitchGeneration = 0
+const viewSwitching = ref(false)
+const viewRevealing = ref(true)
+let revealTimer = 0
 
 const form = ref({
   cronExpr: '',
@@ -195,9 +202,28 @@ function subscriptionQueryOptions() {
   }
 }
 
+async function replaySubscriptionReveal() {
+  viewRevealing.value = false
+  await nextTick()
+  viewRevealing.value = true
+  if (revealTimer) window.clearTimeout(revealTimer)
+  revealTimer = window.setTimeout(() => {
+    viewRevealing.value = false
+    revealTimer = 0
+  }, 320)
+}
+
 function reloadSubscriptionList() {
   if (scrollEl) scrollEl.scrollTop = 0
-  return load(false, true)
+  viewSwitching.value = true
+  const switchGeneration = ++viewSwitchGeneration
+  const pending = load(false, true)
+  return pending.finally(async () => {
+    if (switchGeneration !== viewSwitchGeneration) return
+    await nextTick()
+    viewSwitching.value = false
+    await replaySubscriptionReveal()
+  })
 }
 
 async function loadMoreSubscriptions() {
@@ -308,6 +334,7 @@ function selectAllSubscriptions() {
 function clearSubscriptionSelection() {
   selected.value = new Set()
   selectionMode.value = false
+  selectionMenuOpen.value = false
   selectAnchor = -1
 }
 
@@ -345,6 +372,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopPolling()
   if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
+  if (revealTimer) window.clearTimeout(revealTimer)
   scrollEl?.removeEventListener('scroll', handlePageScroll)
   window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('click', closeMenus)
@@ -366,6 +394,7 @@ function onWindowResize() {
 }
 
 watch([kindFilter, activeDir], () => {
+  selectionMenuOpen.value = false
   if (scrollEl) scrollEl.scrollTop = 0
   nextTick(updateVirtualWindow)
   reloadSubscriptionList()
@@ -374,12 +403,18 @@ watch([kindFilter, activeDir], () => {
 watch(() => filteredItems.value.length, () => nextTick(updateVirtualWindow))
 
 function onKeydown(event) {
-  if (event.key === 'Escape' && selectionMode.value) clearSubscriptionSelection()
+  if (event.key !== 'Escape') return
+  if (selectionMenuOpen.value) {
+    selectionMenuOpen.value = false
+    return
+  }
+  if (selectionMode.value) clearSubscriptionSelection()
 }
 
 function closeMenus(event) {
-  if (event && event.target.closest('.subscription-menu')) return
+  if (event && event.target.closest('.subscription-menu, .selection-more')) return
   openMenu.value = 0
+  selectionMenuOpen.value = false
 }
 
 async function load(silent = false, reset = true) {
@@ -763,6 +798,21 @@ function batchScrape() {
   })
 }
 
+function batchBlurCovers() {
+  return runBatch({
+    title: '封面模糊',
+    message: `确定把所选 ${selectedCount.value} 个订阅的封面设为模糊吗？`,
+    confirmText: '应用模糊',
+    action: (item) => api.updateSubscription(item.id, { coverBlur: true }),
+    successText: '封面模糊已更新',
+  })
+}
+
+function runSelectionMenuAction(action) {
+  selectionMenuOpen.value = false
+  return action()
+}
+
 function batchArchive() {
   return runBatch({
     title: '归档订阅',
@@ -858,7 +908,13 @@ function batchDelete() {
     <p>当前栏目下没有订阅。</p>
   </div>
 
-  <div v-else ref="gridRef" class="subscription-grid" :style="virtualGridStyle">
+  <div
+    v-else
+    ref="gridRef"
+    class="subscription-grid"
+    :class="{ 'view-switching': viewSwitching, 'view-revealing': viewRevealing }"
+    :style="virtualGridStyle"
+  >
     <article
       v-for="(item, index) in visibleItems"
       :key="item.id"
@@ -1021,25 +1077,171 @@ function batchDelete() {
       <RefreshCcw :size="14" />
       检查
     </button>
-    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchDownloadAll">
-      <Layers :size="14" />
-      全量
-    </button>
-    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchFill">
-      <ListChecks :size="14" />
-      补全
-    </button>
     <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchScrape">
       <Sparkles :size="14" />
       刮削
     </button>
-    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchArchive">
-      <Archive :size="14" />
-      归档
+    <button class="btn ghost small" type="button" :disabled="batchBusy || !selectedCount" @click="batchBlurCovers">
+      <EyeOff :size="14" />
+      模糊
     </button>
+    <div class="selection-more" @click.stop>
+      <button
+        class="btn ghost small selection-more-trigger"
+        type="button"
+        aria-label="更多订阅操作"
+        aria-haspopup="menu"
+        :aria-expanded="selectionMenuOpen"
+        :disabled="batchBusy || !selectedCount"
+        @click="selectionMenuOpen = !selectionMenuOpen"
+      >
+        <MoreHorizontal :size="18" />
+      </button>
+      <Transition name="selection-menu">
+        <div v-if="selectionMenuOpen" class="selection-more-menu" role="menu" aria-label="更多订阅操作">
+          <button class="selection-more-item" type="button" role="menuitem" @click="runSelectionMenuAction(batchDownloadAll)">
+            <Layers :size="16" />
+            全量
+          </button>
+          <button class="selection-more-item" type="button" role="menuitem" @click="runSelectionMenuAction(batchFill)">
+            <ListChecks :size="16" />
+            补全
+          </button>
+          <button class="selection-more-item" type="button" role="menuitem" @click="runSelectionMenuAction(batchArchive)">
+            <Archive :size="16" />
+            归档
+          </button>
+        </div>
+      </Transition>
+    </div>
     <button class="btn ghost small danger" type="button" :disabled="batchBusy || !selectedCount" @click="batchDelete">
       <Trash2 :size="14" />
       删除
     </button>
   </div>
 </template>
+
+<style scoped>
+.subscription-grid {
+  transform-origin: 50% 82%;
+  transition:
+    opacity 150ms ease,
+    transform 180ms cubic-bezier(0.2, 0.72, 0.3, 1),
+    filter 150ms ease;
+}
+
+.subscription-grid.view-switching {
+  opacity: 0.58;
+  filter: saturate(0.92);
+  transform: translateY(4px) scale(0.996);
+}
+
+.subscription-grid.view-revealing {
+  animation: subscription-view-reveal 280ms cubic-bezier(0.2, 0.78, 0.28, 1) both;
+}
+
+.selection-more {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.selection-more-trigger {
+  min-width: 30px;
+  justify-content: center;
+}
+
+.selection-more-menu {
+  position: absolute;
+  right: -4px;
+  bottom: calc(100% + 9px);
+  z-index: 70;
+  display: grid;
+  min-width: 142px;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--primary-soft));
+  box-shadow: 0 12px 34px rgba(45, 33, 18, 0.2);
+  transform-origin: 88% 100%;
+}
+
+.selection-more-menu::after {
+  position: absolute;
+  right: 14px;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  border-right: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  border-bottom: 1px solid color-mix(in srgb, var(--primary) 20%, var(--border));
+  background: inherit;
+  content: '';
+  transform: rotate(45deg);
+}
+
+.selection-more-item {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.selection-more-item:hover,
+.selection-more-item:focus-visible {
+  color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  outline: none;
+}
+
+.selection-menu-enter-active,
+.selection-menu-leave-active {
+  transition:
+    opacity 150ms ease,
+    transform 170ms cubic-bezier(0.2, 0.78, 0.28, 1);
+}
+
+.selection-menu-enter-from,
+.selection-menu-leave-to {
+  opacity: 0;
+  transform: translateY(8px) scale(0.94);
+}
+
+[data-theme='dark'] .selection-more-menu {
+  background: color-mix(in srgb, var(--surface) 94%, #5a4024);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.38);
+}
+
+@keyframes subscription-view-reveal {
+  from {
+    opacity: 0.35;
+    transform: translateY(7px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subscription-grid,
+  .selection-menu-enter-active,
+  .selection-menu-leave-active {
+    transition: none;
+  }
+
+  .subscription-grid.view-revealing {
+    animation: none;
+  }
+}
+</style>

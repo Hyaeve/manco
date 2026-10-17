@@ -149,6 +149,39 @@ func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	}
 }
 
+func TestNextQueuedJobPrefersManualPriority(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+
+	normal := createJob(t, repository, "normal")
+	manual, err := repository.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:      "jmcomic",
+		ComicID:       "123",
+		ComicTitle:    "测试作品",
+		ChapterID:     "manual",
+		ChapterTitle:  "手动章节",
+		QueuePriority: model.QueuePriorityManual,
+	})
+	if err != nil {
+		t.Fatalf("create manual job: %v", err)
+	}
+
+	next, ok, err := repository.NextQueuedJob(ctx)
+	if err != nil {
+		t.Fatalf("next queued: %v", err)
+	}
+	if !ok || next.ID != manual.ID {
+		t.Fatalf("next queued = %+v, %v; want manual job %d before %d", next, ok, manual.ID, normal.ID)
+	}
+	jobs, err := repository.ListQueuedJobs(ctx)
+	if err != nil {
+		t.Fatalf("list queued: %v", err)
+	}
+	if len(jobs) != 2 || jobs[0].ID != manual.ID || jobs[1].ID != normal.ID {
+		t.Fatalf("queued order = %+v, want manual then normal", jobs)
+	}
+}
+
 func TestInitialDownloadBatchPendingIncludesRetries(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)
@@ -246,7 +279,17 @@ func TestRequeueRunningJobsRestoresInterruptedWork(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)
 
-	running := createJob(t, repository, "1")
+	running, err := repository.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:      "jmcomic",
+		ComicID:       "123",
+		ComicTitle:    "测试作品",
+		ChapterID:     "1",
+		ChapterTitle:  "第1话",
+		QueuePriority: model.QueuePriorityManual,
+	})
+	if err != nil {
+		t.Fatalf("create manual job: %v", err)
+	}
 	if err := repository.UpdateDownloadJob(ctx, running.ID, "running", 12, 3, "", ""); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
@@ -275,6 +318,12 @@ func TestRequeueRunningJobsRestoresInterruptedWork(t *testing.T) {
 		}
 		if job.StartedAt != nil || job.FinishedAt != nil || job.Error != "" {
 			t.Fatalf("job %d retained interrupted metadata: %+v", job.ID, job)
+		}
+		if job.ID == running.ID && job.QueuePriority != model.QueuePriorityManual {
+			t.Fatalf("manual job priority = %d after requeue, want %d", job.QueuePriority, model.QueuePriorityManual)
+		}
+		if job.ID == canceled.ID && job.QueuePriority != model.QueuePriorityNormal {
+			t.Fatalf("routine job priority = %d after requeue, want %d", job.QueuePriority, model.QueuePriorityNormal)
 		}
 	}
 }

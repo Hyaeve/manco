@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,11 +17,11 @@ import (
 )
 
 const (
-	maxGlobalSources  = 3
-	maxPerSourceItems = 3
-	maxDirectItems    = 5
-	titleLimit        = 24
-	summaryLimit      = 160
+	maxSearchResultsPerKind = 5
+	maxDirectItems          = 5
+	maxSearchConcurrency    = 6
+	titleLimit              = 24
+	summaryLimit            = 160
 )
 
 var htmlTagPattern = regexp.MustCompile(`(?s)<[^>]+>`)
@@ -75,20 +76,31 @@ func splitCommand(text string) (string, string) {
 	return head, strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
 }
 
-// parseSearchText recognises "搜索漫画 xxx" and "<内容源>搜索 xxx".
-func parseSearchText(text string) (query, sourceName string, ok bool) {
+// parseSearchText recognises global, source-type and concrete-source searches.
+func parseSearchText(text string) (query, scope string, ok bool) {
 	trimmed := strings.TrimSpace(text)
-	for _, prefix := range []string{"搜索漫画", "搜索资源", "搜索"} {
-		if strings.HasPrefix(trimmed, prefix) {
-			query = strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
-			return query, "", query != ""
+	prefixes := []struct {
+		value string
+		scope string
+	}{
+		{value: "搜索漫画", scope: "漫画"},
+		{value: "搜索书籍", scope: "书籍"},
+		{value: "搜索其他", scope: "其他"},
+		{value: "搜索资源", scope: ""},
+		{value: "搜索", scope: ""},
+	}
+	for _, prefix := range prefixes {
+		if !strings.HasPrefix(trimmed, prefix.value) {
+			continue
 		}
+		query = strings.TrimSpace(strings.TrimPrefix(trimmed, prefix.value))
+		return query, prefix.scope, query != ""
 	}
 	if index := strings.Index(trimmed, "搜索"); index > 0 {
-		sourceName = strings.TrimSpace(trimmed[:index])
+		scope = strings.TrimSpace(trimmed[:index])
 		query = strings.TrimSpace(trimmed[index+len("搜索"):])
-		if sourceName != "" && query != "" {
-			return query, sourceName, true
+		if scope != "" && query != "" {
+			return query, scope, true
 		}
 	}
 	return "", "", false
@@ -129,10 +141,13 @@ func helpText() string {
 		"/downloading 查看正在下载与暂停状态",
 		"/view [内容源] 查看内容源榜单",
 		"/sources 查看已添加内容源",
-		"/sh 关键词 全局搜索",
+		"/sh 关键词 全部来源分类型搜索",
 		"查看订阅 [下载父目录]",
 		"查看榜单 包子",
-		"搜索漫画 关键词",
+		"搜索 关键词 全局搜索",
+		"漫画搜索 关键词",
+		"书籍搜索 关键词",
+		"其他搜索 关键词",
 		"包子搜索 关键词",
 		"检查 [作品名或下载父目录]",
 		"补全 作品名",
@@ -495,13 +510,12 @@ func (s *Service) runAction(ctx context.Context, chat, action string, subscripti
 	}
 }
 
-// replySearch runs a global or per-source search and returns the aggregated
-// result list with inline buttons.
-func (s *Service) replySearch(ctx context.Context, chatID int64, query, sourceName string) {
+// replySearch runs a global, source-type or concrete-source search.
+func (s *Service) replySearch(ctx context.Context, chatID int64, query, scope string) {
 	chat := strconv.FormatInt(chatID, 10)
 	query = strings.TrimSpace(query)
 	if query == "" {
-		s.sendMessage(ctx, chat, "请给出搜索关键词，例如：搜索漫画 凡人修仙传", nil)
+		s.sendMessage(ctx, chat, "请给出搜索关键词，例如：搜索 凡人修仙传、漫画搜索 凡人修仙传、包子搜索 凡人修仙传", nil)
 		return
 	}
 	sources, err := s.app.BotSources(ctx)
@@ -509,67 +523,326 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, sourceNa
 		s.sendMessage(ctx, chat, "读取内容源失败："+err.Error(), nil)
 		return
 	}
-	var entries []resultEntry
-	if sourceName != "" {
-		source, ok := matchSource(sources, sourceName)
-		if !ok {
-			s.sendMessage(ctx, chat, fmt.Sprintf("没有找到内容源「%s」。", sourceName), nil)
-			return
-		}
-		items, err := s.app.BotSearch(ctx, source.ID, query, maxDirectItems)
-		if err != nil {
-			s.sendMessage(ctx, chat, fmt.Sprintf("%s 搜索失败：%s", source.Name, err.Error()), nil)
-			return
-		}
-		for _, item := range items {
-			entries = append(entries, newResultEntry(source, item))
-		}
-	} else {
-		// Global search keeps resource-extension order and takes the top hits
-		// from the first few content sources.
-		used := 0
-		resultCh := make(chan []resultEntry, len(sources))
-		for _, source := range sources {
-			if used >= maxGlobalSources {
-				break
-			}
-			used++
-			source := source
-			go func() {
-				items, err := s.app.BotSearch(ctx, source.ID, query, maxPerSourceItems)
-				if err != nil {
-					resultCh <- nil
-					return
-				}
-				out := make([]resultEntry, 0, len(items))
-				for _, item := range items {
-					out = append(out, newResultEntry(source, item))
-				}
-				resultCh <- out
-			}()
-		}
-		for index := 0; index < used; index++ {
-			entries = append(entries, (<-resultCh)...)
-		}
-	}
-	if len(entries) == 0 {
-		s.sendMessage(ctx, chat, fmt.Sprintf("没有搜到「%s」的结果。", query), nil)
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		s.replyGlobalSearch(ctx, chatID, chat, query, sources)
 		return
 	}
-	// 记下搜索结果消息的 message_id：订阅成功后要把这条消息删掉。
-	text := renderResults(query, entries)
-	messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
-		"chat_id":      chat,
-		"text":         text,
-		"parse_mode":   "HTML",
-		"reply_markup": resultKeyboard(entries),
-	})
+	if kind := searchKindScope(scope); kind != "" {
+		filtered := make([]BotSource, 0, len(sources))
+		for _, source := range sources {
+			if normalizedSourceKind(source.Kind) == kind {
+				filtered = append(filtered, source)
+			}
+		}
+		if len(filtered) == 0 {
+			s.sendMessage(ctx, chat, fmt.Sprintf("还没有添加%s。", kindLabel(kind)), nil)
+			return
+		}
+		entries := rankSearchEntries(query, s.searchSources(ctx, filtered, query))
+		if len(entries) > maxSearchResultsPerKind {
+			entries = entries[:maxSearchResultsPerKind]
+		}
+		if len(entries) == 0 {
+			s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", kindLabel(kind), query), nil)
+			return
+		}
+		text := renderScopedSearchResults(query, kindLabel(kind), entries)
+		messageID, _, sendErr := s.sendResultList(ctx, chat, text, entries, resultKeyboard(entries))
+		if sendErr != nil {
+			s.logger.Printf("telegram: send type search results: %v", sendErr)
+		}
+		s.mu.Lock()
+		s.sessions[chatID] = &session{results: entries, resultsText: text, resultsMessageID: messageID}
+		s.mu.Unlock()
+		return
+	}
+
+	source, ok := matchSource(sources, scope)
+	if !ok {
+		s.sendMessage(ctx, chat, fmt.Sprintf("没有找到内容源或搜索类型「%s」。", scope), nil)
+		return
+	}
+	items, err := s.app.BotSearch(ctx, source.ID, query, maxDirectItems)
 	if err != nil {
-		s.logger.Printf("telegram: send search results: %v", err)
+		s.sendMessage(ctx, chat, fmt.Sprintf("%s 搜索失败：%s", source.Name, err.Error()), nil)
+		return
+	}
+	entries := make([]resultEntry, 0, len(items))
+	for _, item := range items {
+		entries = append(entries, newResultEntry(source, item))
+	}
+	if len(entries) == 0 {
+		s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", source.Name, query), nil)
+		return
+	}
+	text := renderScopedSearchResults(query, source.Name, entries)
+	messageID, _, err := s.sendResultList(ctx, chat, text, entries, resultKeyboard(entries))
+	if err != nil {
+		s.logger.Printf("telegram: send source search results: %v", err)
 	}
 	s.mu.Lock()
 	s.sessions[chatID] = &session{results: entries, resultsText: text, resultsMessageID: messageID}
 	s.mu.Unlock()
+}
+
+type sourceSearchResult struct {
+	Source  BotSource
+	Entries []resultEntry
+}
+
+func (s *Service) searchSources(ctx context.Context, sources []BotSource, query string) []sourceSearchResult {
+	results := make([]sourceSearchResult, len(sources))
+	semaphore := make(chan struct{}, maxSearchConcurrency)
+	var wait sync.WaitGroup
+	for index, source := range sources {
+		index, source := index, source
+		results[index].Source = source
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				return
+			}
+			sourceCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			defer cancel()
+			items, err := s.app.BotSearch(sourceCtx, source.ID, query, maxDirectItems)
+			if err != nil {
+				s.logger.Printf("telegram: search source %s: %v", source.Name, err)
+				return
+			}
+			for _, item := range items {
+				results[index].Entries = append(results[index].Entries, newResultEntry(source, item))
+			}
+		}()
+	}
+	wait.Wait()
+	return results
+}
+
+func (s *Service) replyGlobalSearch(ctx context.Context, chatID int64, chat, query string, sources []BotSource) {
+	searched := s.searchSources(ctx, sources, query)
+	byKind := map[string][]sourceSearchResult{
+		"comic": nil,
+		"book":  nil,
+		"other": nil,
+	}
+	for _, result := range searched {
+		kind := normalizedSourceKind(result.Source.Kind)
+		byKind[kind] = append(byKind[kind], result)
+	}
+	pages := make([]globalSearchPage, 0, 3)
+	total := 0
+	for _, item := range []struct {
+		Kind  string
+		Label string
+	}{
+		{Kind: "comic", Label: "漫画源"},
+		{Kind: "book", Label: "书籍源"},
+		{Kind: "other", Label: "其他源"},
+	} {
+		entries := rankSearchEntries(query, byKind[item.Kind])
+		if len(entries) > maxSearchResultsPerKind {
+			entries = entries[:maxSearchResultsPerKind]
+		}
+		total += len(entries)
+		pages = append(pages, globalSearchPage{Kind: item.Kind, Label: item.Label, Entries: entries})
+	}
+	if total == 0 {
+		s.sendMessage(ctx, chat, fmt.Sprintf("没有搜到「%s」的结果。", query), nil)
+		return
+	}
+	s.mu.Lock()
+	s.sessions[chatID] = &session{globalSearch: &globalSearchPager{
+		Query: query,
+		Page:  1,
+		Pages: pages,
+	}}
+	s.mu.Unlock()
+	if err := s.showGlobalSearchPage(ctx, chatID, chat, 1, 0); err != nil {
+		s.sendMessage(ctx, chat, "全局搜索结果发送失败："+err.Error(), nil)
+	}
+}
+
+func (s *Service) showGlobalSearchPage(ctx context.Context, chatID int64, chat string, page int, messageID int64) error {
+	s.mu.RLock()
+	current := s.sessions[chatID]
+	if current == nil || current.globalSearch == nil || len(current.globalSearch.Pages) == 0 {
+		s.mu.RUnlock()
+		return fmt.Errorf("全局搜索会话已过期")
+	}
+	pager := *current.globalSearch
+	pager.Pages = append([]globalSearchPage(nil), current.globalSearch.Pages...)
+	s.mu.RUnlock()
+	if page < 1 {
+		page = 1
+	}
+	if page > len(pager.Pages) {
+		page = len(pager.Pages)
+	}
+	resultPage := pager.Pages[page-1]
+	entries := append([]resultEntry(nil), resultPage.Entries...)
+	text := renderGlobalSearchResults(pager.Query, resultPage, page, len(pager.Pages))
+	keyboard := globalSearchKeyboard(entries, page, len(pager.Pages))
+	if messageID != 0 {
+		s.deleteMessageAsync(chat, messageID)
+	}
+	newID, _, err := s.sendResultList(ctx, chat, text, entries, keyboard)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if session := s.sessions[chatID]; session != nil && session.globalSearch != nil {
+		session.results = entries
+		session.resultsText = text
+		session.resultsMessageID = newID
+		session.globalSearch.Page = page
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+type rankedSearchEntry struct {
+	Entry       resultEntry
+	Weight      int
+	SourceOrder int
+	ResultOrder int
+}
+
+func rankSearchEntries(query string, groups []sourceSearchResult) []resultEntry {
+	ranked := make([]rankedSearchEntry, 0)
+	for sourceOrder, group := range groups {
+		for resultOrder, entry := range group.Entries {
+			ranked = append(ranked, rankedSearchEntry{
+				Entry:       entry,
+				Weight:      searchTitleWeight(query, entry.Title),
+				SourceOrder: sourceOrder,
+				ResultOrder: resultOrder,
+			})
+		}
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].Weight != ranked[j].Weight {
+			return ranked[i].Weight > ranked[j].Weight
+		}
+		if ranked[i].SourceOrder != ranked[j].SourceOrder {
+			return ranked[i].SourceOrder < ranked[j].SourceOrder
+		}
+		return ranked[i].ResultOrder < ranked[j].ResultOrder
+	})
+	seen := map[string]bool{}
+	entries := make([]resultEntry, 0, len(ranked))
+	for _, item := range ranked {
+		key := item.Entry.SourceID + "\x00" + item.Entry.ComicID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		entries = append(entries, item.Entry)
+	}
+	return entries
+}
+
+func searchTitleWeight(query, title string) int {
+	query = strings.ToLower(strings.Join(strings.Fields(query), ""))
+	title = strings.ToLower(strings.Join(strings.Fields(title), ""))
+	switch {
+	case query == "":
+		return 0
+	case title == query:
+		return 10000
+	case strings.HasPrefix(title, query):
+		return 8000
+	case strings.Contains(title, query):
+		return 6000
+	}
+	matched := 0
+	for _, r := range []rune(query) {
+		if strings.ContainsRune(title, r) {
+			matched++
+		}
+	}
+	return matched * 100
+}
+
+func searchKindScope(scope string) string {
+	value := strings.ToLower(strings.TrimSpace(scope))
+	value = strings.TrimSuffix(value, "内容源")
+	value = strings.TrimSuffix(value, "源")
+	switch value {
+	case "漫画", "漫画源", "comic", "manga":
+		return "comic"
+	case "书籍", "书籍源", "小说", "book", "books":
+		return "book"
+	case "其他", "其他源", "other":
+		return "other"
+	default:
+		return ""
+	}
+}
+
+func normalizedSourceKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "book":
+		return "book"
+	case "other":
+		return "other"
+	default:
+		return "comic"
+	}
+}
+
+// sendResultList attaches the result list to the first work's cover so the
+// Telegram inline keyboard appears directly below that cover. Sources without
+// an absolute cover URL fall back to the existing text message.
+func (s *Service) sendResultList(ctx context.Context, chat, text string, entries []resultEntry, keyboard any) (int64, bool, error) {
+	cover := ""
+	if len(entries) > 0 {
+		cover = telegramPhotoURL(entries[0].Cover)
+	}
+	if cover != "" {
+		photoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		id, err := s.callMethod(photoCtx, "sendPhoto", map[string]any{
+			"chat_id":      chat,
+			"photo":        cover,
+			"caption":      text,
+			"parse_mode":   "HTML",
+			"reply_markup": keyboard,
+		})
+		cancel()
+		if err == nil && id != 0 {
+			return id, true, nil
+		}
+		s.logger.Printf("telegram: send result cover: %v", err)
+	}
+	id, err := s.callMethod(ctx, "sendMessage", map[string]any{
+		"chat_id":      chat,
+		"text":         text,
+		"parse_mode":   "HTML",
+		"reply_markup": keyboard,
+	})
+	return id, false, err
+}
+
+func telegramPhotoURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.String()
 }
 
 const browsePageSize = 10
@@ -709,29 +982,14 @@ func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat string,
 	hasNext := end < len(browse.Pool) || browse.HasMore
 	text := renderBrowseResults(browse.SourceName, page, start, entries)
 	keyboard := browseKeyboard(entries, page, hasNext)
-	if messageID == 0 {
-		newID, err := s.callMethod(ctx, "sendMessage", map[string]any{
-			"chat_id":      chat,
-			"text":         text,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
-		})
-		if err != nil {
-			return err
-		}
-		messageID = newID
-	} else if err := s.editMessage(ctx, chat, messageID, false, text, keyboard); err != nil {
-		newID, sendErr := s.callMethod(ctx, "sendMessage", map[string]any{
-			"chat_id":      chat,
-			"text":         text,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
-		})
-		if sendErr != nil {
-			return err
-		}
-		messageID = newID
+	if messageID != 0 {
+		s.deleteMessageAsync(chat, messageID)
 	}
+	newID, _, err := s.sendResultList(ctx, chat, text, entries, keyboard)
+	if err != nil {
+		return err
+	}
+	messageID = newID
 	browse.Page = page
 	browse.HasNext = hasNext
 	s.mu.Lock()
@@ -767,6 +1025,21 @@ func browseKeyboard(entries []resultEntry, page int, hasNext bool) any {
 		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": "browse:prev"})
 	}
 	if hasNext {
+		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": "browse:next"})
+	}
+	if len(navigation) > 0 {
+		rows = append(rows, navigation)
+	}
+	return map[string]any{"inline_keyboard": rows}
+}
+
+func globalSearchKeyboard(entries []resultEntry, page, pageCount int) any {
+	rows := resultRowsFrom(entries, 0)
+	navigation := make([]map[string]string, 0, 2)
+	if page > 1 {
+		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": "browse:prev"})
+	}
+	if page < pageCount {
 		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": "browse:next"})
 	}
 	if len(navigation) > 0 {
@@ -816,12 +1089,16 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		s.mu.RLock()
 		current := s.sessions[chatID]
 		page := 0
+		globalSearch := false
 		if current != nil && current.browse != nil {
 			page = current.browse.Page
+		} else if current != nil && current.globalSearch != nil {
+			page = current.globalSearch.Page
+			globalSearch = true
 		}
 		s.mu.RUnlock()
 		if page == 0 {
-			s.sendMessage(ctx, chat, "榜单会话已过期，请重新使用 /view。", nil)
+			s.sendMessage(ctx, chat, "搜索或榜单会话已过期，请重新发起。", nil)
 			return
 		}
 		if data == "browse:prev" {
@@ -829,7 +1106,11 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 		} else {
 			page++
 		}
-		if err := s.showBrowsePage(ctx, chatID, chat, page, query.Message.MessageID); err != nil {
+		if globalSearch {
+			if err := s.showGlobalSearchPage(ctx, chatID, chat, page, query.Message.MessageID); err != nil {
+				s.logger.Printf("telegram: global search page: %v", err)
+			}
+		} else if err := s.showBrowsePage(ctx, chatID, chat, page, query.Message.MessageID); err != nil {
 			s.logger.Printf("telegram: browse page: %v", err)
 		}
 	case data == "back":
@@ -845,12 +1126,7 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 			resultsText = renderResults("", results)
 		}
 		keyboard := s.sessionResultsKeyboard(chatID, results)
-		messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
-			"chat_id":      chat,
-			"text":         resultsText,
-			"parse_mode":   "HTML",
-			"reply_markup": keyboard,
-		})
+		messageID, _, err := s.sendResultList(ctx, chat, resultsText, results, keyboard)
 		if err != nil {
 			s.logger.Printf("telegram: resend search results: %v", err)
 			return
@@ -892,6 +1168,9 @@ func (s *Service) sessionResultsKeyboard(chatID int64, results []resultEntry) an
 	current := s.sessions[chatID]
 	if current != nil && current.browse != nil {
 		return browseKeyboard(results, current.browse.Page, current.browse.HasNext)
+	}
+	if current != nil && current.globalSearch != nil {
+		return globalSearchKeyboard(results, current.globalSearch.Page, len(current.globalSearch.Pages))
 	}
 	return resultKeyboard(results)
 }
@@ -1106,6 +1385,10 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 }
 
 func newResultEntry(source BotSource, comic model.Comic) resultEntry {
+	cover := strings.TrimSpace(comic.Cover)
+	if cover == "" {
+		cover = strings.TrimSpace(comic.CachedCover)
+	}
 	return resultEntry{
 		SourceID:     source.ID,
 		SourceName:   shortSourceName(source.Name),
@@ -1114,7 +1397,7 @@ func newResultEntry(source BotSource, comic model.Comic) resultEntry {
 		Author:       comic.Author,
 		Latest:       comic.LatestChapterTitle,
 		ChapterCount: comic.ChapterCount,
-		Cover:        comic.Cover,
+		Cover:        cover,
 		Summary:      cleanComicSummary(comic.Title, comic.Description),
 	}
 }
@@ -1125,6 +1408,42 @@ func renderResults(query string, entries []resultEntry) string {
 		lines = append(lines, fmt.Sprintf("<b>搜索：%s</b>", html.EscapeString(query)))
 	}
 	for index, entry := range entries {
+		lines = append(lines, fmt.Sprintf(
+			"%d. %s（%s）",
+			index+1,
+			html.EscapeString(truncate(entry.Title, titleLimit)),
+			html.EscapeString(entry.SourceName),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderScopedSearchResults(query, scopeLabel string, entries []resultEntry) string {
+	lines := []string{
+		fmt.Sprintf("<b>搜索：%s</b>", html.EscapeString(query)),
+		fmt.Sprintf("%s · %d 个候选", html.EscapeString(scopeLabel), len(entries)),
+	}
+	for index, entry := range entries {
+		lines = append(lines, fmt.Sprintf(
+			"%d. %s（%s）",
+			index+1,
+			html.EscapeString(truncate(entry.Title, titleLimit)),
+			html.EscapeString(entry.SourceName),
+		))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGlobalSearchResults(query string, page globalSearchPage, pageNumber, pageCount int) string {
+	lines := []string{
+		fmt.Sprintf("<b>搜索：%s</b>", html.EscapeString(query)),
+		fmt.Sprintf("<b>%s · 第 %d/%d 页</b>", html.EscapeString(page.Label), pageNumber, pageCount),
+	}
+	if len(page.Entries) == 0 {
+		lines = append(lines, "本分类没有搜索结果")
+		return strings.Join(lines, "\n")
+	}
+	for index, entry := range page.Entries {
 		lines = append(lines, fmt.Sprintf(
 			"%d. %s（%s）",
 			index+1,

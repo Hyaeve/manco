@@ -53,6 +53,8 @@ const previewKind = ref('')
 const previewTitle = ref('')
 const previewText = ref('')
 const previewPages = ref([])
+const previewRenderLimit = ref(6)
+const previewReader = ref(null)
 // 从订阅清单的“归档集”进入时，章节下面要标出哪些章节有过下载记录。
 const archiveMode = computed(() => String(route.query.archive || '') === '1')
 
@@ -100,6 +102,7 @@ const updatedDateLabel = computed(() => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 })
 const chapters = computed(() => detail.value?.chapters || [])
+const previewRenderedPages = computed(() => previewPages.value.slice(0, previewRenderLimit.value))
 const displayChapters = computed(() => {
   const keyword = appliedQuery.value.trim().toLowerCase()
   let list = chapters.value
@@ -331,6 +334,7 @@ async function openChapterPreview(chapter) {
   previewTitle.value = chapter.title || chapter.id
   previewText.value = ''
   previewPages.value = []
+  previewRenderLimit.value = 6
   try {
     const payload = await api.chapterPreview(sourceId, comic.value.id, chapter)
     if (requestSeq !== previewRequestSeq) return
@@ -338,6 +342,7 @@ async function openChapterPreview(chapter) {
     previewTitle.value = payload.title || previewTitle.value
     if (payload.kind === 'images') {
       previewPages.value = Array.isArray(payload.pages) ? payload.pages : []
+      previewRenderLimit.value = Math.min(6, previewPages.value.length)
     } else {
       previewText.value = previewPlainText(payload.content)
     }
@@ -356,6 +361,23 @@ function closeChapterPreview() {
   previewKind.value = ''
   previewText.value = ''
   previewPages.value = []
+  previewRenderLimit.value = 6
+}
+
+function handlePreviewReaderScroll(event) {
+  const element = event.currentTarget
+  if (!element || previewRenderLimit.value >= previewPages.value.length) return
+  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 480) {
+    previewRenderLimit.value = Math.min(previewPages.value.length, previewRenderLimit.value + 6)
+  }
+}
+
+function ensurePreviewStreamFilled() {
+  const element = previewReader.value
+  if (!element || previewRenderLimit.value >= previewPages.value.length) return
+  if (element.scrollHeight <= element.clientHeight + 120) {
+    previewRenderLimit.value = Math.min(previewPages.value.length, previewRenderLimit.value + 6)
+  }
 }
 
 function applyChapterSearch() {
@@ -657,15 +679,25 @@ async function downloadSelected() {
       <div v-else-if="previewError" class="card empty">
         <p>{{ previewError }}</p>
       </div>
-      <div v-else-if="previewKind === 'images' && previewPages.length" class="reader-view">
+      <div
+        v-else-if="previewKind === 'images' && previewPages.length"
+        ref="previewReader"
+        class="reader-view preview-reader-view"
+        @scroll.passive="handlePreviewReaderScroll"
+      >
         <img
-          v-for="(page, index) in previewPages"
+          v-for="(page, index) in previewRenderedPages"
           :key="page"
           :src="page"
           :alt="`第 ${index + 1} 张`"
           loading="lazy"
           decoding="async"
+          @load="ensurePreviewStreamFilled"
         />
+        <div v-if="previewRenderLimit < previewPages.length" class="preview-stream-hint">
+          <Loader2 :size="18" class="spin" />
+          <span>继续向下滚动加载（{{ previewRenderLimit }}/{{ previewPages.length }}）</span>
+        </div>
       </div>
       <pre v-else class="reader-text">{{ previewText || '（空章节）' }}</pre>
     </div>

@@ -64,6 +64,7 @@ type DownloadJob struct {
 	DownloadDir         string     `json:"downloadDir"`
 	ConvertToSimplified bool       `json:"convertToSimplified"`
 	ChapterMarker       bool       `json:"chapterMarker"`
+	QueuePriority       int        `json:"queuePriority,omitempty"`
 	MergeChapters       []Chapter  `json:"mergeChapters,omitempty"`
 	ID                  int64      `json:"id"`
 	SourceID            string     `json:"sourceId"`
@@ -90,6 +91,11 @@ type DownloadJob struct {
 	StartedAt           *time.Time `json:"startedAt,omitempty"`
 	FinishedAt          *time.Time `json:"finishedAt,omitempty"`
 }
+
+const (
+	QueuePriorityNormal = 0
+	QueuePriorityManual = 1
+)
 
 // DownloadJobStats counts persisted task outcomes per work.
 type DownloadJobStats struct {

@@ -467,6 +467,24 @@ func TestHasPluginReportsRegisteredExtensions(t *testing.T) {
 	}
 }
 
+func TestPluginFileStemUsesReadableNameAndPinyin(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		want string
+	}{
+		{name: "拷贝漫画", id: "kototoro-copy", want: "kao-bei-man-hua"},
+		{name: "Copy漫画 20", id: "kototoro-copy20", want: "copy-man-hua-20"},
+		{name: "CopyManga", id: "mihon-copy", want: "copymanga"},
+		{name: "", id: "kototoro-copy20", want: "kototoro-copy20"},
+	}
+	for _, item := range cases {
+		if got := pluginFileStem([]string{item.name}, item.id); got != item.want {
+			t.Fatalf("pluginFileStem(%q, %q) = %q, want %q", item.name, item.id, got, item.want)
+		}
+	}
+}
+
 func TestCleanImageCacheRemovesStaleBlobs(t *testing.T) {
 	dataDir := t.TempDir()
 	images := filepath.Join(dataDir, "kototoro-host", "images")

@@ -7,8 +7,6 @@ package pluginruntime
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +24,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+
+	"github.com/mozillazg/go-pinyin"
 )
 
 const (
@@ -76,6 +77,7 @@ type Source struct {
 type Config struct {
 	Runtime     string `json:"runtime"`
 	PluginID    string `json:"pluginId"`
+	PluginName  string `json:"pluginName,omitempty"`
 	SourceName  string `json:"sourceName"`
 	ContentType string `json:"contentType,omitempty"`
 	Locale      string `json:"locale,omitempty"`
@@ -228,14 +230,14 @@ func (m *Manager) ConfigureProxy(proxyURL, username, password string) error {
 // Install downloads and installs one Kototoro parser plugin JAR, then returns
 // the sources exposed by that plugin. The existing plugin is restored if the
 // new sidecar process cannot load it.
-func (m *Manager) Install(ctx context.Context, id, downloadURL string) ([]Source, error) {
-	return m.InstallWithRuntime(ctx, id, downloadURL, RuntimeKototoro)
+func (m *Manager) Install(ctx context.Context, id, downloadURL string, displayName ...string) ([]Source, error) {
+	return m.InstallWithRuntime(ctx, id, downloadURL, RuntimeKototoro, displayName...)
 }
 
 // InstallWithRuntime downloads one extension and tells the JVM sidecar which
 // runtime should load it. Kototoro parser JARs and Mihon-family APKs share the
 // same JSONL protocol but need different conversion and registry paths.
-func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runtimeType string) ([]Source, error) {
+func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runtimeType string, displayName ...string) ([]Source, error) {
 	runtimeType = normalizeRuntime(runtimeType)
 	id = strings.TrimSpace(id)
 	if !pluginIDPattern.MatchString(id) {
@@ -251,6 +253,13 @@ func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runti
 	if m.closed {
 		return nil, errors.New("plugin runtime 已关闭")
 	}
+	oldPath := ""
+	for _, item := range m.plugins {
+		if item.ID == id {
+			oldPath = strings.TrimSpace(item.Path)
+			break
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(m.configDir, "plugins"), 0o755); err != nil {
 		return nil, err
 	}
@@ -258,7 +267,7 @@ func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runti
 	if runtimeType == RuntimeMihon {
 		extension = ".apk"
 	}
-	target := filepath.Join(m.configDir, "plugins", safeFileName(id)+extension)
+	target := filepath.Join(m.configDir, "plugins", pluginFileStem(displayName, id)+extension)
 	temporary := target + ".part"
 	if err := m.download(ctx, downloadURL, temporary); err != nil {
 		return nil, err
@@ -329,13 +338,16 @@ func (m *Manager) InstallWithRuntime(ctx context.Context, id, downloadURL, runti
 	}
 	m.rememberSourcesLocked(runtimeType, sources)
 	_ = os.Remove(backup)
+	if oldPath != "" && !strings.EqualFold(oldPath, record.Path) {
+		_ = os.Remove(filepath.Join(m.configDir, filepath.FromSlash(oldPath)))
+	}
 	return sources, nil
 }
 
 // EnsureWithRuntime registers one extension only when it is not already in the
 // plugin registry, so re-adding a source after PrunePlugins does not need a
 // second download of a plugin that is still on disk.
-func (m *Manager) EnsureWithRuntime(ctx context.Context, id, downloadURL, runtimeType string) error {
+func (m *Manager) EnsureWithRuntime(ctx context.Context, id, downloadURL, runtimeType string, displayName ...string) error {
 	id = strings.TrimSpace(id)
 	if !pluginIDPattern.MatchString(id) {
 		return fmt.Errorf("插件 ID 无效: %q", id)
@@ -346,7 +358,7 @@ func (m *Manager) EnsureWithRuntime(ctx context.Context, id, downloadURL, runtim
 	if installed {
 		return nil
 	}
-	_, err := m.InstallWithRuntime(ctx, id, downloadURL, runtimeType)
+	_, err := m.InstallWithRuntime(ctx, id, downloadURL, runtimeType, displayName...)
 	return err
 }
 
@@ -377,7 +389,7 @@ func (m *Manager) sourcesForRuntime(ctx context.Context, runtimeType string) ([]
 // extension introduced. The sidecar's metadata call reports every source of the
 // runtime, so the previously declared names are diffed out; without that the
 // add-source dialog would attribute another plugin's sources to this extension.
-func (m *Manager) InstallIsolated(ctx context.Context, id, downloadURL, runtimeType string) ([]Source, error) {
+func (m *Manager) InstallIsolated(ctx context.Context, id, downloadURL, runtimeType string, displayName ...string) ([]Source, error) {
 	before, err := m.sourcesForRuntime(ctx, runtimeType)
 	if err != nil {
 		return nil, err
@@ -386,7 +398,7 @@ func (m *Manager) InstallIsolated(ctx context.Context, id, downloadURL, runtimeT
 	for _, item := range before {
 		known[strings.ToLower(strings.TrimSpace(item.Name))] = struct{}{}
 	}
-	all, err := m.InstallWithRuntime(ctx, id, downloadURL, runtimeType)
+	all, err := m.InstallWithRuntime(ctx, id, downloadURL, runtimeType, displayName...)
 	if err != nil {
 		return nil, err
 	}
@@ -539,7 +551,7 @@ func (m *Manager) CleanImageCache(maxAge time.Duration) (int, int64, error) {
 
 // InstallFile 安装本地上传的 .apk / .jar（添加 APK 源用），流程与
 // InstallWithRuntime 相同，只是插件文件来自本地而不是下载地址。
-func (m *Manager) InstallFile(ctx context.Context, id, localPath, runtimeType string) ([]Source, error) {
+func (m *Manager) InstallFile(ctx context.Context, id, localPath, runtimeType string, displayName ...string) ([]Source, error) {
 	runtimeType = normalizeRuntime(runtimeType)
 	id = strings.TrimSpace(id)
 	if !pluginIDPattern.MatchString(id) {
@@ -550,6 +562,13 @@ func (m *Manager) InstallFile(ctx context.Context, id, localPath, runtimeType st
 	if m.closed {
 		return nil, errors.New("plugin runtime 已关闭")
 	}
+	oldPath := ""
+	for _, item := range m.plugins {
+		if item.ID == id {
+			oldPath = strings.TrimSpace(item.Path)
+			break
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(m.configDir, "plugins"), 0o755); err != nil {
 		return nil, err
 	}
@@ -557,7 +576,7 @@ func (m *Manager) InstallFile(ctx context.Context, id, localPath, runtimeType st
 	if runtimeType == RuntimeMihon {
 		extension = ".apk"
 	}
-	target := filepath.Join(m.configDir, "plugins", safeFileName(id)+extension)
+	target := filepath.Join(m.configDir, "plugins", pluginFileStem(displayName, id)+extension)
 	temporary := target + ".part"
 	source, err := os.Open(localPath)
 	if err != nil {
@@ -636,6 +655,9 @@ func (m *Manager) InstallFile(ctx context.Context, id, localPath, runtimeType st
 	}
 	m.rememberSourcesLocked(runtimeType, sources)
 	_ = os.Remove(backup)
+	if oldPath != "" && !strings.EqualFold(oldPath, record.Path) {
+		_ = os.Remove(filepath.Join(m.configDir, filepath.FromSlash(oldPath)))
+	}
 	return sources, nil
 }
 
@@ -1174,9 +1196,76 @@ func (m *Manager) rememberSourcesLocked(runtimeType string, sources []Source) {
 	}
 }
 
-func safeFileName(value string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(value))))
-	return "plugin-" + hex.EncodeToString(sum[:8])
+func pluginFileStem(displayName []string, id string) string {
+	for _, value := range append(append([]string(nil), displayName...), id) {
+		if stem := pinyinFileStem(value); stem != "" {
+			return stem
+		}
+	}
+	return "plugin"
+}
+
+func pinyinFileStem(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	args := pinyin.NewArgs()
+	args.Separator = "-"
+	var builder strings.Builder
+	var han strings.Builder
+	pendingSeparator := false
+	appendSeparator := func() {
+		if builder.Len() > 0 && !strings.HasSuffix(builder.String(), "-") {
+			builder.WriteByte('-')
+		}
+	}
+	flushHan := func() {
+		if han.Len() == 0 {
+			return
+		}
+		converted := pinyin.Slug(han.String(), args)
+		han.Reset()
+		for _, part := range strings.Split(converted, "-") {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part == "" {
+				continue
+			}
+			if builder.Len() > 0 {
+				appendSeparator()
+			}
+			builder.WriteString(part)
+		}
+		pendingSeparator = builder.Len() > 0
+	}
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			flushHan()
+			han.WriteRune(r)
+			continue
+		}
+		flushHan()
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if pendingSeparator && builder.Len() > 0 {
+				appendSeparator()
+			}
+			pendingSeparator = false
+			builder.WriteRune(unicode.ToLower(r))
+			continue
+		}
+		if builder.Len() > 0 {
+			pendingSeparator = true
+		}
+	}
+	flushHan()
+	stem := strings.Trim(builder.String(), "-")
+	if len(stem) > 80 {
+		stem = strings.TrimRight(stem[:80], "-")
+		if index := strings.LastIndexByte(stem, '-'); index >= 40 {
+			stem = stem[:index]
+		}
+	}
+	return stem
 }
 
 func decodeSources(result map[string]any) ([]Source, error) {

@@ -18,7 +18,7 @@ import (
 type Downloads interface {
 	CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error)
 	EnsureSeriesMetadata(ctx context.Context, subscription model.Subscription) (bool, error)
-	RetryFailedByComic(ctx context.Context, sourceID, comicID string) (int, error)
+	RetryFailedByComic(ctx context.Context, sourceID, comicID string, queuePriority int) (int, error)
 	Notify()
 }
 
@@ -135,7 +135,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 		if !subscription.Enabled {
 			continue
 		}
-		if _, err := s.check(ctx, subscription); err != nil {
+		if _, err := s.check(ctx, subscription, model.QueuePriorityNormal); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		} else {
 			changed = true
@@ -146,7 +146,7 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) (SubscriptionCheckResult, error) {
+func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, queuePriority int) (SubscriptionCheckResult, error) {
 	result := SubscriptionCheckResult{}
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
@@ -202,6 +202,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 				DownloadDir:         subscription.DownloadDir,
 				ConvertToSimplified: subscription.ConvertToSimplified,
 				ChapterMarker:       subscription.ChapterMarker,
+				QueuePriority:       queuePriority,
 			})
 			if err != nil {
 				s.logger.Printf("scheduler: queue %s/%s: %v", subscription.Title, chapter.Title, err)
@@ -301,6 +302,7 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 		DownloadDir:         subscription.DownloadDir,
 		ConvertToSimplified: subscription.ConvertToSimplified,
 		ChapterMarker:       subscription.ChapterMarker,
+		QueuePriority:       model.QueuePriorityManual,
 	})
 	if err != nil {
 		return model.DownloadJob{}, err
@@ -316,6 +318,16 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 // are authoritative and are returned as skipped; fill does not verify whether
 // the local file still exists.
 func (s *Scheduler) QueueAll(ctx context.Context, subscription model.Subscription) (queued, skipped int, err error) {
+	return s.queueAll(ctx, subscription, model.QueuePriorityNormal)
+}
+
+// QueueAllManual queues every missing chapter and gives the batch manual
+// priority so it is consumed before routine subscription checks.
+func (s *Scheduler) QueueAllManual(ctx context.Context, subscription model.Subscription) (queued, skipped int, err error) {
+	return s.queueAll(ctx, subscription, model.QueuePriorityManual)
+}
+
+func (s *Scheduler) queueAll(ctx context.Context, subscription model.Subscription, queuePriority int) (queued, skipped int, err error) {
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
 		return 0, 0, err
@@ -347,6 +359,7 @@ func (s *Scheduler) QueueAll(ctx context.Context, subscription model.Subscriptio
 			DownloadDir:         subscription.DownloadDir,
 			ConvertToSimplified: subscription.ConvertToSimplified,
 			ChapterMarker:       subscription.ChapterMarker,
+			QueuePriority:       queuePriority,
 		})
 		if createErr != nil {
 			return queued, skipped, createErr
@@ -379,12 +392,12 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 		if !subscription.Enabled || !s.due(subscription, now) {
 			continue
 		}
-		if _, err := s.check(ctx, subscription); err != nil {
+		if _, err := s.check(ctx, subscription, model.QueuePriorityNormal); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		} else {
 			changed = true
 		}
-		if retried, err := s.downloads.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
+		if retried, err := s.downloads.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID, model.QueuePriorityNormal); err != nil {
 			s.logger.Printf("scheduler: retry failed downloads %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		} else if retried > 0 {
 			s.logger.Printf("scheduler: retried %d failed download(s) for %s/%s", retried, subscription.SourceID, subscription.Title)
@@ -417,14 +430,30 @@ func (s *Scheduler) CheckOne(ctx context.Context, id int64) error {
 	return err
 }
 
+// CheckOneManual checks a subscription from a user action and prioritizes any
+// newly discovered chapters.
+func (s *Scheduler) CheckOneManual(ctx context.Context, id int64) error {
+	_, err := s.CheckOneManualDetailed(ctx, id)
+	return err
+}
+
 // CheckOneDetailed checks one subscription and returns how many new chapters
 // were discovered and queued.
 func (s *Scheduler) CheckOneDetailed(ctx context.Context, id int64) (SubscriptionCheckResult, error) {
+	return s.checkOneDetailed(ctx, id, model.QueuePriorityNormal)
+}
+
+// CheckOneManualDetailed is the user-triggered variant of CheckOneDetailed.
+func (s *Scheduler) CheckOneManualDetailed(ctx context.Context, id int64) (SubscriptionCheckResult, error) {
+	return s.checkOneDetailed(ctx, id, model.QueuePriorityManual)
+}
+
+func (s *Scheduler) checkOneDetailed(ctx context.Context, id int64, queuePriority int) (SubscriptionCheckResult, error) {
 	subscription, err := s.subscriptions.Subscription(ctx, id)
 	if err != nil {
 		return SubscriptionCheckResult{}, err
 	}
-	result, err := s.check(ctx, subscription)
+	result, err := s.check(ctx, subscription, queuePriority)
 	if err == nil {
 		s.runAfterUpdate(ctx)
 	}

@@ -1,11 +1,22 @@
 package telegram
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestSplitCommand(t *testing.T) {
 	cases := []struct {
@@ -30,6 +41,53 @@ func TestSplitCommand(t *testing.T) {
 		if command != item.command || arg != item.arg {
 			t.Fatalf("splitCommand(%q) = %q, %q; want %q, %q", item.input, command, arg, item.command, item.arg)
 		}
+	}
+}
+
+func TestSendResultListUsesFirstCoverPhoto(t *testing.T) {
+	var method string
+	var payload map[string]any
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		method = request.URL.Path
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode telegram payload: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":42}}`)),
+		}, nil
+	})}
+	entries := []resultEntry{
+		{Title: "第一个结果", Cover: "https://example.test/first.jpg"},
+		{Title: "第二个结果", Cover: "https://example.test/second.jpg"},
+	}
+	id, photo, err := service.sendResultList(context.Background(), "1", "搜索结果", entries, resultKeyboard(entries))
+	if err != nil {
+		t.Fatalf("sendResultList: %v", err)
+	}
+	if id != 42 || !photo {
+		t.Fatalf("message id=%d photo=%v", id, photo)
+	}
+	if !strings.HasSuffix(method, "/sendPhoto") {
+		t.Fatalf("method = %q, want sendPhoto", method)
+	}
+	if payload["photo"] != "https://example.test/first.jpg" || payload["caption"] != "搜索结果" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if _, ok := payload["reply_markup"]; !ok {
+		t.Fatal("reply_markup missing from photo message")
+	}
+}
+
+func TestTelegramPhotoURLRejectsRelativePath(t *testing.T) {
+	if got := telegramPhotoURL("/api/discover/cover?sourceId=demo"); got != "" {
+		t.Fatalf("relative cover = %q, want empty", got)
+	}
+	if got := telegramPhotoURL("//example.test/cover.jpg"); got != "https://example.test/cover.jpg" {
+		t.Fatalf("protocol-relative cover = %q", got)
 	}
 }
 
@@ -90,7 +148,9 @@ func TestParseSearchText(t *testing.T) {
 		sourceName string
 		ok         bool
 	}{
-		{input: "搜索漫画 凡人修仙传", query: "凡人修仙传", ok: true},
+		{input: "搜索 凡人修仙传", query: "凡人修仙传", ok: true},
+		{input: "搜索漫画 凡人修仙传", query: "凡人修仙传", sourceName: "漫画", ok: true},
+		{input: "漫画搜索 凡人修仙传", query: "凡人修仙传", sourceName: "漫画", ok: true},
 		{input: "包子搜索 凡人修仙传", query: "凡人修仙传", sourceName: "包子", ok: true},
 		{input: "搜索资源 一拳超人", query: "一拳超人", ok: true},
 		{input: "检查 凡人修仙传", ok: false},
@@ -100,6 +160,37 @@ func TestParseSearchText(t *testing.T) {
 		if query != item.query || sourceName != item.sourceName || ok != item.ok {
 			t.Fatalf("parseSearchText(%q) = %q, %q, %v; want %q, %q, %v", item.input, query, sourceName, ok, item.query, item.sourceName, item.ok)
 		}
+	}
+}
+
+func TestSearchKindScope(t *testing.T) {
+	cases := map[string]string{
+		"漫画":  "comic",
+		"漫画源": "comic",
+		"书籍":  "book",
+		"小说源": "book",
+		"其他源": "other",
+		"包子":  "",
+	}
+	for input, want := range cases {
+		if got := searchKindScope(input); got != want {
+			t.Fatalf("searchKindScope(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestRankSearchEntriesPrioritizesExactTitle(t *testing.T) {
+	groups := []sourceSearchResult{
+		{Source: BotSource{ID: "source-1"}, Entries: []resultEntry{
+			{SourceID: "source-1", ComicID: "1", Title: "凡人修仙传外传"},
+		}},
+		{Source: BotSource{ID: "source-2"}, Entries: []resultEntry{
+			{SourceID: "source-2", ComicID: "2", Title: "凡人修仙传"},
+		}},
+	}
+	entries := rankSearchEntries("凡人修仙传", groups)
+	if len(entries) != 2 || entries[0].ComicID != "2" {
+		t.Fatalf("ranked entries = %+v", entries)
 	}
 }
 
@@ -344,6 +435,20 @@ func TestBrowseKeyboardAndPageRules(t *testing.T) {
 	}
 	if rows[2][0]["callback_data"] != "browse:prev" {
 		t.Fatalf("second page navigation = %+v", rows[2])
+	}
+}
+
+func TestGlobalSearchKeyboardHasTypePageNavigation(t *testing.T) {
+	entries := []resultEntry{{Title: "作品一"}, {Title: "作品二"}}
+	first := globalSearchKeyboard(entries, 1, 3).(map[string]any)
+	rows := first["inline_keyboard"].([][]map[string]string)
+	if len(rows) != 3 || rows[2][0]["callback_data"] != "browse:next" {
+		t.Fatalf("first page keyboard = %+v", rows)
+	}
+	second := globalSearchKeyboard(entries, 2, 3).(map[string]any)
+	rows = second["inline_keyboard"].([][]map[string]string)
+	if len(rows) != 3 || rows[2][0]["callback_data"] != "browse:prev" || rows[2][1]["callback_data"] != "browse:next" {
+		t.Fatalf("middle page keyboard = %+v", rows)
 	}
 }
 

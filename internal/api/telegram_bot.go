@@ -141,7 +141,7 @@ func (s *Server) BotSubscribe(ctx context.Context, sourceID, comicID string) (mo
 	// Historical chapters download right away; the stored baseline keeps later
 	// scheduled checks from re-queueing them.
 	s.registerInitialDownloadNotice(ctx, created)
-	queued, _, queueErr := s.scheduler.QueueAll(ctx, created)
+	queued, _, queueErr := s.scheduler.QueueAllManual(ctx, created)
 	if queueErr == nil && queued == 0 {
 		s.unregisterInitialDownloadNotice(ctx, created.SourceID, created.ComicID)
 	} else if queueErr != nil {
@@ -246,7 +246,7 @@ func (s *Server) BotCheck(ctx context.Context, subscriptionID int64) (telegram.B
 	if err != nil {
 		return telegram.BotCheckResult{}, err
 	}
-	checked, err := s.scheduler.CheckOneDetailed(ctx, subscriptionID)
+	checked, err := s.scheduler.CheckOneManualDetailed(ctx, subscriptionID)
 	if err != nil {
 		return telegram.BotCheckResult{}, err
 	}
@@ -276,7 +276,7 @@ func (s *Server) BotFill(ctx context.Context, subscriptionID int64) (int, int, e
 	if err != nil {
 		return 0, 0, err
 	}
-	return s.scheduler.QueueAll(ctx, subscription)
+	return s.scheduler.QueueAllManual(ctx, subscription)
 }
 
 // BotSetSubscriptionEnabled 切换订阅的启用/禁用状态。

@@ -76,7 +76,7 @@ func (d *stubDownloads) EnsureSeriesMetadata(_ context.Context, _ model.Subscrip
 	return false, nil
 }
 
-func (d *stubDownloads) RetryFailedByComic(_ context.Context, sourceID, comicID string) (int, error) {
+func (d *stubDownloads) RetryFailedByComic(_ context.Context, sourceID, comicID string, _ int) (int, error) {
 	d.retried = append(d.retried, model.Subscription{SourceID: sourceID, ComicID: comicID})
 	if d.retryN > 0 {
 		d.notified++
@@ -195,6 +195,9 @@ func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
 	if downloads.jobs[0].ChapterID != "2" || downloads.jobs[1].ChapterID != "3" {
 		t.Fatalf("queued chapters = %q,%q; want 2,3", downloads.jobs[0].ChapterID, downloads.jobs[1].ChapterID)
 	}
+	if downloads.jobs[0].QueuePriority != model.QueuePriorityNormal || downloads.jobs[1].QueuePriority != model.QueuePriorityNormal {
+		t.Fatalf("routine check priorities = %d,%d; want normal", downloads.jobs[0].QueuePriority, downloads.jobs[1].QueuePriority)
+	}
 	if downloads.notified == 0 {
 		t.Fatal("downloader was not notified after queueing")
 	}
@@ -228,6 +231,33 @@ func TestCheckOneDetailedReportsNewAndQueued(t *testing.T) {
 	}
 }
 
+func TestManualCheckPrioritizesNewChapters(t *testing.T) {
+	subscriptions := &stubSubscriptions{items: []model.Subscription{{
+		ID:               1,
+		SourceID:         "stub",
+		ComicID:          "1",
+		Title:            "测试作品",
+		Enabled:          true,
+		AutoDownload:     true,
+		LastChapterID:    "1",
+		LastChapterTitle: "第1话",
+		LastChapterOrder: 1,
+	}}}
+	downloads := &stubDownloads{}
+	result, err := newTestScheduler(testChapters(), subscriptions, downloads).CheckOneManualDetailed(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("CheckOneManualDetailed returned error: %v", err)
+	}
+	if result.Queued != 2 || len(downloads.jobs) != 2 {
+		t.Fatalf("manual check result = %+v jobs=%d, want 2 queued", result, len(downloads.jobs))
+	}
+	for _, job := range downloads.jobs {
+		if job.QueuePriority != model.QueuePriorityManual {
+			t.Fatalf("manual check job priority = %d, want %d", job.QueuePriority, model.QueuePriorityManual)
+		}
+	}
+}
+
 func TestQueueAllSkipsCompletedRecordsWithoutLocalFileChecks(t *testing.T) {
 	subscription := model.Subscription{
 		ID:           1,
@@ -245,6 +275,31 @@ func TestQueueAllSkipsCompletedRecordsWithoutLocalFileChecks(t *testing.T) {
 	}
 	if queued != 0 || skipped != len(testChapters()) {
 		t.Fatalf("QueueAll queued=%d skipped=%d, want 0/%d", queued, skipped, len(testChapters()))
+	}
+}
+
+func TestQueueAllManualPrioritizesEveryChapter(t *testing.T) {
+	subscription := model.Subscription{
+		ID:           1,
+		SourceID:     "stub",
+		ComicID:      "1",
+		Title:        "测试作品",
+		Enabled:      true,
+		AutoDownload: true,
+	}
+	subscriptions := &stubSubscriptions{items: []model.Subscription{subscription}}
+	downloads := &stubDownloads{}
+	queued, skipped, err := newTestScheduler(testChapters(), subscriptions, downloads).QueueAllManual(context.Background(), subscription)
+	if err != nil {
+		t.Fatalf("QueueAllManual returned error: %v", err)
+	}
+	if queued != len(testChapters()) || skipped != 0 {
+		t.Fatalf("QueueAllManual queued=%d skipped=%d, want %d/0", queued, skipped, len(testChapters()))
+	}
+	for _, job := range downloads.jobs {
+		if job.QueuePriority != model.QueuePriorityManual {
+			t.Fatalf("manual full job priority = %d, want %d", job.QueuePriority, model.QueuePriorityManual)
+		}
 	}
 }
 
@@ -266,6 +321,9 @@ func TestQueueLatestDownloadsNewestEvenWhenAutoDownloadDisabled(t *testing.T) {
 	}
 	if job.ChapterID != "3" || len(downloads.jobs) != 1 {
 		t.Fatalf("queued jobs = %#v, want only chapter 3", downloads.jobs)
+	}
+	if job.QueuePriority != model.QueuePriorityManual {
+		t.Fatalf("manual latest job priority = %d, want %d", job.QueuePriority, model.QueuePriorityManual)
 	}
 	if downloads.notified == 0 {
 		t.Fatal("downloader was not notified after manual download")

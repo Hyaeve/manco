@@ -5107,6 +5107,36 @@ svg.source-editor-icon {
   transform: scale(1.12);
 }
 
+/* 模糊封面叠一层细磨砂纹理，避免只剩单纯的模糊滤镜。 */
+.subscription-card .subscription-cover.blurred {
+  position: relative;
+}
+
+.subscription-card .subscription-cover.blurred::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.11) 0 1px,
+      rgba(255, 255, 255, 0) 1px 4px
+    ),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), rgba(87, 76, 60, 0.14));
+  backdrop-filter: blur(2px) saturate(0.82);
+  -webkit-backdrop-filter: blur(2px) saturate(0.82);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  content: '';
+  pointer-events: none;
+  transition: opacity 0.32s ease;
+}
+
+.subscription-card .subscription-cover.blurred:hover::after,
+.subscription-card .subscription-cover.blurred:focus-within::after {
+  opacity: 0;
+}
+
 /* 悬浮任意订阅卡片时给一层橘色描边，与选中态的橘色保持一致。 */
 .subscription-card:hover,
 .archive-card:hover {
@@ -5315,13 +5345,34 @@ svg.source-editor-icon {
 }
 
 .subscription-card.disabled {
-  /* 只是「较灰」，不要压到发黑：低透明度 + 中等去色。 */
-  opacity: 0.82;
-  filter: grayscale(0.55);
+  /* 停用卡片用浅灰偏白的纸张感，保留内容可辨认。 */
+  opacity: 1;
+  filter: none;
+  background: color-mix(in srgb, var(--surface) 74%, #e5e1da);
+  border-color: color-mix(in srgb, var(--border) 72%, #d8d2c8);
+  box-shadow: none;
 }
 
 .subscription-card.disabled:hover {
-  opacity: 0.92;
+  opacity: 1;
+  background: color-mix(in srgb, var(--surface) 80%, #e9e6e0);
+}
+
+.subscription-card.disabled .subscription-main {
+  opacity: 0.82;
+}
+
+.subscription-card.disabled .subscription-cover img {
+  filter: grayscale(0.18) saturate(0.74) brightness(1.06);
+}
+
+[data-theme='dark'] .subscription-card.disabled {
+  background: color-mix(in srgb, var(--surface) 84%, #3b3a36);
+  border-color: color-mix(in srgb, var(--border) 82%, #4a4842);
+}
+
+[data-theme='dark'] .subscription-card.disabled:hover {
+  background: color-mix(in srgb, var(--surface) 78%, #45433d);
 }
 
 /* 三点菜单：默认向上弹；上方空间不够时加 .opens-down 改为向下弹。 */

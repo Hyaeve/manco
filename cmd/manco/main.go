@@ -59,8 +59,8 @@ func (q downloadQueue) EnsureSeriesMetadata(ctx context.Context, subscription mo
 	return q.engine.EnsureSeriesMetadata(ctx, subscription)
 }
 
-func (q downloadQueue) RetryFailedByComic(ctx context.Context, sourceID, comicID string) (int, error) {
-	return q.engine.RetryFailedByComic(ctx, sourceID, comicID)
+func (q downloadQueue) RetryFailedByComic(ctx context.Context, sourceID, comicID string, queuePriority int) (int, error) {
+	return q.engine.RetryFailedByComic(ctx, sourceID, comicID, queuePriority)
 }
 
 func (q downloadQueue) Notify() { q.engine.Notify() }
