@@ -150,6 +150,9 @@ func (s *Store) migrate(ctx context.Context) error {
 			value TEXT NOT NULL,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// 通知聚合按作品分组 + 时间范围过滤，这两个索引让查询不再整表扫描。
+		`CREATE INDEX IF NOT EXISTS idx_download_jobs_activity ON download_jobs(source_id, comic_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_download_jobs_updated_at ON download_jobs(updated_at)`,
 		`CREATE TABLE IF NOT EXISTS extension_source_cache (
 			repository_id TEXT NOT NULL,
 			extension_id TEXT NOT NULL,
@@ -1203,6 +1206,9 @@ func (s *Store) DownloadJobActivity(ctx context.Context, limit int) ([]ActivityG
 	if limit <= 0 {
 		limit = 50
 	}
+	// 只聚合最近 30 天的任务：通知窗口不需要全量历史，限定时间范围才能让
+	// SQLite 走索引、避免每次轮询都整表 GROUP BY。
+	since := time.Now().Add(-30 * 24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT source_id, comic_id, MAX(comic_title) AS title,
 			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
@@ -1210,10 +1216,11 @@ func (s *Store) DownloadJobActivity(ctx context.Context, limit int) ([]ActivityG
 			SUM(CASE WHEN status IN ('queued', 'running', 'waiting', 'paused') THEN 1 ELSE 0 END) AS pending,
 			MAX(COALESCE(finished_at, updated_at, created_at)) AS last_at
 		FROM download_jobs
+		WHERE updated_at >= ?
 		GROUP BY source_id, comic_id
 		HAVING succeeded > 0 OR failed > 0
 		ORDER BY last_at DESC
-		LIMIT ?`, limit)
+		LIMIT ?`, since, limit)
 	if err != nil {
 		return nil, err
 	}

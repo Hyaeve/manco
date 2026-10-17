@@ -48,6 +48,10 @@ const selectionMode = ref(false)
 const selected = ref(new Set())
 // 订阅很多时逐个渲染所有卡片会把主线程拖到无响应，这里分批渲染。
 const renderLimit = ref(60)
+// 订阅清单分页：首屏只取一页，滚到底再补。
+const SUBS_PAGE_SIZE = 60
+const totalSubscriptions = ref(0)
+const loadingMoreSubscriptions = ref(false)
 let scrollEl = null
 // 5 秒轮询时如果内容没变就不替换响应式数据，避免整页卡片反复重渲染。
 let lastItemsSignature = ''
@@ -158,9 +162,27 @@ watch([kindFilter, activeDir], () => {
 })
 
 function handlePageScroll() {
-  if (!scrollEl || renderLimit.value >= filteredItems.value.length) return
+  if (!scrollEl) return
   if (scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 360) {
-    renderLimit.value += 60
+    // 先补数据页，再扩渲染窗口。
+    if (items.value.length < totalSubscriptions.value) loadMoreSubscriptions()
+    if (renderLimit.value < filteredItems.value.length) renderLimit.value += 60
+  }
+}
+
+async function loadMoreSubscriptions() {
+  if (loadingMoreSubscriptions.value || items.value.length >= totalSubscriptions.value) return
+  loadingMoreSubscriptions.value = true
+  try {
+    const payload = await api.subscriptions(SUBS_PAGE_SIZE, items.value.length)
+    const next = payload.items || []
+    if (next.length) items.value = [...items.value, ...next]
+    totalSubscriptions.value = Number(payload.total ?? totalSubscriptions.value)
+    if (payload.jobStats) jobStatsData.value = { ...jobStatsData.value, ...payload.jobStats }
+  } catch (err) {
+    notify(`加载更多订阅失败：${err.message}`, 'error')
+  } finally {
+    loadingMoreSubscriptions.value = false
   }
 }
 
@@ -288,7 +310,7 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     const [subscriptions, downloads, sourcePayload] = await Promise.all([
-      api.subscriptions(),
+      api.subscriptions(silent ? Math.max(SUBS_PAGE_SIZE, items.value.length) : SUBS_PAGE_SIZE, 0),
       // 统计信息由 /api/subscriptions 的 jobStats 直接给出，不再额外拉一次
       // 几百条下载任务——那个请求服务端每条都要查本地封面与元数据，5 秒
       // 轮询一次会把机器拖住。
@@ -299,6 +321,7 @@ async function load(silent = false) {
       sources.value = { ...sources.value, [source.id]: source }
     }
     const nextItems = subscriptions.items || []
+    totalSubscriptions.value = Number(subscriptions.total || nextItems.length)
     const itemsSignature = JSON.stringify(
       nextItems.map((item) => [
         item.id,
@@ -496,7 +519,8 @@ function lastRunLabel(item) {
   const date = new Date(raw)
   if (Number.isNaN(date.getTime())) return '最近执行：尚未执行'
   const pad = (value) => String(value).padStart(2, '0')
-  return `最近执行：${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  // 只显示「月/日 时:分」，例如 10/17 12:42。
+  return `最近执行：${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
 function downloadTaskLink(item, filter) {

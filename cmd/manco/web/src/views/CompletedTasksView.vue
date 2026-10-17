@@ -14,6 +14,8 @@ const error = ref('')
 const busy = ref(0)
 const expandedGroups = ref(new Set())
 const groupRenderLimit = ref(40)
+// 展开的章节列表也分批渲染，滚动再补，避免一次把几千章铺出来。
+const chapterRenderLimit = ref(30)
 // 完成记录可能上万条，只取第一页，滚动/点按再补。
 const COMPLETED_PAGE_SIZE = 300
 const totalCompleted = ref(0)
@@ -101,11 +103,20 @@ onUnmounted(() => {
 
 function handlePageScroll() {
   const element = pageScroller
-  if (!element || groupRenderLimit.value >= groups.value.length) return
-  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 320) {
+  if (!element) return
+  const nearBottom = element.scrollTop + element.clientHeight >= element.scrollHeight - 320
+  if (!nearBottom) return
+  // 滚动自动续数据页，不用再点「加载更多」。
+  if (items.value.length < totalCompleted.value) loadMoreCompleted()
+  if (chapterRenderLimit.value < maxGroupChapters.value) chapterRenderLimit.value += 30
+  if (groupRenderLimit.value < groups.value.length) {
     groupRenderLimit.value += 40
   }
 }
+
+const maxGroupChapters = computed(() =>
+  groups.value.reduce((max, group) => Math.max(max, group.items.length), 0),
+)
 
 async function load(silent = false) {
   if (!silent) loading.value = true
@@ -292,22 +303,21 @@ async function remove(item) {
           <ChevronRight v-else :size="18" />
         </button>
         <div v-if="isGroupExpanded(group.key)" class="completed-task-chapters">
-          <div v-for="item in group.items" :key="item.id" class="completed-task-chapter">
+          <div v-for="item in group.items.slice(0, chapterRenderLimit)" :key="item.id" class="completed-task-chapter">
             <span class="completed-chapter-title" :title="item.chapterTitle">{{ item.chapterTitle }}</span>
             <span class="completed-chapter-time">{{ formatTime(item) }}</span>
             <button class="icon-btn danger" type="button" :disabled="busy === item.id" aria-label="删除已完成记录" @click="remove(item)">
               <Trash2 :size="15" />
             </button>
           </div>
+          <p v-if="group.items.length > chapterRenderLimit" class="muted small completed-chapter-more">
+            还有 {{ group.items.length - chapterRenderLimit }} 章，向下滚动继续加载
+          </p>
         </div>
       </article>
-      <div v-if="items.length < totalCompleted" class="completed-load-more">
-        <button class="btn secondary small" type="button" :disabled="loadingMore" @click="loadMoreCompleted">
-          <Loader2 v-if="loadingMore" :size="14" class="spin" />
-          <RefreshCw v-else :size="14" />
-          加载更多（已加载 {{ items.length }} / {{ totalCompleted }}）
-        </button>
-      </div>
+      <p v-if="items.length < totalCompleted" class="muted small completed-chapter-more">
+        共 {{ totalCompleted }} 条已完成记录，向下滚动继续加载
+      </p>
     </div>
   </div>
 </template>

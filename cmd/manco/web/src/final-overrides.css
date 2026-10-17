@@ -5012,10 +5012,52 @@ svg.source-editor-icon {
 /* 本地仓库：目录胶囊与排序选择器同一行，排序贴在最右边。 */
 /* 探索发现来源胶囊：最多 5 个汉字宽，超出省略。 */
 .discover-source-strip button {
+  position: relative;
+  white-space: nowrap;
+}
+
+/* 名称最多 5 个汉字宽，图标保留在最前。 */
+.discover-source-strip button > span {
   max-width: 5em;
   overflow: hidden;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 悬浮时用圆角框显示完整名称。 */
+.discover-source-strip button::after {
+  content: attr(data-name);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 60;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.discover-source-strip button:hover::after {
+  opacity: 1;
+}
+
+/* 下拉弹层要盖住下面的作品网格。 */
+.rounded-select-popup {
+  z-index: 60;
+}
+
+.source-filter-grid {
+  position: relative;
+  z-index: 20;
+  overflow: visible;
 }
 
 .local-root-row {
@@ -5039,7 +5081,8 @@ svg.source-editor-icon {
 .rounded-select-popup [class*='option']:hover,
 .rounded-select-popup [class*='active'],
 .rounded-select-popup [class*='selected'] {
-  background: color-mix(in srgb, #f9ee9f 82%, #eef4dd);
+  /* 比侧栏选中态更淡一档，悬浮不刺眼 */
+  background: color-mix(in srgb, #f9ee9f 45%, var(--surface));
   color: #4f4715;
 }
 
@@ -5055,17 +5098,67 @@ svg.source-editor-icon {
 @keyframes manco-float-in {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    /* 从自身右下角向左上浮出：先缩小并往右下偏移，再扩回原位 */
+    transform: translate(18px, 18px) scale(0.9);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translate(0, 0) scale(1);
   }
 }
 
 /* 切页面时由 App.vue 加上 .page-enter 重播一次（KeepAlive 缓存下动画不会自动重播）。 */
 .content-scroll.page-enter > * {
   animation: manco-float-in 0.32s ease-out both;
+  transform-origin: bottom right;
+}
+
+/* 网格封面 / 卡片内容逐个浮出：每个卡片轻微上浮 + 淡入，前几项错开一点。 */
+@keyframes manco-card-in {
+  from {
+    opacity: 0;
+    transform: translate(14px, 14px) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+.local-library-card,
+.subscription-card,
+.source-card-simple,
+.completed-task-group,
+.download-row {
+  animation: manco-card-in 0.34s ease-out both;
+  /* 以自身右下角为原点放大，视觉上从右下往左上铺开 */
+  transform-origin: bottom right;
+}
+
+.local-library-grid > :nth-child(2),
+.subscription-grid > :nth-child(2),
+.source-grid > :nth-child(2) { animation-delay: 0.03s; }
+.local-library-grid > :nth-child(3),
+.subscription-grid > :nth-child(3),
+.source-grid > :nth-child(3) { animation-delay: 0.06s; }
+.local-library-grid > :nth-child(4),
+.subscription-grid > :nth-child(4),
+.source-grid > :nth-child(4) { animation-delay: 0.09s; }
+.local-library-grid > :nth-child(5),
+.subscription-grid > :nth-child(5),
+.source-grid > :nth-child(5) { animation-delay: 0.12s; }
+.local-library-grid > :nth-child(6),
+.subscription-grid > :nth-child(6),
+.source-grid > :nth-child(6) { animation-delay: 0.15s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .local-library-card,
+  .subscription-card,
+  .source-card-simple,
+  .completed-task-group,
+  .download-row {
+    animation: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

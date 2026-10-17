@@ -57,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.2"
+	appVersion    = "v0.6.3"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -111,6 +111,18 @@ type Server struct {
 	// 订阅快照：内容没变时不重复写盘（订阅页每 5 秒轮询一次）。
 	persistMu         sync.Mutex
 	subscriptionsHash [32]byte
+
+	// 活动通知的短缓存：前端每 15 秒轮询一次，同一份结果没必要重复聚合。
+	activityMu  sync.Mutex
+	activityRaw []byte
+	activityAt  time.Time
+
+	// 本地仓库扫描结果短缓存：NAS 目录扫描很慢，刷新页面不应该重扫一遍。
+	libraryMu    sync.Mutex
+	libraryItems []localItemEntry
+	libraryRoots []string
+	libraryKey   string
+	libraryAt    time.Time
 }
 
 type coverCacheEntry struct {
@@ -2950,7 +2962,23 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	for key, value := range stats {
 		jobStats[key] = value
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "jobStats": jobStats})
+	// 订阅清单也分页：先返回一页，前端滚到底再补；快照仍然按全量写盘。
+	total := len(items)
+	if limit := intParam(r, "limit", 0); limit > 0 {
+		offset := intParam(r, "offset", 0)
+		if offset < 0 {
+			offset = 0
+		}
+		if offset > total {
+			offset = total
+		}
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		items = items[offset:end]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "jobStats": jobStats})
 }
 
 // persistSubscriptionsIfChanged 只在内容变化时重写 configstore 的订阅快照。
@@ -3636,6 +3664,17 @@ func (s *Server) cachedCoverURL(sourceID, comicID string) string {
 }
 
 func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	// 10 秒内的重复请求直接回缓存，避免多开页面时反复跑聚合查询。
+	s.activityMu.Lock()
+	if len(s.activityRaw) > 0 && time.Since(s.activityAt) < 10*time.Second {
+		raw := s.activityRaw
+		s.activityMu.Unlock()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+		return
+	}
+	s.activityMu.Unlock()
 	groups, err := s.store.DownloadJobActivity(r.Context(), 50)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -3681,7 +3720,18 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			Cover:      s.cachedCoverURL(group.SourceID, group.ComicID),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+	raw, err := json.Marshal(map[string]any{"items": result})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.activityMu.Lock()
+	s.activityRaw = raw
+	s.activityAt = time.Now()
+	s.activityMu.Unlock()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
 }
 
 func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
@@ -4489,6 +4539,17 @@ func localPath(root, rel string) string {
 // produced by a recorded download job.
 func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 	roots := s.localRoots(r.Context())
+	// 60 秒内的重复请求直接用上次扫描结果，刷新页面不再等 NAS 目录遍历。
+	cacheKey := strings.Join(roots, "\x00")
+	s.libraryMu.Lock()
+	if s.libraryItems != nil && s.libraryKey == cacheKey && time.Since(s.libraryAt) < 60*time.Second {
+		items := s.libraryItems
+		cachedRoots := s.libraryRoots
+		s.libraryMu.Unlock()
+		s.writeLocalLibrary(w, r, items, cachedRoots)
+		return
+	}
+	s.libraryMu.Unlock()
 	fallbacks := s.localCoverFallbacks(r.Context())
 	items := make([]localItemEntry, 0, 16)
 	for _, root := range roots {
@@ -4523,7 +4584,17 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
-	// 本地仓库也分页：先返回一页，前端滚到末尾再取下一页。
+	s.libraryMu.Lock()
+	s.libraryItems = items
+	s.libraryRoots = roots
+	s.libraryKey = cacheKey
+	s.libraryAt = time.Now()
+	s.libraryMu.Unlock()
+	s.writeLocalLibrary(w, r, items, roots)
+}
+
+// writeLocalLibrary 按 limit/offset 切页并输出；扫描结果由 handleLocalLibrary 缓存 60 秒。
+func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items []localItemEntry, roots []string) {
 	total := len(items)
 	if limit := intParam(r, "limit", 0); limit > 0 {
 		offset := intParam(r, "offset", 0)

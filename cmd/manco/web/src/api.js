@@ -111,7 +111,13 @@ export const api = {
   comicDownloads: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/downloads`),
 
-  subscriptions: () => request('/api/subscriptions'),
+  subscriptions: (limit = 0, offset = 0) => {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
+    const query = params.toString()
+    return request(`/api/subscriptions${query ? `?${query}` : ''}`)
+  },
   archivedSubscriptions: () => request('/api/subscriptions/archived'),
   createSubscription: (payload) => request('/api/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
   updateSubscription: (id, payload) =>

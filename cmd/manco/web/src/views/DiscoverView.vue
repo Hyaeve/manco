@@ -550,6 +550,8 @@ function latestLabel(item) {
           v-for="source in sources"
           :key="source.id"
           type="button"
+          :data-name="source.name"
+          :title="source.name"
           :class="{ active: source.id === activeId }"
           @click="selectSource(source.id)"
         >
