@@ -580,6 +580,13 @@ async function fillMissing(item) {
 
 async function downloadAll(item) {
   openMenu.value = 0
+  const confirmed = await askConfirm({
+    title: '全量下载',
+    message: `确定对《${item.title}》执行全量下载吗？会删除成功与失败记录、删除作品目录里已存在的章节文件，然后重新拉取并覆盖。`,
+    confirmText: '全量下载',
+    danger: true,
+  })
+  if (!confirmed) return
   busy.value = item.id
   try {
     const result = await api.downloadAllSubscription(item.id)

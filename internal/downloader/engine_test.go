@@ -428,7 +428,7 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 		detail: model.Comic{
 			SourceID:    "stub",
 			ID:          "1",
-			Title:       "测试作品",
+			Title:       "来源页面作品名",
 			Author:      "测试作者",
 			Description: "测试简介",
 			Cover:       server.URL + "/cover.png",
@@ -635,6 +635,82 @@ func TestOtherSourcePreservesProvidedContentType(t *testing.T) {
 	}
 	if matches, _ := filepath.Glob(filepath.Join(downloadDir, "其他作品", "*.cbz")); len(matches) != 0 {
 		t.Fatalf("other source was incorrectly wrapped as CBZ: %v", matches)
+	}
+}
+
+func TestSyncSeriesTitleRewritesSidecarsAndArchiveMetadata(t *testing.T) {
+	root := t.TempDir()
+	seriesDir := filepath.Join(root, "夏日深处")
+	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
+		t.Fatalf("mkdir series: %v", err)
+	}
+	writeArchive := func(path string, entries [][2]string) {
+		t.Helper()
+		file, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create archive %s: %v", path, err)
+		}
+		writer := zip.NewWriter(file)
+		for _, item := range entries {
+			entry, err := writer.Create(item[0])
+			if err != nil {
+				t.Fatalf("create zip entry %s: %v", item[0], err)
+			}
+			if _, err := entry.Write([]byte(item[1])); err != nil {
+				t.Fatalf("write zip entry %s: %v", item[0], err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close archive: %v", err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatalf("close archive file: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "ComicInfo.xml"), []byte(`<?xml version="1.0"?><ComicInfo><Title>旧名称</Title><Series>旧名称</Series></ComicInfo>`), 0o644); err != nil {
+		t.Fatalf("write ComicInfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "series.json"), []byte(`{"metadata":{"name":"旧名称","description_text":"简介"}}`), 0o644); err != nil {
+		t.Fatalf("write series.json: %v", err)
+	}
+	writeArchive(filepath.Join(seriesDir, "第1话.cbz"), [][2]string{
+		{"ComicInfo.xml", `<?xml version="1.0"?><ComicInfo><Title>第1话</Title><Series>旧名称</Series></ComicInfo>`},
+		{"001.jpg", "image"},
+	})
+	writeArchive(filepath.Join(seriesDir, "第1章.epub"), [][2]string{
+		{"mimetype", "application/epub+zip"},
+		{"OEBPS/content.opf", `<?xml version="1.0"?><package><metadata><dc:title>旧名称</dc:title></metadata></package>`},
+		{"OEBPS/toc.ncx", `<ncx><docTitle><text>旧名称</text></docTitle></ncx>`},
+	})
+
+	engine := NewEngine(nil, nil, root, 1, 1, log.New(io.Discard, "", 0))
+	if err := engine.SyncSeriesTitle(model.Subscription{
+		Title:               "来源页面作品名",
+		SeriesDir:           "夏日深处",
+		DownloadDir:         root,
+		ConvertToSimplified: true,
+	}); err != nil {
+		t.Fatalf("SyncSeriesTitle: %v", err)
+	}
+
+	sidecar, _ := os.ReadFile(filepath.Join(seriesDir, "ComicInfo.xml"))
+	if !bytes.Contains(sidecar, []byte("<Series>夏日深处</Series>")) || !bytes.Contains(sidecar, []byte("<Title>夏日深处</Title>")) {
+		t.Fatalf("ComicInfo title was not synchronized: %s", sidecar)
+	}
+	seriesJSON, _ := os.ReadFile(filepath.Join(seriesDir, "series.json"))
+	if !bytes.Contains(seriesJSON, []byte(`"name": "夏日深处"`)) {
+		t.Fatalf("series.json title was not synchronized: %s", seriesJSON)
+	}
+	cbz := readZip(t, filepath.Join(seriesDir, "第1话.cbz"))
+	if !bytes.Contains(cbz["ComicInfo.xml"], []byte("<Series>夏日深处</Series>")) || !bytes.Contains(cbz["ComicInfo.xml"], []byte("<Title>第1话</Title>")) {
+		t.Fatalf("embedded CBZ metadata mismatch: %s", cbz["ComicInfo.xml"])
+	}
+	epub := readZip(t, filepath.Join(seriesDir, "第1章.epub"))
+	if !bytes.Contains(epub["OEBPS/content.opf"], []byte("<dc:title>夏日深处</dc:title>")) {
+		t.Fatalf("EPUB OPF title mismatch: %s", epub["OEBPS/content.opf"])
+	}
+	if !bytes.Contains(epub["OEBPS/toc.ncx"], []byte("<docTitle><text>夏日深处</text></docTitle>")) {
+		t.Fatalf("EPUB NCX title mismatch: %s", epub["OEBPS/toc.ncx"])
 	}
 }
 

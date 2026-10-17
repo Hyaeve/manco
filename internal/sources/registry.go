@@ -15,6 +15,7 @@ import (
 	"github.com/hyaeve/manco/internal/secret"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/source/baozimh"
+	"github.com/hyaeve/manco/internal/source/biquge"
 	"github.com/hyaeve/manco/internal/source/generic"
 	"github.com/hyaeve/manco/internal/source/jmcomic"
 	"github.com/hyaeve/manco/internal/source/picacg"
@@ -50,13 +51,14 @@ func NewRegistry(client *http.Client, box *secret.Box, repository *store.Store, 
 		jmcomic.New(client),
 		baozimh.New(client),
 		zlibrary.New(client),
+		biquge.New(client),
 	}
 	registry := &Registry{
 		client:        client,
 		box:           box,
 		store:         repository,
 		byID:          make(map[string]source.Source, len(items)),
-		builtins:      map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "zlibrary": true},
+		builtins:      map[string]bool{"picacg": true, "jmcomic": true, "baozimh": true, "zlibrary": true, "biquge": true},
 		custom:        map[string]bool{},
 		pluginSources: map[string]bool{},
 		runtime:       runtimeManager,
@@ -81,7 +83,7 @@ func (r *Registry) List() []model.SourceInfo {
 		}
 		items = append(items, info)
 	}
-	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "zlibrary": 3}
+	order := map[string]int{"baozimh": 0, "picacg": 1, "jmcomic": 2, "zlibrary": 3, "biquge": 4}
 	sort.SliceStable(items, func(i, j int) bool {
 		left, leftOK := order[items[i].ID]
 		right, rightOK := order[items[j].ID]

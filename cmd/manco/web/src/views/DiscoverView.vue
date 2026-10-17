@@ -571,8 +571,10 @@ function latestLabel(item) {
     </div>
 
     <div v-if="sourcesError" class="alert error">{{ sourcesError }}</div>
-    <div v-else-if="loadingSources" class="source-loading">
-      <Loader2 :size="22" class="spin" />
+    <div v-else-if="loadingSources" class="source-cat-loading source-cat-loading-resources">
+      <div class="source-cat-loader">
+        <img src="/logo-icon.png" alt="" />
+      </div>
       <span>正在加载资源</span>
     </div>
     <div v-else-if="!sources.length" class="card empty">
@@ -607,9 +609,11 @@ function latestLabel(item) {
       </div>
 
       <div v-if="activePanel.error" class="alert error">{{ activePanel.error }}</div>
-      <div v-if="activePanel.loading && !activePanel.items.length" class="source-loading">
-        <Loader2 :size="22" class="spin" />
-        <span>正在加载</span>
+      <div v-else-if="activePanel.loading" class="source-cat-loading">
+        <div class="source-cat-loader">
+          <img src="/logo-icon.png" alt="" />
+        </div>
+        <span>正在加载作品</span>
       </div>
       <div v-else-if="!activePanel.items.length" class="source-empty">
         <ImageOff :size="24" />
@@ -653,7 +657,7 @@ function latestLabel(item) {
         </ContentLink>
       </div>
 
-      <div class="source-pagination">
+      <div v-if="!activePanel.loading && activePanel.items.length" class="source-pagination">
         <button class="btn secondary small" type="button" :disabled="activePanel.page <= 1 || activePanel.loading" @click="changePage(-1)">
           <ChevronLeft :size="15" /> 上一页
         </button>

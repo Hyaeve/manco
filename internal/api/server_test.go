@@ -151,6 +151,9 @@ func TestSubscriptionSeriesDirNameHonorsManualOverride(t *testing.T) {
 	if got := subscriptionSeriesDirName("", "龍珠", true); got != "龙珠" {
 		t.Fatalf("generated series dir = %q, want 龙珠", got)
 	}
+	if got := subscriptionSeriesDirName("夏日深處 1-86話", "原始名稱", true); got != "夏日深处 1-86话" {
+		t.Fatalf("converted manual series dir = %q, want 夏日深处 1-86话", got)
+	}
 	if got := subscriptionSeriesDirName("自定/义:目录", "龍珠", true); got != "自定_义_目录" {
 		t.Fatalf("manual series dir = %q, want sanitized custom name", got)
 	}

@@ -750,6 +750,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
+	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	e.metaMu.Lock()
 	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, len(pages), countSeriesBookFiles(comicDir))
@@ -904,6 +905,7 @@ func (e *Engine) downloadMergedComic(ctx context.Context, item source.Source, ac
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
+	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	e.metaMu.Lock()
 	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, totalPages, countSeriesBookFiles(comicDir)+1)
@@ -1001,6 +1003,7 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
+	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".epub"))
 	epubChapters := make([]epubChapter, 0, len(chapters))
@@ -1315,6 +1318,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	if err != nil {
 		return err
 	}
+	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return err
@@ -1406,7 +1410,8 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
-	comicDir := filepath.Join(downloadRoot, SafeName(metadata.Title))
+	metadata.Title = SafeName(comicTitle)
+	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return err
 	}
@@ -1596,6 +1601,7 @@ func (e *Engine) downloadBookArchive(
 	if err != nil {
 		return err
 	}
+	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	tempDir := e.stagingDir(job)
 	if err := os.MkdirAll(tempDir, 0o755); err != nil {
@@ -2111,6 +2117,177 @@ func (e *Engine) ScrapeSeriesMetadata(ctx context.Context, subscription model.Su
 	return e.writeSeriesMetadata(ctx, subscription, true)
 }
 
+// SyncSeriesTitle rewrites the metadata title of an existing series directory
+// to match its actual folder name. It is used after a subscription directory
+// rename so sidecars and archive-internal metadata stay aligned.
+func (e *Engine) SyncSeriesTitle(subscription model.Subscription) error {
+	root, err := e.jobDownloadDir(model.DownloadJob{DownloadDir: subscription.DownloadDir})
+	if err != nil {
+		return err
+	}
+	series := strings.TrimSpace(subscription.SeriesDir)
+	if series == "" {
+		series = SeriesDirectoryName(subscription.Title, subscription.ConvertToSimplified)
+	}
+	comicDir := filepath.Join(root, SafeName(series))
+	info, err := os.Stat(comicDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return rewriteSeriesMetadataTitle(comicDir, filepath.Base(comicDir))
+}
+
+func rewriteSeriesMetadataTitle(comicDir, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil
+	}
+	if raw, err := os.ReadFile(filepath.Join(comicDir, "ComicInfo.xml")); err == nil {
+		var info ComicInfo
+		if xml.Unmarshal(raw, &info) == nil {
+			info.Title = title
+			info.Series = title
+			payload, marshalErr := marshalComicInfo(info)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if err := writeFileAtomic(filepath.Join(comicDir, "ComicInfo.xml"), payload); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if raw, err := os.ReadFile(filepath.Join(comicDir, "series.json")); err == nil {
+		var payload map[string]any
+		if json.Unmarshal(raw, &payload) == nil {
+			metadata, _ := payload["metadata"].(map[string]any)
+			if metadata == nil {
+				metadata = map[string]any{}
+				payload["metadata"] = metadata
+			}
+			metadata["name"] = title
+			encoded, marshalErr := json.MarshalIndent(payload, "", "  ")
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if err := writeFileAtomic(filepath.Join(comicDir, "series.json"), append(encoded, '\n')); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return filepath.WalkDir(comicDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(entry.Name())) {
+		case ".cbz", ".epub":
+			return rewriteArchiveMetadataTitle(path, title)
+		default:
+			return nil
+		}
+	})
+}
+
+var (
+	epubTitlePattern    = regexp.MustCompile(`(?s)<dc:title(?:\s[^>]*)?>.*?</dc:title>`)
+	epubNCXTitlePattern = regexp.MustCompile(`(?s)<docTitle>\s*<text>.*?</text>\s*</docTitle>`)
+)
+
+func rewriteArchiveMetadataTitle(path, title string) error {
+	reader, err := zip.OpenReader(path)
+	if err != nil {
+		return err
+	}
+	tempPath := path + ".part"
+	output, err := os.Create(tempPath)
+	if err != nil {
+		return err
+	}
+	writer := zip.NewWriter(output)
+	archiveExtension := strings.ToLower(filepath.Ext(path))
+	cleanup := func(cause error) error {
+		_ = writer.Close()
+		_ = output.Close()
+		_ = reader.Close()
+		_ = os.Remove(tempPath)
+		return cause
+	}
+	for _, entry := range reader.File {
+		handle, openErr := entry.Open()
+		if openErr != nil {
+			return cleanup(openErr)
+		}
+		data, readErr := io.ReadAll(handle)
+		_ = handle.Close()
+		if readErr != nil {
+			return cleanup(readErr)
+		}
+		name := strings.ToLower(entry.Name)
+		switch {
+		case archiveExtension == ".cbz" && strings.EqualFold(filepath.Base(name), "comicinfo.xml"):
+			var info ComicInfo
+			if xml.Unmarshal(data, &info) == nil {
+				info.Series = title
+				if payload, marshalErr := marshalComicInfo(info); marshalErr == nil {
+					data = payload
+				}
+			}
+		case archiveExtension == ".epub" && (strings.HasSuffix(name, "content.opf") || strings.HasSuffix(name, "toc.ncx")):
+			value := string(data)
+			if strings.HasSuffix(name, "content.opf") {
+				value = epubTitlePattern.ReplaceAllString(value, `<dc:title>`+escapeXML(title)+`</dc:title>`)
+			} else {
+				value = epubNCXTitlePattern.ReplaceAllString(value, `<docTitle><text>`+escapeXML(title)+`</text></docTitle>`)
+			}
+			data = []byte(value)
+		}
+		header := &zip.FileHeader{Name: entry.Name, Method: entry.Method, Modified: entry.Modified}
+		target, createErr := writer.CreateHeader(header)
+		if createErr != nil {
+			return cleanup(createErr)
+		}
+		if _, writeErr := target.Write(data); writeErr != nil {
+			return cleanup(writeErr)
+		}
+	}
+	if err := reader.Close(); err != nil {
+		return cleanup(err)
+	}
+	if err := writer.Close(); err != nil {
+		_ = output.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := output.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, path); err == nil {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return nil
+}
+
 func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Subscription, force bool) (bool, error) {
 	if strings.TrimSpace(subscription.SourceID) == "" || strings.TrimSpace(subscription.ComicID) == "" {
 		return false, nil
@@ -2176,6 +2353,7 @@ func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Sub
 			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
 		}
 	}
+	metadata.Title = filepath.Base(comicDir)
 	client := e.registry.ClientForAccount(account)
 	if client == nil {
 		client = source.NewHTTPClient()
@@ -2203,6 +2381,9 @@ func seriesMetadataCurrent(comicDir string) bool {
 	if !validMylarSeriesJSON(filepath.Join(comicDir, "series.json")) {
 		return false
 	}
+	if !seriesMetadataTitleCurrent(comicDir) {
+		return false
+	}
 	// 旧版本会把简介包成 <p>…</p>，KMRS/Komga 会把标签原样显示出来。
 	if metadataDescriptionHasHTML(comicDir) {
 		return false
@@ -2213,6 +2394,28 @@ func seriesMetadataCurrent(comicDir string) bool {
 		}
 	}
 	return true
+}
+
+func seriesMetadataTitleCurrent(comicDir string) bool {
+	title := filepath.Base(filepath.Clean(comicDir))
+	raw, err := os.ReadFile(filepath.Join(comicDir, "ComicInfo.xml"))
+	if err != nil {
+		return false
+	}
+	var info ComicInfo
+	if xml.Unmarshal(raw, &info) != nil || strings.TrimSpace(info.Series) != title {
+		return false
+	}
+	raw, err = os.ReadFile(filepath.Join(comicDir, "series.json"))
+	if err != nil {
+		return false
+	}
+	var payload struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	return json.Unmarshal(raw, &payload) == nil && strings.TrimSpace(payload.Metadata.Name) == title
 }
 
 var metadataHTMLTagPattern = regexp.MustCompile(`(?i)</?(p|div|br|span|b|i|strong|em|ul|ol|li|h[1-6])(\s|/|>)`)

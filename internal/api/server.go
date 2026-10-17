@@ -58,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.5.2"
+	appVersion    = "v0.6.5.3"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -68,13 +68,14 @@ const (
 	discoverEnrichConcurrency = 3
 )
 
-var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary"}
+var managedSourceIDs = []string{"picacg", "jmcomic", "baozimh", "zlibrary", "biquge"}
 
 var sourceIconSources = map[string]string{
 	"picacg":   "https://bica.mom/favicon.jpeg",
 	"jmcomic":  "https://jmcomicapp.net/favicon.ico",
 	"baozimh":  "https://www.webmota.com/favicon.ico",
 	"zlibrary": "https://1lib.sk/favicon.ico",
+	"biquge":   "https://www.biquge345.com/favicon.ico",
 }
 
 var sourceIconFallbacks = map[string]string{
@@ -82,6 +83,7 @@ var sourceIconFallbacks = map[string]string{
 	"jmcomic":  "/source-icons/jmcomic.png",
 	"baozimh":  "/source-icons/baozimh.png",
 	"zlibrary": "/source-icons/zlibrary.png",
+	"biquge":   "/source-icons/biquge345.ico",
 }
 
 type Server struct {
@@ -228,12 +230,14 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 			"jmcomic":  s.cfg.MaxChapterConcurrency,
 			"baozimh":  s.cfg.MaxChapterConcurrency,
 			"zlibrary": s.cfg.MaxChapterConcurrency,
+			"biquge":   s.cfg.MaxChapterConcurrency,
 		},
 		StaleDays: map[string]int{
 			"picacg":   0,
 			"jmcomic":  0,
 			"baozimh":  0,
 			"zlibrary": 0,
+			"biquge":   0,
 			"*":        30,
 		},
 	}
@@ -3416,6 +3420,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	convertToSimplified := existing.ConvertToSimplified
 	chapterMarker := existing.ChapterMarker
 	coverBlur := existing.CoverBlur
+	oldEffectiveSeriesDir := subscriptionSeriesDirName(existing.SeriesDir, existing.Title, existing.ConvertToSimplified)
 	if payload.Enabled != nil {
 		enabled = *payload.Enabled
 	}
@@ -3444,6 +3449,8 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	if payload.SeriesDir != nil {
 		seriesDir = subscriptionSeriesDirName(*payload.SeriesDir, existing.Title, convertToSimplified)
+	} else if payload.ConvertToSimplified != nil && strings.TrimSpace(seriesDir) != "" {
+		seriesDir = subscriptionSeriesDirName(seriesDir, existing.Title, convertToSimplified)
 	}
 	if payload.ChapterMarker != nil {
 		chapterMarker = *payload.ChapterMarker
@@ -3454,6 +3461,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	if strings.TrimSpace(seriesDir) == "" {
 		seriesDir = downloader.SeriesDirectoryName(existing.Title, convertToSimplified)
 	}
+	metadataTitleChanged := downloader.SafeName(oldEffectiveSeriesDir) != downloader.SafeName(seriesDir)
 	if err := s.store.UpdateSubscriptionConfig(r.Context(), id, enabled, auto, cronExpr, downloadDir, seriesDir, convertToSimplified, chapterMarker, coverBlur); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3461,6 +3469,11 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	// 作品目录名或下载位置变化时，同步迁移本地已下载目录与任务路径。
 	s.syncSubscriptionLocalDir(r.Context(), existing, downloadDir, seriesDir)
 	updated, _ := s.store.Subscription(r.Context(), id)
+	if metadataTitleChanged && s.engine != nil {
+		if err := s.engine.SyncSeriesTitle(updated); err != nil {
+			s.logger.Printf("api: sync series metadata title %s/%s: %v", updated.SourceID, updated.ComicID, err)
+		}
+	}
 	updated = s.subscriptionWithCovers(r.Context(), updated)
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, updated)
@@ -4155,7 +4168,10 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 func subscriptionSeriesDirName(value, title string, convertToSimplified bool) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return downloader.SeriesDirectoryName(title, convertToSimplified)
+		value = strings.TrimSpace(title)
+	}
+	if convertToSimplified {
+		value = downloader.SimplifiedText(value)
 	}
 	return downloader.SafeName(value)
 }

@@ -5379,3 +5379,64 @@ svg.source-editor-icon {
   top: calc(100% + 7px);
   bottom: auto;
 }
+
+/* 探索发现加载态：淡橘猫轻轻呼吸浮现，加载时不再露出旧页内容或分页。 */
+.source-cat-loading {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  min-height: 340px;
+  padding: 36px 16px;
+  color: color-mix(in srgb, var(--text-muted) 72%, transparent);
+  text-align: center;
+}
+
+.source-cat-loading-resources {
+  min-height: 230px;
+}
+
+.source-cat-loader {
+  display: grid;
+  place-items: center;
+  width: 116px;
+  height: 116px;
+}
+
+.source-cat-loader img {
+  width: 92px;
+  height: 92px;
+  object-fit: contain;
+  opacity: 0.28;
+  filter: saturate(0.82);
+  animation: source-cat-breathe 2.2s ease-in-out infinite;
+}
+
+.source-cat-loading-resources .source-cat-loader {
+  width: 92px;
+  height: 92px;
+}
+
+.source-cat-loading-resources .source-cat-loader img {
+  width: 72px;
+  height: 72px;
+}
+
+@keyframes source-cat-breathe {
+  0%,
+  100% {
+    opacity: 0.22;
+    transform: translateY(2px) scale(0.96);
+  }
+  50% {
+    opacity: 0.36;
+    transform: translateY(-2px) scale(1.035);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .source-cat-loader img {
+    animation: none;
+    opacity: 0.3;
+  }
+}

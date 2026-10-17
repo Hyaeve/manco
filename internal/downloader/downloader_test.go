@@ -211,7 +211,10 @@ func TestPlainMetadataTextStripsHTML(t *testing.T) {
 }
 
 func TestSeriesMetadataTreatsHTMLDescriptionAsStale(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "作品")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	legacy := `{"version":"1.0.1","metadata":{"type":"comicSeries","publisher":"","name":"作品",` +
 		`"comicid":"1","year":0,"booktype":"comic","age_rating":"","comic_image":"cover.png",` +
 		`"total_issues":1,"publication_run":"","status":"Continuing",` +
