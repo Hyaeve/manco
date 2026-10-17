@@ -54,15 +54,19 @@ func (s *stubSubscriptions) UpdateSubscriptionCheck(_ context.Context, id int64,
 }
 
 type stubDownloads struct {
-	jobs     []model.DownloadJob
-	notified int
-	retried  []model.Subscription
-	retryN   int
+	jobs         []model.DownloadJob
+	notified     int
+	retried      []model.Subscription
+	retryN       int
+	createStatus string
 }
 
 func (d *stubDownloads) CreateDownloadJob(_ context.Context, job model.DownloadJob) (model.DownloadJob, error) {
 	d.jobs = append(d.jobs, job)
 	job.ID = int64(len(d.jobs))
+	if d.createStatus != "" {
+		job.Status = d.createStatus
+	}
 	return job, nil
 }
 
@@ -199,6 +203,26 @@ func TestCheckOneDetailedReportsNewAndQueued(t *testing.T) {
 	}
 	if result.NewChapters != 2 || result.Queued != 2 {
 		t.Fatalf("check result = %+v, want 2 new and 2 queued", result)
+	}
+}
+
+func TestQueueAllSkipsCompletedRecordsWithoutLocalFileChecks(t *testing.T) {
+	subscription := model.Subscription{
+		ID:           1,
+		SourceID:     "stub",
+		ComicID:      "1",
+		Title:        "测试作品",
+		Enabled:      true,
+		AutoDownload: true,
+	}
+	subscriptions := &stubSubscriptions{items: []model.Subscription{subscription}}
+	downloads := &stubDownloads{createStatus: "completed"}
+	queued, skipped, err := newTestScheduler(testChapters(), subscriptions, downloads).QueueAll(context.Background(), subscription)
+	if err != nil {
+		t.Fatalf("QueueAll returned error: %v", err)
+	}
+	if queued != 0 || skipped != len(testChapters()) {
+		t.Fatalf("QueueAll queued=%d skipped=%d, want 0/%d", queued, skipped, len(testChapters()))
 	}
 }
 

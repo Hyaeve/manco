@@ -292,9 +292,9 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 	return job, nil
 }
 
-// QueueAll queues every chapter in a subscription. Completed chapters are
-// returned as skipped by the store and retain their existing files, so this is
-// safe to use both for initial full subscriptions and later full refreshes.
+// QueueAll queues every chapter in a subscription. Completed download records
+// are authoritative and are returned as skipped; fill does not verify whether
+// the local file still exists.
 func (s *Scheduler) QueueAll(ctx context.Context, subscription model.Subscription) (queued, skipped int, err error) {
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {

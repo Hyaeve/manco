@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/sources"
+	"github.com/hyaeve/manco/internal/store"
 )
 
 type lazyFilterFixture struct {
@@ -224,7 +226,7 @@ func TestSubscriptionCoversPreferLocalThenDiscoverCache(t *testing.T) {
 	}
 }
 
-func TestLocalizeCustomSourceIconKeepsRemoteFallbackWhenDownloadFails(t *testing.T) {
+func TestLocalizeCustomSourceIconCreatesLocalFallbackWhenDownloadFails(t *testing.T) {
 	iconServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -238,13 +240,68 @@ func TestLocalizeCustomSourceIconKeepsRemoteFallbackWhenDownloadFails(t *testing
 	remote := iconServer.URL + "/missing.png"
 	got := server.localizeCustomSourceIcon(context.Background(), model.CustomSource{
 		ID:   "ext-missing",
+		Kind: source.KindOther,
 		Icon: remote,
 	})
-	if got.Icon != remote {
-		t.Fatalf("fallback icon = %q, want %q", got.Icon, remote)
+	if got.Icon != "/api/icons/ext-missing" {
+		t.Fatalf("fallback icon = %q, want local API URL", got.Icon)
 	}
-	if cache.Has("ext-missing") {
-		t.Fatal("failed download must not be exposed as a cached icon")
+	if !cache.Has("ext-missing") {
+		t.Fatal("failed download must create an indexed local type fallback")
+	}
+	items := cache.List()
+	if len(items) != 1 || items[0].ID != "ext-missing" || filepath.Ext(items[0].File) != ".svg" {
+		t.Fatalf("fallback icon missing from library index: %+v", items)
+	}
+}
+
+func TestLocalizeCustomSourceIconSavesDataURIIcon(t *testing.T) {
+	cache, err := iconcache.New(t.TempDir(), http.DefaultClient)
+	if err != nil {
+		t.Fatalf("iconcache.New: %v", err)
+	}
+	server := &Server{icons: cache}
+	got := server.localizeCustomSourceIcon(context.Background(), model.CustomSource{
+		ID:   "ext-data-uri",
+		Kind: source.KindComic,
+		Icon: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64'/%3E%3C/svg%3E",
+	})
+	if got.Icon != "/api/icons/ext-data-uri" || !cache.Has("ext-data-uri") {
+		t.Fatalf("data URI icon was not indexed locally: %q", got.Icon)
+	}
+}
+
+func TestEnsureCustomSourceIconsBackfillsExistingSources(t *testing.T) {
+	ctx := context.Background()
+	repository, err := store.Open(filepath.Join(t.TempDir(), "manco.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	saved, err := repository.UpsertCustomSource(ctx, model.CustomSource{
+		ID:      "ext-existing",
+		Name:    "已有来源",
+		Kind:    source.KindBook,
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create custom source: %v", err)
+	}
+	cache, err := iconcache.New(t.TempDir(), http.DefaultClient)
+	if err != nil {
+		t.Fatalf("iconcache.New: %v", err)
+	}
+	server := &Server{store: repository, icons: cache}
+	server.ensureCustomSourceIcons(ctx)
+	if !cache.Has(saved.ID) {
+		t.Fatal("existing source icon was not backfilled")
+	}
+	updated, err := repository.CustomSource(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("reload custom source: %v", err)
+	}
+	if updated.Icon != "/api/icons/ext-existing" {
+		t.Fatalf("persisted icon = %q, want local URL", updated.Icon)
 	}
 }
 
@@ -390,5 +447,57 @@ func TestScanLocalDirIncludesOtherSourceFiles(t *testing.T) {
 	}
 	if extensions["mp4"] != "other" || extensions["webm"] != "other" {
 		t.Fatalf("other source file kinds = %+v", extensions)
+	}
+}
+
+func TestPruneTemporarySubscriptionsKeepsFailedDownloads(t *testing.T) {
+	ctx := context.Background()
+	repository, err := store.Open(filepath.Join(t.TempDir(), "manco.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	server := &Server{store: repository}
+	subscription, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID:  "direct-source",
+		ComicID:   "direct-work",
+		Title:     "直接下载作品",
+		Enabled:   true,
+		CronExpr:  "",
+		Temporary: true,
+	})
+	if err != nil {
+		t.Fatalf("create temporary subscription: %v", err)
+	}
+	job, err := repository.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID:     subscription.SourceID,
+		ComicID:      subscription.ComicID,
+		ComicTitle:   subscription.Title,
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第1话",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create direct download job: %v", err)
+	}
+	if err := repository.UpdateDownloadJob(ctx, job.ID, "failed", 1, 0, "", "boom"); err != nil {
+		t.Fatalf("mark direct download failed: %v", err)
+	}
+
+	server.pruneTemporarySubscriptions(ctx)
+	kept, err := repository.Subscription(ctx, subscription.ID)
+	if err != nil {
+		t.Fatalf("failed temporary subscription was removed: %v", err)
+	}
+	if kept.CronExpr != "" {
+		t.Fatalf("failed temporary subscription cron = %q, want empty", kept.CronExpr)
+	}
+
+	if err := repository.UpdateDownloadJob(ctx, job.ID, "completed", 1, 1, "/tmp/直接下载作品/第1话.cbz", ""); err != nil {
+		t.Fatalf("complete direct download: %v", err)
+	}
+	server.pruneTemporarySubscriptions(ctx)
+	if _, err := repository.Subscription(ctx, subscription.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("completed temporary subscription still exists, error = %v", err)
 	}
 }

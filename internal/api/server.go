@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -57,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.5.1"
+	appVersion    = "v0.6.5.2"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -641,6 +642,12 @@ func (s *Server) localizeCustomSourceIcon(ctx context.Context, item model.Custom
 		item.Icon = s.icons.URL(id)
 		return item
 	}
+	if data, ok := decodeIconDataURI(item.Icon); ok {
+		if _, err := s.icons.Save(id, data, ""); err == nil {
+			item.Icon = s.icons.URL(id)
+			return item
+		}
+	}
 	sourceURL := remoteIconURL(item.Icon)
 	if sourceURL == "" {
 		sourceURL = strings.TrimSpace(sourceIconSources[id])
@@ -652,14 +659,69 @@ func (s *Server) localizeCustomSourceIcon(ctx context.Context, item model.Custom
 		}
 	}
 	if sourceURL == "" {
-		return item
+		return s.saveFallbackSourceIcon(item)
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	if _, err := s.icons.Fetch(fetchCtx, id, sourceURL); err != nil {
-		return item
+		return s.saveFallbackSourceIcon(item)
 	}
 	item.Icon = s.icons.URL(id)
+	return item
+}
+
+func decodeIconDataURI(value string) ([]byte, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(strings.ToLower(value), "data:") {
+		return nil, false
+	}
+	comma := strings.Index(value, ",")
+	if comma < 0 {
+		return nil, false
+	}
+	meta := value[5:comma]
+	payload := value[comma+1:]
+	var data []byte
+	var err error
+	if strings.Contains(strings.ToLower(meta), ";base64") {
+		payload = strings.Join(strings.Fields(payload), "")
+		data, err = base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			data, err = base64.RawStdEncoding.DecodeString(payload)
+		}
+	} else {
+		var decoded string
+		decoded, err = url.PathUnescape(payload)
+		data = []byte(decoded)
+	}
+	if err != nil || len(data) == 0 {
+		return nil, false
+	}
+	return data, true
+}
+
+func (s *Server) saveFallbackSourceIcon(item model.CustomSource) model.CustomSource {
+	if s.icons == nil || strings.TrimSpace(item.ID) == "" {
+		return item
+	}
+	accent := "#e07a2f"
+	glyph := `<path d="M18 24h28M18 32h28M18 40h18"/><path d="M14 16h36v32H14z"/>`
+	switch source.KindOf(model.SourceInfo{Kind: item.Kind}) {
+	case source.KindBook:
+		accent = "#4f7cff"
+		glyph = `<path d="M16 16h24a8 8 0 0 1 8 8v24H24a8 8 0 0 0-8 8z"/><path d="M24 16v32"/>`
+	case source.KindOther:
+		accent = "#3fa66a"
+		glyph = `<rect x="14" y="16" width="36" height="32" rx="6"/><path d="m27 25 12 7-12 7z"/>`
+	}
+	payload := []byte(fmt.Sprintf(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#fff7ed"/><g fill="none" stroke="%s" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">%s</g></svg>`,
+		accent,
+		glyph,
+	))
+	if _, err := s.icons.Save(item.ID, payload, ".svg"); err == nil {
+		item.Icon = s.icons.URL(item.ID)
+	}
 	return item
 }
 
@@ -677,6 +739,9 @@ func (s *Server) handleListIcons(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
 		return
 	}
+	backfillCtx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	s.ensureCustomSourceIcons(backfillCtx)
+	cancel()
 	entries := s.icons.List()
 	items := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
@@ -688,6 +753,65 @@ func (s *Server) handleListIcons(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// ensureCustomSourceIcons backfills icons for sources added before local icon
+// indexing was enforced. Every custom source receives either its downloaded
+// icon or a type-specific local SVG fallback.
+func (s *Server) ensureCustomSourceIcons(ctx context.Context) {
+	if s.icons == nil || s.store == nil {
+		return
+	}
+	items, err := s.store.ListCustomSources(ctx)
+	if err != nil {
+		return
+	}
+	missing := make([]model.CustomSource, 0, len(items))
+	for _, item := range items {
+		if !s.icons.Has(item.ID) {
+			missing = append(missing, item)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	type result struct {
+		index int
+		item  model.CustomSource
+	}
+	results := make(chan result, len(missing))
+	work := make(chan int)
+	workers := 4
+	if len(missing) < workers {
+		workers = len(missing)
+	}
+	var wait sync.WaitGroup
+	wait.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wait.Done()
+			for index := range work {
+				item := missing[index]
+				results <- result{index: index, item: s.localizeCustomSourceIcon(ctx, item)}
+			}
+		}()
+	}
+	for index := range missing {
+		work <- index
+	}
+	close(work)
+	wait.Wait()
+	close(results)
+	for outcome := range results {
+		item := outcome.item
+		original := missing[outcome.index]
+		if strings.TrimSpace(item.Icon) == strings.TrimSpace(original.Icon) {
+			continue
+		}
+		if _, err := s.store.UpsertCustomSource(ctx, item); err != nil {
+			s.logger.Printf("api: persist localized source icon %s: %v", item.ID, err)
+		}
+	}
 }
 
 // handleUploadIcon 接收用户上传的图标图片并保存到本地图标库。
@@ -3063,8 +3187,8 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 }
 
 // persistSubscriptionsIfChanged 只在内容变化时重写 configstore 的订阅快照。
-// pruneTemporarySubscriptions 移除「临时下载卡片」：该作品不再有下载/排队任务
-// 时删掉卡片，已经下载到本地的文件保持不动。
+// pruneTemporarySubscriptions 移除「临时下载卡片」：只有仍有进行中或失败任务
+// 时保留卡片；完成、取消且无其他任务时移除，已经下载到本地的文件保持不动。
 func (s *Server) pruneTemporarySubscriptions(ctx context.Context) {
 	items, err := s.store.ListSubscriptions(ctx)
 	if err != nil {
@@ -3074,8 +3198,21 @@ func (s *Server) pruneTemporarySubscriptions(ctx context.Context) {
 		if !item.Temporary {
 			continue
 		}
-		jobs, err := s.store.UnfinishedDownloadJobsByComic(ctx, item.SourceID, item.ComicID)
-		if err != nil || len(jobs) > 0 {
+		jobs, err := s.store.DownloadJobsByComic(ctx, item.SourceID, item.ComicID)
+		if err != nil {
+			continue
+		}
+		retain := false
+		for _, job := range jobs {
+			switch job.Status {
+			case "queued", "running", "waiting", "paused", "failed":
+				retain = true
+			}
+			if retain {
+				break
+			}
+		}
+		if retain {
 			continue
 		}
 		if err := s.store.DeleteSubscription(ctx, item.ID); err != nil {
@@ -3876,8 +4013,9 @@ func (s *Server) retryFailedForSubscription(ctx context.Context, subscription mo
 	return retried
 }
 
-// handleFillSubscription compares the source chapter list with the completed
-// download records and queues only the missing chapters.
+// handleFillSubscription compares the source chapter list with completed
+// download records only. Local file presence is intentionally not consulted:
+// the completion record is the authoritative fill state for a subscription.
 func (s *Server) handleFillSubscription(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -3889,8 +4027,6 @@ func (s *Server) handleFillSubscription(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	// 已完成的记录若对应的 CBZ 文件已被删除，也视为缺失并重新入队。
-	s.requeueMissingFiles(r.Context(), subscription)
 	queued, skipped, err := s.scheduler.QueueAll(r.Context(), subscription)
 	if err != nil {
 		if errors.Is(err, scheduler.ErrNoChapters) {
@@ -3924,28 +4060,6 @@ func (s *Server) handleScrapeSubscription(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": updated})
-}
-
-// requeueMissingFiles resets completed jobs whose CBZ file no longer exists on
-// disk so the following queue pass downloads them again.
-func (s *Server) requeueMissingFiles(ctx context.Context, subscription model.Subscription) {
-	jobs, err := s.store.CompletedDownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
-	if err != nil {
-		s.logger.Printf("api: list completed jobs %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
-		return
-	}
-	for _, job := range jobs {
-		path := strings.TrimSpace(job.FilePath)
-		if path == "" {
-			continue
-		}
-		if _, statErr := os.Stat(path); statErr == nil {
-			continue
-		}
-		if err := s.engine.Retry(ctx, job.ID); err != nil {
-			s.logger.Printf("api: requeue missing file job %d: %v", job.ID, err)
-		}
-	}
 }
 
 func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {

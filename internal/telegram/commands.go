@@ -37,7 +37,7 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 	case "/subscriptions", "订阅", "subscriptions":
 		s.replySubscriptions(ctx, chat)
 	case "/check", "检查全部", "check":
-		go s.replyCheckAll(ctx, chat)
+		go s.replyCheck(ctx, chat, argument)
 	case "/sources", "内容源", "sources":
 		s.replySources(ctx, chat)
 	case "/s", "搜索", "s":
@@ -121,7 +121,7 @@ func helpText() string {
 		"<b>Manco 指令</b>",
 		"/start 开始",
 		"/subscriptions 查看订阅清单",
-		"/check 检查全部订阅更新",
+		"/check [作品名] 检查已启用追更订阅或单项",
 		"/sources 查看已添加内容源",
 		"/s 关键词 全局搜索",
 		"搜索漫画 关键词",
@@ -173,20 +173,39 @@ type subscriptionCheckOutcome struct {
 	Err          error
 }
 
-// replyCheckAll 检查全部订阅卡片，并复用同一条消息展示汇总结果。
-func (s *Service) replyCheckAll(ctx context.Context, chat string) {
-	items, err := s.app.BotSubscriptions(ctx)
+// replyCheck checks every enabled subscription by default. A supplied title
+// checks that single subscription, including a disabled one.
+func (s *Service) replyCheck(ctx context.Context, chat, query string) {
+	allItems, err := s.app.BotSubscriptions(ctx)
 	if err != nil {
 		s.sendMessage(ctx, chat, "读取订阅清单失败："+err.Error(), nil)
 		return
 	}
+	query = strings.TrimSpace(query)
+	items := checkSubscriptionTargets(allItems, query)
 	if len(items) == 0 {
-		s.sendMessage(ctx, chat, "订阅清单是空的。", nil)
+		if query == "" {
+			s.sendMessage(ctx, chat, "订阅清单里没有已启用且配置追更的订阅。", nil)
+		} else {
+			s.sendMessage(ctx, chat, fmt.Sprintf("订阅清单里没有找到「%s」。", query), nil)
+		}
 		return
+	}
+	if query != "" && len(items) > 1 {
+		lines := []string{fmt.Sprintf("「%s」匹配到 %d 个订阅，请使用更完整的作品名称：", query, len(items))}
+		for _, item := range items {
+			lines = append(lines, "· "+item.Title)
+		}
+		s.sendMessage(ctx, chat, strings.Join(lines, "\n"), nil)
+		return
+	}
+	progress := fmt.Sprintf("<b>正在检查已启用的追更订阅</b>\n共 %d 个订阅，请稍候。", len(items))
+	if query != "" {
+		progress = fmt.Sprintf("<b>正在检查《%s》</b>", html.EscapeString(items[0].Title))
 	}
 	messageID, err := s.callMethod(ctx, "sendMessage", map[string]any{
 		"chat_id":    chat,
-		"text":       fmt.Sprintf("<b>正在检查订阅更新</b>\n共 %d 个订阅，请稍候。", len(items)),
+		"text":       progress,
 		"parse_mode": "HTML",
 	})
 	if err != nil {
@@ -227,6 +246,39 @@ func (s *Service) replyCheckAll(ctx context.Context, chat string) {
 		}
 	}
 	s.sendMessage(ctx, chat, report, nil)
+}
+
+// checkSubscriptionTargets returns enabled subscriptions with a Cron schedule
+// for a batch check.
+// When query is present, exact title matches win over partial matches, and
+// disabled subscriptions are eligible for a deliberate single-item check.
+func checkSubscriptionTargets(items []BotSubscription, query string) []BotSubscription {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		result := make([]BotSubscription, 0, len(items))
+		for _, item := range items {
+			if item.Enabled && strings.TrimSpace(item.CronExpr) != "" {
+				result = append(result, item)
+			}
+		}
+		return result
+	}
+	var exact []BotSubscription
+	var partial []BotSubscription
+	needle := strings.ToLower(query)
+	for _, item := range items {
+		title := strings.ToLower(strings.TrimSpace(item.Title))
+		switch {
+		case title == needle:
+			exact = append(exact, item)
+		case strings.Contains(title, needle):
+			partial = append(partial, item)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return partial
 }
 
 func (s *Service) replySubscriptionAction(ctx context.Context, chat, action, title string) {

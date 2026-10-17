@@ -1381,29 +1381,34 @@ function onDragOver(item, event) {
   if ((dragged.kind || 'comic') !== (item.kind || 'comic')) return
   event.preventDefault()
   dragOverId.value = item.id
-  const list = sources.value
-  const from = list.findIndex((row) => row.id === dragId.value)
-  const to = list.findIndex((row) => row.id === item.id)
-  if (from < 0 || to < 0 || from === to) return
-  const next = [...list]
-  const [moved] = next.splice(from, 1)
-  next.splice(to, 0, moved)
-  sources.value = next
 }
 
-async function onDrop() {
+async function onDrop(target) {
+  const draggedID = dragId.value
+  const kind = activeKind.value
   dragId.value = ''
   dragOverId.value = ''
+  if (!draggedID || !target || draggedID === target.id || target.builtin) return
+  const dragged = sources.value.find((item) => item.id === draggedID)
+  if (!dragged || dragged.builtin || (dragged.kind || 'comic') !== (target.kind || 'comic')) return
+  const list = [...sources.value]
+  const from = list.findIndex((item) => item.id === draggedID)
+  const to = list.findIndex((item) => item.id === target.id)
+  if (from < 0 || to < 0 || from === to) return
+  const [moved] = list.splice(from, 1)
+  list.splice(to, 0, moved)
+  sources.value = list
   // 只持久化插件源顺序，内置源始终按注册表顺序排在最前。
-  const ids = visibleSources.value.filter((item) => !item.builtin).map((item) => item.id)
+  const ids = list.filter((item) => !item.builtin && (item.kind || 'comic') === kind).map((item) => item.id)
   if (!ids.length) return
   try {
     // 用独立入口保存顺序：以前借某个内容源的 PATCH 夹带 order，目标源一旦
     // 查不到就整条请求 404，表现成「拖了但没生效」。
-    await api.updateSourceOrder({ kind: activeKind.value, order: ids })
+    await api.updateSourceOrder({ kind, order: ids })
     notify('来源顺序已保存', 'success')
   } catch (err) {
     notify(`保存排序失败：${err.message}`, 'error')
+    await load()
   }
 }
 
@@ -1473,7 +1478,7 @@ function onDragEnd() {
         @click="handleSourceCardClick(item, index, $event)"
         @contextmenu.prevent="enterSourceSelection(item, index, $event)"
         @dragover="onDragOver(item, $event)"
-        @drop.prevent="onDrop"
+        @drop.prevent="onDrop(item)"
         @dragend="onDragEnd"
       >
         <button

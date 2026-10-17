@@ -291,9 +291,6 @@ func (s *Store) DownloadJobStats(ctx context.Context) (map[string]model.Download
 	return stats, rows.Err()
 }
 
-// CompletedDownloadJobsByComic returns every completed chapter for a work so
-// maintenance actions do not depend on the general job-list page limit.
-
 func (s *Store) ensureColumn(ctx context.Context, table, column, declaration string) error {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
@@ -1381,6 +1378,10 @@ func (s *Store) UpdateUsername(ctx context.Context, id int64, username string) e
 	}
 	return nil
 }
+
+// CompletedDownloadJobsByComic returns every completed chapter for one
+// subscription work. Fill state is deliberately unbounded by task-list page
+// limits, history-size caps or age-based activity windows.
 func (s *Store) CompletedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
 	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status = 'completed' ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
 	if err != nil {

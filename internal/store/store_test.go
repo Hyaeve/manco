@@ -509,6 +509,73 @@ func TestCompletedDownloadJobsByComic(t *testing.T) {
 	}
 }
 
+func TestCompletedDownloadJobsByComicIgnoresHistoryLimits(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	const total = 10050
+
+	tx, err := repository.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	statement, err := tx.PrepareContext(ctx, `
+		INSERT INTO download_jobs(
+			source_id, comic_id, comic_title, chapter_id, chapter_title, chapter_order,
+			status, file_path, created_at, updated_at, finished_at
+		) VALUES(?, ?, ?, ?, ?, ?, 'completed', ?, '2020-01-01 00:00:00', '2020-01-01 00:00:00', '2020-01-01 00:00:00')`)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("prepare insert: %v", err)
+	}
+	for index := 0; index < total; index++ {
+		chapter := strconv.Itoa(index + 1)
+		if _, err := statement.ExecContext(ctx,
+			"subscription-source",
+			"subscription-work",
+			"长期订阅作品",
+			"chapter-"+chapter,
+			"第"+chapter+"话",
+			float64(index+1),
+			"/downloads/长期订阅作品/第"+chapter+"话.cbz",
+		); err != nil {
+			_ = statement.Close()
+			_ = tx.Rollback()
+			t.Fatalf("insert completed row %d: %v", index, err)
+		}
+	}
+	if _, err := statement.ExecContext(ctx,
+		"subscription-source",
+		"other-work",
+		"其他作品",
+		"other-1",
+		"第1话",
+		1.0,
+		"/downloads/其他作品/第1话.cbz",
+	); err != nil {
+		_ = statement.Close()
+		_ = tx.Rollback()
+		t.Fatalf("insert unrelated completed row: %v", err)
+	}
+	if err := statement.Close(); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("close insert statement: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit completed rows: %v", err)
+	}
+
+	jobs, err := repository.CompletedDownloadJobsByComic(ctx, "subscription-source", "subscription-work")
+	if err != nil {
+		t.Fatalf("list completed subscription jobs: %v", err)
+	}
+	if len(jobs) != total {
+		t.Fatalf("completed subscription jobs = %d, want %d", len(jobs), total)
+	}
+	if jobs[0].ChapterOrder != 1 || jobs[len(jobs)-1].ChapterOrder != total {
+		t.Fatalf("completed subscription record order/range mismatch: first=%v last=%v", jobs[0].ChapterOrder, jobs[len(jobs)-1].ChapterOrder)
+	}
+}
+
 func TestListDownloadJobsKeepsCompletedWhenManyActive(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

@@ -52,19 +52,21 @@ const rootOrder = ref([])
 const activeRoot = ref('')
 const heroTint = ref('')
 
-// 二级排序：默认按执行时间（目录修改时间）降序，选择持久化。
+// 本地仓库排序：默认标题升序，排序字段与方向组合持久化。
 const SORT_STORAGE_KEY = 'manco.library.sort.v1'
 const sortOptions = [
-  { value: 'executed', label: '执行时间' },
   { value: 'created', label: '添加时间' },
   { value: 'title', label: '标题' },
 ]
-const sortMode = ref('executed')
-const sortDesc = ref(true)
+const sortMode = ref('title')
+const sortDesc = ref(false)
 try {
   const saved = JSON.parse(window.localStorage.getItem(SORT_STORAGE_KEY) || 'null')
-  if (saved && sortOptions.some((option) => option.value === saved.mode)) sortMode.value = saved.mode
-  if (saved && typeof saved.desc === 'boolean') sortDesc.value = saved.desc
+  const savedModeValid = saved && sortOptions.some((option) => option.value === saved.mode)
+  if (savedModeValid) {
+    sortMode.value = saved.mode
+    if (typeof saved.desc === 'boolean') sortDesc.value = saved.desc
+  }
 } catch {
   // 忽略损坏的本地设置
 }
@@ -94,8 +96,8 @@ const sortedItems = computed(() => {
       left = String(a.createdAt || a.updatedAt || '')
       right = String(b.createdAt || b.updatedAt || '')
     } else {
-      left = String(a.updatedAt || '')
-      right = String(b.updatedAt || '')
+      left = String(a.title || a.path || '')
+      right = String(b.title || b.path || '')
     }
     if (left === right) return 0
     return (left > right ? 1 : -1) * direction

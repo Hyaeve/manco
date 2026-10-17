@@ -47,10 +47,11 @@ type BotSource struct {
 
 // BotSubscription is the display shape of a subscription for the bot.
 type BotSubscription struct {
-	ID      int64
-	Source  string
-	Title   string
-	Enabled bool
+	ID       int64
+	Source   string
+	Title    string
+	Enabled  bool
+	CronExpr string
 }
 
 // BotCheckResult summarises one subscription check.
@@ -302,7 +303,7 @@ func (s *Service) registerCommands(ctx context.Context) {
 	payload := `{"commands":[` +
 		`{"command":"start","description":"开始 / 查看帮助"},` +
 		`{"command":"subscriptions","description":"查看订阅清单"},` +
-		`{"command":"check","description":"检查全部订阅更新"},` +
+		`{"command":"check","description":"检查已启用追更订阅"},` +
 		`{"command":"sources","description":"查看已添加内容源"},` +
 		`{"command":"s","description":"搜索作品"}` +
 		`]}`

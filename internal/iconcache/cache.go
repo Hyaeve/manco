@@ -3,6 +3,7 @@
 package iconcache
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -277,6 +278,8 @@ func iconExtension(sourceURL, contentType string, data []byte) string {
 			return ".png"
 		case "image/webp":
 			return ".webp"
+		case "image/svg+xml":
+			return ".svg"
 		case "image/x-icon", "image/vnd.microsoft.icon", "image/ico":
 			return ".ico"
 		}
@@ -291,6 +294,11 @@ func iconExtension(sourceURL, contentType string, data []byte) string {
 	case len(data) >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 1 && data[3] == 0:
 		return ".ico"
 	}
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("<svg")) ||
+		(bytes.HasPrefix(trimmed, []byte("<?xml")) && bytes.Contains(trimmed[:min(len(trimmed), 512)], []byte("<svg"))) {
+		return ".svg"
+	}
 	switch strings.ToLower(filepath.Ext(sourceURL)) {
 	case ".jpg", ".jpeg":
 		return ".jpg"
@@ -300,6 +308,8 @@ func iconExtension(sourceURL, contentType string, data []byte) string {
 		return ".webp"
 	case ".ico":
 		return ".ico"
+	case ".svg":
+		return ".svg"
 	}
 	return ""
 }

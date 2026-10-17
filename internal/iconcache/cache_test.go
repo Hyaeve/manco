@@ -64,6 +64,26 @@ func TestSaveReplacesPreviousExtension(t *testing.T) {
 	}
 }
 
+func TestSaveIndexesSVGIcon(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := New(dir, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64"/></svg>`)
+	entry, err := cache.Save("ext-svg", svg, "")
+	if err != nil {
+		t.Fatalf("Save SVG: %v", err)
+	}
+	if entry.File != "ext-svg.svg" {
+		t.Fatalf("entry file = %q, want ext-svg.svg", entry.File)
+	}
+	items := cache.List()
+	if len(items) != 1 || items[0].ID != "ext-svg" {
+		t.Fatalf("SVG icon missing from library list: %+v", items)
+	}
+}
+
 func TestFetchFallsBackWhenMissing(t *testing.T) {
 	dir := t.TempDir()
 	cache, err := New(dir, nil)

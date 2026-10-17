@@ -15,6 +15,7 @@ func TestSplitCommand(t *testing.T) {
 		{"/start", "/start", ""},
 		{"/subscriptions@manco_bot", "/subscriptions", ""},
 		{"/check@manco_bot", "/check", ""},
+		{"/check 星海镖师", "/check", "星海镖师"},
 		{"/s 星海镖师", "/s", "星海镖师"},
 		{"搜索", "搜索", ""},
 	}
@@ -23,6 +24,40 @@ func TestSplitCommand(t *testing.T) {
 		if command != item.command || arg != item.arg {
 			t.Fatalf("splitCommand(%q) = %q, %q; want %q, %q", item.input, command, arg, item.command, item.arg)
 		}
+	}
+}
+
+func TestCheckSubscriptionTargets(t *testing.T) {
+	items := []BotSubscription{
+		{Title: "作品一", Source: "包子漫画", Enabled: true, CronExpr: "0 21 * * 5"},
+		{Title: "作品二", Source: "哔咔漫画", Enabled: false, CronExpr: "0 21 * * 5"},
+		{Title: "凡人修仙传", Source: "禁漫天堂", Enabled: true, CronExpr: "0 21 * * 5"},
+		{Title: "凡人修仙传外传", Source: "包子漫画", Enabled: true, CronExpr: ""},
+	}
+	enabled := checkSubscriptionTargets(items, "")
+	if len(enabled) != 2 {
+		t.Fatalf("enabled targets = %+v, want 2 scheduled subscriptions", enabled)
+	}
+	for _, item := range enabled {
+		if !item.Enabled || strings.TrimSpace(item.CronExpr) == "" {
+			t.Fatalf("batch check included non-tracking item: %+v", item)
+		}
+	}
+	single := checkSubscriptionTargets(items, "作品二")
+	if len(single) != 1 || single[0].Title != "作品二" || single[0].Enabled {
+		t.Fatalf("named check = %+v, want disabled 作品二", single)
+	}
+	exact := checkSubscriptionTargets(items, "凡人修仙传")
+	if len(exact) != 1 || exact[0].Title != "凡人修仙传" {
+		t.Fatalf("exact title preference = %+v", exact)
+	}
+	explicitNoCron := checkSubscriptionTargets(items, "凡人修仙传外传")
+	if len(explicitNoCron) != 1 || explicitNoCron[0].Title != "凡人修仙传外传" {
+		t.Fatalf("explicit no-Cron check = %+v", explicitNoCron)
+	}
+	partial := checkSubscriptionTargets(items, "作品")
+	if len(partial) != 2 {
+		t.Fatalf("partial targets = %+v, want 作品一 and 作品二", partial)
 	}
 }
 

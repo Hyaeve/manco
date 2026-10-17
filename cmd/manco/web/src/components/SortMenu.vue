@@ -5,7 +5,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ArrowDown, ArrowUp, Check } from 'lucide-vue-next'
 
 const props = defineProps({
-  // [{ value: 'executed', label: '执行时间' }, ...]
+  // [{ value: 'title', label: '标题' }, ...]
   options: { type: Array, required: true },
   mode: { type: String, required: true },
   desc: { type: Boolean, default: true },

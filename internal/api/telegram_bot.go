@@ -141,10 +141,11 @@ func (s *Server) BotSubscriptions(ctx context.Context) ([]telegram.BotSubscripti
 			name = adapter.Info().Name
 		}
 		result = append(result, telegram.BotSubscription{
-			ID:      item.ID,
-			Source:  name,
-			Title:   item.Title,
-			Enabled: item.Enabled,
+			ID:       item.ID,
+			Source:   name,
+			Title:    item.Title,
+			Enabled:  item.Enabled,
+			CronExpr: item.CronExpr,
 		})
 	}
 	return result, nil
@@ -179,13 +180,13 @@ func (s *Server) BotArchive(ctx context.Context, subscriptionID int64) error {
 	return nil
 }
 
-// BotFill queues missing chapters and reports how many were queued or skipped.
+// BotFill queues chapters missing from completion records and reports how many
+// were queued or skipped.
 func (s *Server) BotFill(ctx context.Context, subscriptionID int64) (int, int, error) {
 	subscription, err := s.store.Subscription(ctx, subscriptionID)
 	if err != nil {
 		return 0, 0, err
 	}
-	s.requeueMissingFiles(ctx, subscription)
 	return s.scheduler.QueueAll(ctx, subscription)
 }
 
