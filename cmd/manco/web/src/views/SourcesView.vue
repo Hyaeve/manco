@@ -395,13 +395,23 @@ async function removeSelectedSources() {
   })
   if (!confirmed) return
   busy.value = 'source-batch-delete'
+  let done = 0
+  let failed = 0
   try {
-    for (const item of rows) await api.deleteCustomSource(item.id)
-    notify(`已卸载 ${rows.length} 个内容源`, 'success')
-    clearSourceSelection()
+    for (const item of rows) {
+      try {
+        await api.deleteCustomSource(item.id)
+        done += 1
+      } catch {
+        failed += 1
+      }
+    }
+    if (done > 0) clearSourceSelection()
     await load()
-  } catch (err) {
-    notify(`卸载失败：${err.message}`, 'error')
+    notify(
+      failed ? `卸载完成：成功 ${done} 项，失败 ${failed} 项` : `已卸载 ${done} 个内容源`,
+      failed ? 'warning' : 'success',
+    )
   } finally {
     busy.value = ''
   }

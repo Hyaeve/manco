@@ -196,9 +196,9 @@ async function batchRestore() {
     }
   } finally {
     batchBusy.value = false
-    clearSelection()
   }
   notify(failed ? `移出归档完成：成功 ${done} 项，失败 ${failed} 项` : `已将 ${done} 个订阅移出归档`, failed ? 'warning' : 'success')
+  if (done > 0) clearSelection()
   await load()
 }
 

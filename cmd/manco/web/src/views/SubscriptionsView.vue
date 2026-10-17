@@ -728,6 +728,7 @@ async function runBatch({ title, message, confirmText, danger, action, successTe
   }
   notify(failed ? `${successText}：成功 ${done} 项，失败 ${failed} 项` : `${successText}：共 ${done} 项`, failed ? 'warning' : 'success')
   await load(true)
+  if (done > 0) clearSubscriptionSelection()
 }
 
 function batchCheck() {

@@ -4723,8 +4723,9 @@ svg.source-editor-icon {
 /* 通知条目：作品相关用封面缩略图占据左侧。 */
 .notification-list .notification-cover {
   flex: 0 0 auto;
-  width: 32px;
-  height: 44px;
+  align-self: center;
+  width: 42px;
+  height: 60px;
   border-radius: 6px;
   object-fit: cover;
   background: var(--surface-muted);
@@ -4893,12 +4894,16 @@ svg.source-editor-icon {
 .source-selection-bar,
 .local-selection-bar {
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 6px 12px;
+  border-radius: 16px;
+  padding: 10px 14px;
   background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(12px) saturate(1.08);
   -webkit-backdrop-filter: blur(12px) saturate(1.08);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+}
+
+.local-selection-bar {
+  max-width: min(calc(100vw - 32px), 920px);
 }
 
 [data-theme='dark'] .selection-pill,
@@ -4913,13 +4918,36 @@ svg.source-editor-icon {
 .source-selection-bar .btn.small,
 .local-selection-bar .btn,
 .local-selection-bar .btn.small {
-  padding: 4px 10px;
+  min-height: 36px;
+  padding: 7px 11px;
   border: 0;
   border-radius: 999px;
   background: transparent;
   box-shadow: none;
   color: var(--text);
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.selection-pill .btn svg,
+.source-selection-bar .btn svg,
+.local-selection-bar .btn svg {
+  flex: 0 0 17px;
+  width: 17px;
+  height: 17px;
+}
+
+.selection-pill .selection-count,
+.source-selection-bar > span,
+.local-selection-count {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.local-selection-count svg {
+  width: 18px;
+  height: 18px;
 }
 
 .selection-pill .btn:hover:not(:disabled),
@@ -4975,11 +5003,21 @@ svg.source-editor-icon {
 .source-filter-grid .filter-chip,
 .source-filter-grid .sort-chip {
   position: relative;
-  flex: 0 1 auto;
-  width: auto;
-  min-width: 0;
-  max-width: 168px;
-  overflow: hidden;
+  overflow: visible;
+}
+
+.source-filter-grid .filter-chip {
+  flex: 1 1 180px;
+  width: clamp(160px, 16vw, 220px);
+  min-width: 160px;
+  max-width: 220px;
+}
+
+.source-filter-grid .sort-chip {
+  flex: 0 0 180px;
+  width: 180px;
+  min-width: 180px;
+  max-width: 200px;
 }
 
 .source-filter-grid .rounded-select,
@@ -5040,12 +5078,14 @@ svg.source-editor-icon {
 /* 侧栏选中态：更圆的淡橘框 + 橘色图标 + 深色文字，栏目字号/图标略放大。 */
 .sidebar nav button {
   border-radius: 14px;
-  font-size: 14.5px;
+  min-height: 47px;
+  gap: 13px;
+  font-size: 16px;
 }
 
 .sidebar nav button svg {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
 }
 
 .sidebar nav button.active {
@@ -5450,15 +5490,15 @@ svg.source-editor-icon {
   place-items: center;
   width: 116px;
   height: 116px;
-  margin-top: 18px;
+  margin-top: 40px;
 }
 
 .source-cat-loader img {
   width: 92px;
   height: 92px;
   object-fit: contain;
-  opacity: 0.5;
-  filter: saturate(0.95);
+  opacity: 0.92;
+  filter: saturate(1.04);
   animation: source-cat-breathe 2.2s ease-in-out infinite;
 }
 
@@ -5475,11 +5515,11 @@ svg.source-editor-icon {
 @keyframes source-cat-breathe {
   0%,
   100% {
-    opacity: 0.42;
+    opacity: 0.84;
     transform: translateY(2px) scale(0.96);
   }
   50% {
-    opacity: 0.62;
+    opacity: 1;
     transform: translateY(-2px) scale(1.035);
   }
 }

@@ -447,7 +447,7 @@ async function removeSelected() {
       }
     }
     if (failed) error.value = `有 ${failed} 个任务删除失败，请查看运行日志`
-    clearSelection()
+    if (failed < ids.length) clearSelection()
     await load(true)
   } finally {
     busy.value = 0
