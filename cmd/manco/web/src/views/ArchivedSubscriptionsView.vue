@@ -261,7 +261,7 @@ function jobStats(item) {
           </ContentLink>
           <span class="archive-sub">{{ item.author || '未知作者' }}</span>
           <span class="archive-sub">
-            {{ chapterCount(item) }} 话 · 最新章节：{{ item.lastChapterTitle || '尚未记录' }}
+            <template v-if="chapterCount(item) > 0">共 {{ chapterCount(item) }} 话 · </template>最新章节：{{ item.lastChapterTitle || '尚未记录' }}
           </span>
           <span class="archive-sub">归档：{{ formatArchivedAt(item) }}</span>
         </div>

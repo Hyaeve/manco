@@ -78,6 +78,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_chapter_id TEXT NOT NULL DEFAULT '',
 			last_chapter_title TEXT NOT NULL DEFAULT '',
 			last_chapter_order REAL NOT NULL DEFAULT 0,
+			chapter_count INTEGER NOT NULL DEFAULT 0,
 			comic_status TEXT NOT NULL DEFAULT '',
 			last_new_chapter_at DATETIME,
 			last_checked_at DATETIME,
@@ -201,6 +202,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "subscriptions", "cover_blur", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "chapter_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "download_jobs", "retry_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
@@ -748,7 +752,7 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 	return subscriptions, rows.Err()
 }
 
-const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary FROM subscriptions`
+const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary FROM subscriptions`
 
 // ListArchivedSubscriptions 返回归档集里的订阅：按归档时间倒序，最近归档的排在最前。
 func (s *Store) ListArchivedSubscriptions(ctx context.Context) ([]model.Subscription, error) {
@@ -789,8 +793,8 @@ func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription,
 // mounted /app/config directory, including polling baseline and archive state.
 func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
 			title = excluded.title,
 			cover = excluded.cover,
@@ -806,6 +810,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 			last_chapter_id = excluded.last_chapter_id,
 			last_chapter_title = excluded.last_chapter_title,
 			last_chapter_order = excluded.last_chapter_order,
+			chapter_count = excluded.chapter_count,
 			comic_status = excluded.comic_status,
 			last_new_chapter_at = excluded.last_new_chapter_at,
 			last_checked_at = excluded.last_checked_at,
@@ -814,7 +819,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 			archived_at = excluded.archived_at,
 			archive_reason = excluded.archive_reason,
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason)
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ChapterCount, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -823,7 +828,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
-	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary)
+	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ChapterCount, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Subscription{}, ErrNotFound
 	}

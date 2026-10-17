@@ -149,7 +149,9 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 	}
 	newest := chapters[len(chapters)-1]
 	// 每次成功拉到章节列表都刷新总章节数，供订阅卡片的「共 N 话」使用。
-	_ = s.subscriptions.UpdateSubscriptionChapterCount(ctx, subscription.ID, len(chapters))
+	if err := s.subscriptions.UpdateSubscriptionChapterCount(ctx, subscription.ID, len(chapters)); err != nil {
+		return err
+	}
 	if subscription.LastChapterID == "" {
 		// First observation only records a baseline.
 		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), false)

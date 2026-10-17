@@ -346,6 +346,47 @@ func TestUpdateSubscriptionReactivationResetsCheckCycle(t *testing.T) {
 	}
 }
 
+func TestSubscriptionChapterCountRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	sub, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID: "stub",
+		ComicID:  "chapter-count",
+		Title:    "章节统计作品",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if err := repository.UpdateSubscriptionChapterCount(ctx, sub.ID, 37); err != nil {
+		t.Fatalf("update chapter count: %v", err)
+	}
+	updated, err := repository.Subscription(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("reload subscription: %v", err)
+	}
+	if updated.ChapterCount != 37 {
+		t.Fatalf("chapter count = %d, want 37", updated.ChapterCount)
+	}
+
+	if _, err := repository.ImportSubscription(ctx, model.Subscription{
+		SourceID:     "stub",
+		ComicID:      "imported-count",
+		Title:        "恢复章节统计作品",
+		Enabled:      true,
+		ChapterCount: 58,
+	}); err != nil {
+		t.Fatalf("import subscription: %v", err)
+	}
+	imported, err := repository.SubscriptionByComic(ctx, "stub", "imported-count")
+	if err != nil {
+		t.Fatalf("reload imported subscription: %v", err)
+	}
+	if imported.ChapterCount != 58 {
+		t.Fatalf("imported chapter count = %d, want 58", imported.ChapterCount)
+	}
+}
+
 func TestListArchivedSubscriptionsSeparatesArchivedFromActive(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

@@ -14,8 +14,9 @@ import (
 )
 
 type stubSubscriptions struct {
-	items   []model.Subscription
-	updates []model.Subscription
+	items         []model.Subscription
+	updates       []model.Subscription
+	chapterCounts map[int64]int
 }
 
 func (s *stubSubscriptions) ListSubscriptions(context.Context) ([]model.Subscription, error) {
@@ -31,7 +32,11 @@ func (s *stubSubscriptions) Subscription(_ context.Context, id int64) (model.Sub
 	return model.Subscription{}, errors.New("not found")
 }
 
-func (s *stubSubscriptions) UpdateSubscriptionChapterCount(context.Context, int64, int) error {
+func (s *stubSubscriptions) UpdateSubscriptionChapterCount(_ context.Context, id int64, count int) error {
+	if s.chapterCounts == nil {
+		s.chapterCounts = make(map[int64]int)
+	}
+	s.chapterCounts[id] = count
 	return nil
 }
 
@@ -138,6 +143,9 @@ func TestFirstCheckRecordsBaselineWithoutDownloading(t *testing.T) {
 	if got := subscriptions.updates[0].LastChapterID; got != "3" {
 		t.Fatalf("baseline chapter = %q, want the newest chapter 3", got)
 	}
+	if got := subscriptions.chapterCounts[1]; got != 3 {
+		t.Fatalf("chapter count = %d, want 3", got)
+	}
 }
 
 func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
@@ -166,6 +174,9 @@ func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
 	}
 	if got := subscriptions.updates[len(subscriptions.updates)-1].LastChapterID; got != "3" {
 		t.Fatalf("baseline after check = %q, want 3", got)
+	}
+	if got := subscriptions.chapterCounts[1]; got != 3 {
+		t.Fatalf("chapter count = %d, want 3", got)
 	}
 }
 
