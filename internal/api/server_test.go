@@ -128,6 +128,24 @@ func TestBrowseOptionsFromStoredFilters(t *testing.T) {
 	}
 }
 
+func TestNextSubscriptionCheckLabel(t *testing.T) {
+	now := time.Date(2026, 10, 17, 21, 0, 0, 0, time.Local)
+	tests := []struct {
+		expression string
+		want       string
+	}{
+		{expression: "", want: "未启用自动追更"},
+		{expression: "0 9 * * *", want: "明天 09:00"},
+		{expression: "0 9 * * 1", want: "后天 09:00"},
+		{expression: "0 9 * * 3", want: "下周三 09:00"},
+	}
+	for _, test := range tests {
+		if got := nextSubscriptionCheckLabel(test.expression, now); got != test.want {
+			t.Fatalf("nextSubscriptionCheckLabel(%q) = %q, want %q", test.expression, got, test.want)
+		}
+	}
+}
+
 func TestLazyPluginFiltersCanBeNormalizedAndMarkedDisabled(t *testing.T) {
 	item := &lazyFilterFixture{
 		info: model.SourceInfo{ID: "plugin-source"},

@@ -152,6 +152,28 @@ func TestFirstCheckRecordsBaselineWithoutDownloading(t *testing.T) {
 	}
 }
 
+func TestCheckOneRefreshesSnapshotAfterSuccessfulUpdate(t *testing.T) {
+	subscriptions := &stubSubscriptions{items: []model.Subscription{{
+		ID:           1,
+		SourceID:     "stub",
+		ComicID:      "1",
+		Title:        "测试作品",
+		Enabled:      true,
+		AutoDownload: true,
+	}}}
+	scheduler := newTestScheduler(testChapters(), subscriptions, &stubDownloads{})
+	refreshes := 0
+	scheduler.SetAfterUpdate(func(context.Context) {
+		refreshes++
+	})
+	if _, err := scheduler.CheckOneDetailed(context.Background(), 1); err != nil {
+		t.Fatalf("CheckOneDetailed: %v", err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("snapshot refreshes = %d, want 1", refreshes)
+	}
+}
+
 func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
 	subscriptions := &stubSubscriptions{items: []model.Subscription{{
 		ID:               1,

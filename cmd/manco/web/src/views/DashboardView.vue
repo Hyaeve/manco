@@ -2,12 +2,17 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   AlertTriangle,
+  ArrowDownToLine,
+  Blocks,
   BookOpen,
+  CalendarClock,
   Cat,
+  ChartNoAxesCombined,
   CheckCircle2,
   Clock3,
-  Download,
   Library,
+  ListChecks,
+  ListOrdered,
   Loader2,
   Rss,
   Server,
@@ -26,6 +31,7 @@ const loading = ref(true)
 const error = ref('')
 const sourceTab = ref('comic')
 const heroIndex = ref(0)
+const heroHovering = ref(false)
 let heroTimer = 0
 
 const sourceTabs = [
@@ -35,6 +41,12 @@ const sourceTabs = [
 ]
 
 const heroComic = computed(() => latest.value[heroIndex.value] || null)
+const heroKey = computed(() =>
+  latest.value[heroIndex.value]?.path
+  || latest.value[heroIndex.value]?.comicId
+  || latest.value[heroIndex.value]?.title
+  || 'empty',
+)
 const heroCover = computed(() => heroComic.value ? localCoverUrl(heroComic.value, 1000) : '')
 const heroStyle = computed(() => ({
   '--overview-hero-image': heroCover.value ? `url("${heroCover.value}")` : 'none',
@@ -94,7 +106,7 @@ function stopHeroRotation() {
 
 function restartHeroRotation() {
   stopHeroRotation()
-  if (latest.value.length <= 1) return
+  if (heroHovering.value || latest.value.length <= 1) return
   heroTimer = window.setInterval(() => {
     heroIndex.value = (heroIndex.value + 1) % latest.value.length
   }, 6500)
@@ -105,9 +117,20 @@ function selectHero(index) {
   restartHeroRotation()
 }
 
+function pauseHeroRotation() {
+  heroHovering.value = true
+  stopHeroRotation()
+}
+
+function resumeHeroRotation() {
+  heroHovering.value = false
+  restartHeroRotation()
+}
+
 function localCoverUrl(item, width = 480) {
-  if (item?.cachedCover) return item.cachedCover
   if (item?.cover) return api.localFileUrl(item.cover, false, width)
+  if (item?.cachedCover) return item.cachedCover
+  if (item?.sourceCover) return api.imageUrl(item.sourceCover, item?.sourceId, '', width)
   return ''
 }
 
@@ -125,11 +148,41 @@ function taskStatus(item) {
   return { label: status || '等待', className: 'waiting' }
 }
 
+function progressPercent(item) {
+  if (item?.status === 'completed') return 100
+  const total = Number(item?.totalPages || 0)
+  const completed = Number(item?.completedPages || 0)
+  if (total <= 0) return item?.status === 'running' ? 6 : 0
+  return Math.max(0, Math.min(100, Math.round((completed / total) * 100)))
+}
+
+function startOfCalendarDay(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+function startOfCalendarWeek(date) {
+  const start = startOfCalendarDay(date)
+  const offset = (start.getDay() + 6) % 7
+  start.setDate(start.getDate() - offset)
+  return start
+}
+
 function formatNextRun(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '待计算'
   const pad = (number) => String(number).padStart(2, '0')
-  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const now = new Date()
+  const dayDiff = Math.round((startOfCalendarDay(date) - startOfCalendarDay(now)) / 86400000)
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  if (dayDiff === 0) return `今天 ${clock}`
+  if (dayDiff === 1) return `明天 ${clock}`
+  if (dayDiff === 2) return `后天 ${clock}`
+  const weekdays = ['一', '二', '三', '四', '五', '六', '日']
+  const weekday = weekdays[(date.getDay() + 6) % 7]
+  const weekDiff = Math.round((startOfCalendarWeek(date) - startOfCalendarWeek(now)) / 604800000)
+  if (weekDiff === 0) return `周${weekday} ${clock}`
+  if (weekDiff === 1) return `下周${weekday} ${clock}`
+  return `${date.getMonth() + 1}/${date.getDate()} ${clock}`
 }
 </script>
 
@@ -144,21 +197,29 @@ function formatNextRun(value) {
     <div class="overview-top">
       <section
         class="overview-window overview-hero"
-        :style="heroStyle"
-        @mouseenter="stopHeroRotation"
-        @mouseleave="restartHeroRotation"
+        @mouseenter="pauseHeroRotation"
+        @mouseleave="resumeHeroRotation"
       >
-        <div class="overview-hero-backdrop" />
+        <Transition name="overview-hero-bg">
+          <div
+            v-if="heroComic"
+            :key="heroKey"
+            class="overview-hero-backdrop"
+            :style="heroStyle"
+          />
+        </Transition>
         <template v-if="heroComic">
-          <div class="overview-hero-content">
-            <div class="overview-hero-poster">
+          <div :key="heroKey" class="overview-hero-content">
+            <div class="overview-hero-poster" :class="{ blurred: heroComic.coverBlur }">
               <img :src="heroCover" :alt="heroComic.title" />
             </div>
             <div class="overview-hero-copy">
-              <span class="overview-kicker">最近下载</span>
               <h1>{{ heroComic.title }}</h1>
               <strong>{{ heroComic.author || '未知作者' }}</strong>
               <p>{{ heroComic.description || '暂无简介' }}</p>
+              <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
+                <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag">{{ tag }}</span>
+              </div>
               <ContentLink class="btn secondary small overview-hero-link" to="/local">
                 <Library :size="15" />
                 查看本地仓库
@@ -173,6 +234,8 @@ function formatNextRun(value) {
               :class="{ active: index === heroIndex }"
               :aria-label="`切换到 ${item.title}`"
               :title="item.title"
+              @mouseenter="selectHero(index)"
+              @focus="selectHero(index)"
               @click="selectHero(index)"
             />
           </div>
@@ -186,40 +249,39 @@ function formatNextRun(value) {
 
       <section class="overview-window overview-stats">
         <header class="overview-window-head">
-          <div>
-            <span class="overview-kicker">统计总览</span>
-            <h2>Manco 运行概况</h2>
+          <div class="overview-window-title">
+            <ChartNoAxesCombined :size="19" :stroke-width="1.8" />
+            <span>统计总览</span>
           </div>
-          <Rss :size="19" />
         </header>
         <div class="overview-stat-grid">
           <div class="overview-stat">
-            <Rss :size="17" />
+            <Rss :size="25" :stroke-width="1.65" />
             <strong>{{ stats.subscriptions || 0 }}</strong>
             <span>订阅作品</span>
           </div>
           <div class="overview-stat">
-            <Library :size="17" />
+            <Library :size="25" :stroke-width="1.65" />
             <strong>{{ libraryTotal }}</strong>
             <span>本地仓库</span>
           </div>
           <div class="overview-stat is-success">
-            <CheckCircle2 :size="17" />
+            <CheckCircle2 :size="25" :stroke-width="1.65" />
             <strong>{{ stats.completedJobs || 0 }}</strong>
             <span>完成章节</span>
           </div>
           <div class="overview-stat is-danger">
-            <AlertTriangle :size="17" />
+            <AlertTriangle :size="25" :stroke-width="1.65" />
             <strong>{{ stats.failedJobs || 0 }}</strong>
             <span>失败章节</span>
           </div>
           <div class="overview-stat">
-            <Download :size="17" />
+            <ArrowDownToLine :size="25" :stroke-width="1.65" />
             <strong>{{ stats.runningJobs || 0 }}</strong>
             <span>正在下载</span>
           </div>
           <div class="overview-stat">
-            <Clock3 :size="17" />
+            <ListOrdered :size="25" :stroke-width="1.65" />
             <strong>{{ stats.queuedJobs || 0 }}</strong>
             <span>排队章节</span>
           </div>
@@ -230,10 +292,10 @@ function formatNextRun(value) {
     <div class="overview-bottom">
       <section class="overview-window overview-sources">
         <header class="overview-window-head">
-          <div>
-            <span class="overview-kicker">内容源</span>
-            <h2>资源拓展</h2>
-          </div>
+          <ContentLink class="overview-window-title" to="/sources">
+            <Blocks :size="18" :stroke-width="1.8" />
+            <span>资源拓展</span>
+          </ContentLink>
           <ContentLink class="overview-head-link" to="/sources">管理</ContentLink>
         </header>
         <div class="overview-source-tabs" role="tablist" aria-label="内容源类型">
@@ -256,7 +318,7 @@ function formatNextRun(value) {
             :title="item.name"
           >
             <span class="overview-source-icon">
-              <SourceIcon :src="item.icon" :kind="item.kind || 'comic'" :alt="item.name" :size="26" />
+              <SourceIcon :src="item.icon" :kind="item.kind || 'comic'" :alt="item.name" :size="30" />
             </span>
             <span>{{ item.name }}</span>
           </ContentLink>
@@ -269,10 +331,10 @@ function formatNextRun(value) {
 
       <section class="overview-window overview-tasks">
         <header class="overview-window-head">
-          <div>
-            <span class="overview-kicker">任务列表</span>
-            <h2>下载队列</h2>
-          </div>
+          <ContentLink class="overview-window-title" to="/downloads">
+            <ListChecks :size="18" :stroke-width="1.8" />
+            <span>下载队列</span>
+          </ContentLink>
           <ContentLink class="overview-head-link" to="/downloads">查看全部</ContentLink>
         </header>
         <div v-if="activeTasks.length" class="overview-task-list">
@@ -288,6 +350,16 @@ function formatNextRun(value) {
             <span class="overview-task-copy">
               <strong>{{ item.comicTitle || '未命名作品' }}</strong>
               <small>{{ item.chapterTitle || '章节' }}</small>
+              <span
+                class="overview-task-progress"
+                :class="`is-${taskStatus(item).className}`"
+                role="progressbar"
+                :aria-valuenow="progressPercent(item)"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <span :style="{ width: `${progressPercent(item)}%` }" />
+              </span>
             </span>
           </ContentLink>
         </div>
@@ -304,30 +376,29 @@ function formatNextRun(value) {
 
       <section class="overview-window overview-upcoming">
         <header class="overview-window-head">
-          <div>
-            <span class="overview-kicker">订阅计划</span>
-            <h2>即将检查更新</h2>
-          </div>
-          <ContentLink class="overview-head-link" to="/subscriptions">订阅清单</ContentLink>
+          <ContentLink class="overview-window-title" to="/subscriptions">
+            <CalendarClock :size="18" :stroke-width="1.8" />
+            <span>订阅计划</span>
+          </ContentLink>
+          <ContentLink class="overview-head-link" to="/subscriptions">查看全部</ContentLink>
         </header>
         <div v-if="upcoming.length" class="overview-upcoming-list">
           <ContentLink
             v-for="item in upcoming"
             :key="item.id"
             class="overview-upcoming-card"
-            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+            to="/subscriptions"
           >
-            <span class="overview-upcoming-cover">
+            <span class="overview-upcoming-cover" :class="{ blurred: item.coverBlur }">
               <img v-if="subscriptionCover(item)" :src="subscriptionCover(item)" :alt="item.title" />
               <BookOpen v-else :size="22" />
             </span>
             <span class="overview-upcoming-copy">
               <strong>{{ item.title }}</strong>
               <small>{{ item.author || '未知作者' }}</small>
-              <span class="overview-upcoming-description">{{ item.description || '暂无简介' }}</span>
               <span class="overview-upcoming-cron">
-                <Clock3 :size="13" />
-                {{ formatNextRun(item.nextRun) }} · {{ item.cronExpr }}
+                <Clock3 :size="14" />
+                {{ formatNextRun(item.nextRun) }}
               </span>
             </span>
           </ContentLink>
@@ -344,6 +415,8 @@ function formatNextRun(value) {
 <style scoped>
 .overview-dashboard {
   display: grid;
+  width: 100%;
+  min-width: 0;
   gap: 16px;
 }
 
@@ -370,7 +443,7 @@ function formatNextRun(value) {
 
 .overview-hero {
   position: relative;
-  min-height: 374px;
+  min-height: 390px;
   color: #fff;
   background: #332c25;
 }
@@ -384,6 +457,22 @@ function formatNextRun(value) {
   filter: blur(25px) saturate(0.9);
   opacity: 0.66;
   transform: scale(1.1);
+  will-change: opacity, transform;
+}
+
+.overview-hero-bg-enter-active,
+.overview-hero-bg-leave-active {
+  transition: opacity 0.72s cubic-bezier(0.22, 1, 0.36, 1), transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.overview-hero-bg-enter-from {
+  opacity: 0;
+  transform: scale(1.15);
+}
+
+.overview-hero-bg-leave-to {
+  opacity: 0;
+  transform: scale(1.06);
 }
 
 .overview-hero::after {
@@ -399,9 +488,10 @@ function formatNextRun(value) {
   display: grid;
   grid-template-columns: 176px minmax(0, 1fr);
   gap: 24px;
-  min-height: 374px;
+  min-height: 390px;
   align-items: center;
   padding: 28px 34px;
+  animation: overview-hero-content-in 0.58s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .overview-hero-poster {
@@ -418,25 +508,26 @@ function formatNextRun(value) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transform: scale(1.01);
+  transition: filter 0.42s ease, transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.overview-hero-poster.blurred img {
+  filter: blur(14px);
+  transform: scale(1.12);
+}
+
+.overview-hero-poster.blurred:hover img,
+.overview-hero-poster.blurred:focus-within img {
+  filter: blur(0);
+  transform: scale(1.04);
 }
 
 .overview-hero-copy {
   display: grid;
   align-content: center;
-  gap: 9px;
+  gap: 10px;
   min-width: 0;
-}
-
-.overview-kicker {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.overview-hero-copy .overview-kicker {
-  color: rgba(255, 255, 255, 0.72);
 }
 
 .overview-hero-copy h1 {
@@ -462,7 +553,27 @@ function formatNextRun(value) {
   font-size: 13px;
   line-height: 1.68;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 3;
+}
+
+.overview-hero-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.overview-hero-tags span {
+  max-width: 150px;
+  padding: 3px 9px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .overview-hero-link {
@@ -475,7 +586,8 @@ function formatNextRun(value) {
   bottom: 18px;
   z-index: 2;
   display: flex;
-  gap: 8px;
+  gap: 9px;
+  padding: 4px;
 }
 
 .overview-hero-dots button {
@@ -486,19 +598,30 @@ function formatNextRun(value) {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.35);
   cursor: pointer;
-  transition: width 0.18s ease, background 0.18s ease;
+  transform: translateZ(0);
+  transition:
+    width 0.34s cubic-bezier(0.22, 1.35, 0.36, 1),
+    background-color 0.24s ease,
+    box-shadow 0.24s ease,
+    transform 0.24s ease;
+  will-change: width, transform;
 }
 
-.overview-hero-dots button.active {
+.overview-hero-dots button.active,
+.overview-hero-dots button:hover,
+.overview-hero-dots button:focus-visible {
   width: 22px;
   background: #fff;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
+  outline: none;
+  transform: scaleY(1.08);
 }
 
 .overview-hero-empty {
   position: relative;
   z-index: 1;
   display: grid;
-  min-height: 374px;
+  min-height: 390px;
   place-items: center;
   align-content: center;
   gap: 8px;
@@ -515,21 +638,36 @@ function formatNextRun(value) {
 }
 
 .overview-stats {
-  padding: 18px;
+  padding: 18px 18px 20px;
 }
 
 .overview-window-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.overview-window-head h2 {
-  margin: 3px 0 0;
+.overview-window-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
   color: var(--text);
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 720;
+  line-height: 1.2;
+}
+
+.overview-window-title svg {
+  flex: 0 0 auto;
+  color: var(--primary-strong);
+}
+
+.overview-window-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .overview-head-link {
@@ -542,16 +680,16 @@ function formatNextRun(value) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  margin-top: 18px;
+  margin-top: 15px;
 }
 
 .overview-stat {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 3px 9px;
-  min-height: 74px;
-  padding: 12px;
+  gap: 3px 12px;
+  min-height: 78px;
+  padding: 13px 16px 13px 20px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--surface-muted);
@@ -560,6 +698,7 @@ function formatNextRun(value) {
 .overview-stat svg {
   grid-row: 1 / span 2;
   color: var(--primary-strong);
+  filter: drop-shadow(0 2px 5px color-mix(in srgb, var(--primary) 16%, transparent));
 }
 
 .overview-stat strong {
@@ -582,7 +721,7 @@ function formatNextRun(value) {
 
 .overview-bottom > .overview-window {
   display: flex;
-  height: 360px;
+  height: 370px;
   flex-direction: column;
   padding: 16px;
   overflow: hidden;
@@ -627,9 +766,17 @@ function formatNextRun(value) {
   justify-items: center;
   gap: 7px;
   min-width: 0;
+  padding: 5px 3px;
+  border-radius: 8px;
   color: var(--text);
   font-size: 11px;
   text-align: center;
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.overview-source-item:hover {
+  background: color-mix(in srgb, var(--primary-soft) 44%, transparent);
+  transform: translateY(-1px);
 }
 
 .overview-source-item > span:last-child {
@@ -643,10 +790,18 @@ function formatNextRun(value) {
   display: grid;
   width: 42px;
   height: 42px;
+  flex: 0 0 42px;
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-muted);
+}
+
+.overview-source-icon :deep(img),
+.overview-source-icon :deep(svg) {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
 }
 
 .overview-task-list,
@@ -661,11 +816,19 @@ function formatNextRun(value) {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  min-height: 40px;
-  padding: 7px 9px;
+  min-height: 52px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
+}
+
+.overview-task-row:hover,
+.overview-upcoming-card:hover {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
+  background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface));
+  transform: translateY(-1px);
 }
 
 .overview-task-state {
@@ -696,6 +859,10 @@ function formatNextRun(value) {
   gap: 2px;
 }
 
+.overview-task-copy {
+  gap: 3px;
+}
+
 .overview-task-copy strong,
 .overview-upcoming-copy strong {
   overflow: hidden;
@@ -711,6 +878,33 @@ function formatNextRun(value) {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.overview-task-progress {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 5px;
+  margin-top: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+}
+
+.overview-task-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.35s ease;
+}
+
+.overview-task-progress.is-waiting > span {
+  background: #7c9fc4;
+}
+
+.overview-task-progress.is-running > span {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 45%, transparent);
 }
 
 .overview-lazy-empty,
@@ -770,19 +964,20 @@ function formatNextRun(value) {
 
 .overview-upcoming-card {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
-  gap: 9px;
-  min-height: 76px;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 68px;
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
+  transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
 }
 
 .overview-upcoming-cover {
   display: grid;
-  width: 46px;
-  height: 64px;
+  width: 48px;
+  height: 52px;
   place-items: center;
   overflow: hidden;
   border-radius: 6px;
@@ -793,26 +988,43 @@ function formatNextRun(value) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: filter 0.32s ease, transform 0.32s ease;
 }
 
-.overview-upcoming-description {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.overview-upcoming-cover.blurred img {
+  filter: blur(7px);
+  transform: scale(1.08);
+}
+
+.overview-upcoming-cover.blurred:hover img {
+  filter: blur(0);
+  transform: scale(1);
 }
 
 .overview-upcoming-cron {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-top: 3px;
   overflow: hidden;
   color: color-mix(in srgb, var(--primary-strong) 74%, var(--text-muted));
-  font-size: 10px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@keyframes overview-hero-content-in {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translate3d(14px, 6px, 0);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translate3d(0, 0, 0);
+  }
 }
 
 @media (max-width: 1180px) {
@@ -830,6 +1042,12 @@ function formatNextRun(value) {
 }
 
 @media (max-width: 760px) {
+  .overview-dashboard,
+  .overview-top,
+  .overview-bottom {
+    min-width: 0;
+  }
+
   .overview-bottom {
     grid-template-columns: 1fr;
   }
@@ -839,17 +1057,48 @@ function formatNextRun(value) {
   }
 
   .overview-hero-content {
-    grid-template-columns: 112px minmax(0, 1fr);
-    gap: 16px;
-    padding: 22px 18px;
+    grid-template-columns: 92px minmax(0, 1fr);
+    gap: 14px;
+    padding: 20px 16px 48px;
   }
 
   .overview-hero-poster {
-    width: 112px;
+    width: 92px;
+  }
+
+  .overview-hero-copy {
+    gap: 8px;
+  }
+
+  .overview-hero-copy h1 {
+    font-size: 23px;
+    line-height: 1.18;
+  }
+
+  .overview-hero-copy strong {
+    font-size: 12px;
   }
 
   .overview-hero-copy p {
+    margin-bottom: 1px;
+    font-size: 12px;
+    line-height: 1.55;
     -webkit-line-clamp: 3;
+  }
+
+  .overview-hero-tags {
+    gap: 4px;
+  }
+
+  .overview-hero-tags span {
+    max-width: 108px;
+    padding: 2px 7px;
+    font-size: 10px;
+  }
+
+  .overview-hero-dots {
+    right: 14px;
+    bottom: 13px;
   }
 
   .overview-source-grid {

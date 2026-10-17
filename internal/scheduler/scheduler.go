@@ -48,11 +48,25 @@ type Scheduler struct {
 	intervalNanos atomic.Int64
 	logger        *log.Logger
 	notifier      Notifier
+	afterUpdate   func(context.Context)
 }
 
 // SetNotifier installs a routine check notifier.
 func (s *Scheduler) SetNotifier(notifier Notifier) {
 	s.notifier = notifier
+}
+
+// SetAfterUpdate installs a callback used to refresh the mounted config
+// snapshot after scheduled checks changed subscription state. It runs once per
+// scan cycle, not after every individual subscription.
+func (s *Scheduler) SetAfterUpdate(callback func(context.Context)) {
+	s.afterUpdate = callback
+}
+
+func (s *Scheduler) runAfterUpdate(ctx context.Context) {
+	if s.afterUpdate != nil {
+		s.afterUpdate(ctx)
+	}
 }
 
 func New(registry *sources.Registry, subscriptions Subscriptions, downloads Downloads, interval time.Duration, logger *log.Logger) *Scheduler {
@@ -116,13 +130,19 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 		s.logger.Printf("scheduler: list subscriptions: %v", err)
 		return
 	}
+	changed := false
 	for _, subscription := range subscriptions {
 		if !subscription.Enabled {
 			continue
 		}
 		if _, err := s.check(ctx, subscription); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
+		} else {
+			changed = true
 		}
+	}
+	if changed {
+		s.runAfterUpdate(ctx)
 	}
 }
 
@@ -354,18 +374,24 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 		return
 	}
 	now := time.Now()
+	changed := false
 	for _, subscription := range subscriptions {
 		if !subscription.Enabled || !s.due(subscription, now) {
 			continue
 		}
 		if _, err := s.check(ctx, subscription); err != nil {
 			s.logger.Printf("scheduler: %s/%s: %v", subscription.SourceID, subscription.Title, err)
+		} else {
+			changed = true
 		}
 		if retried, err := s.downloads.RetryFailedByComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
 			s.logger.Printf("scheduler: retry failed downloads %s/%s: %v", subscription.SourceID, subscription.Title, err)
 		} else if retried > 0 {
 			s.logger.Printf("scheduler: retried %d failed download(s) for %s/%s", retried, subscription.SourceID, subscription.Title)
 		}
+	}
+	if changed {
+		s.runAfterUpdate(ctx)
 	}
 }
 
@@ -398,5 +424,9 @@ func (s *Scheduler) CheckOneDetailed(ctx context.Context, id int64) (Subscriptio
 	if err != nil {
 		return SubscriptionCheckResult{}, err
 	}
-	return s.check(ctx, subscription)
+	result, err := s.check(ctx, subscription)
+	if err == nil {
+		s.runAfterUpdate(ctx)
+	}
+	return result, err
 }

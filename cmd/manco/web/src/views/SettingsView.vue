@@ -255,232 +255,255 @@ async function checkUpdate() {
     <span>加载设置</span>
   </div>
 
-  <div v-else class="settings-sections settings-v2">
-    <div class="settings-pair">
-      <section id="settings-account" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <ShieldCheck :size="17" />
-            <h2>账号与安全</h2>
-          </div>
-          <button class="btn settings-save-button" type="button" :disabled="saving === 'account'" @click="saveAccount">
-            <Loader2 v-if="saving === 'account'" :size="15" class="spin" />
-            保存
-          </button>
-        </div>
-        <!-- 回车即保存：keydown 会从内部输入框冒泡到这里。 -->
-        <div class="settings-form-stack" @keydown.enter.prevent="saveAccount">
-          <label class="field">
-            <span>账号</span>
-            <input v-model="form.username" class="input" autocomplete="username" />
-          </label>
-          <label class="field">
-            <span>密码</span>
-            <PasswordInput
-              v-model="form.currentPassword"
-              autocomplete="new-password"
-              placeholder="输入新密码（留空不修改）"
-              @update:model-value="passwordInput"
-            />
-          </label>
-          <label class="field">
-            <span>会话存活期（天）</span>
-            <input v-model.number="form.sessionTtlDays" class="input" type="number" min="1" max="3650" />
-          </label>
-        </div>
-      </section>
+  <div v-else class="settings-workspace">
+    <header class="settings-page-head">
+      <div>
+        <span class="settings-eyebrow">Manco</span>
+        <h1>系统设置</h1>
+        <p>连接、下载、通知与维护选项按用途分组。</p>
+      </div>
+      <span class="settings-version-pill">{{ currentVersion || '版本未知' }}</span>
+    </header>
 
-      <section class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <Network :size="17" />
-            <h2>代理</h2>
+    <section class="settings-group">
+      <header class="settings-group-head">
+        <h2>连接与安全</h2>
+        <p>账号会话与外部网络入口。</p>
+      </header>
+      <div class="settings-grid-two">
+        <article id="settings-account" class="card card-pad settings-panel">
+          <div class="settings-card-title">
+            <div class="inline">
+              <ShieldCheck :size="18" />
+              <h3>账号与安全</h3>
+            </div>
+            <button class="btn settings-save-button" type="button" :disabled="saving === 'account'" @click="saveAccount">
+              <Loader2 v-if="saving === 'account'" :size="15" class="spin" />
+              保存
+            </button>
           </div>
-          <button class="btn settings-save-button" type="button" :disabled="saving === 'proxy'" @click="saveProxy">
-            <Loader2 v-if="saving === 'proxy'" :size="15" class="spin" />
-            保存
-          </button>
-        </div>
-        <div class="settings-form-stack" @keydown.enter.prevent="saveProxy">
-          <label class="field">
-            <span>代理地址</span>
-            <input v-model="form.proxy" class="input" placeholder="http://127.0.0.1:7890" />
-          </label>
-          <label class="field">
-            <span>用户名</span>
-            <input v-model="form.proxyUsername" class="input" autocomplete="off" />
-          </label>
-          <label class="field">
-            <span>密码</span>
-            <PasswordInput v-model="form.proxyPassword" autocomplete="off" placeholder="代理密码" />
-          </label>
-        </div>
-      </section>
+          <div class="settings-form-grid" @keydown.enter.prevent="saveAccount">
+            <label class="field settings-field-span-2">
+              <span>账号</span>
+              <input v-model="form.username" class="input" autocomplete="username" />
+            </label>
+            <label class="field settings-field-span-2">
+              <span>密码</span>
+              <PasswordInput
+                v-model="form.currentPassword"
+                autocomplete="new-password"
+                placeholder="输入新密码（留空不修改）"
+                @update:model-value="passwordInput"
+              />
+            </label>
+            <label class="field">
+              <span>会话存活期（天）</span>
+              <input v-model.number="form.sessionTtlDays" class="input" type="number" min="1" max="3650" />
+            </label>
+          </div>
+        </article>
 
-    </div>
+        <article class="card card-pad settings-panel">
+          <div class="settings-card-title">
+            <div class="inline">
+              <Network :size="18" />
+              <h3>系统代理</h3>
+            </div>
+            <button class="btn settings-save-button" type="button" :disabled="saving === 'proxy'" @click="saveProxy">
+              <Loader2 v-if="saving === 'proxy'" :size="15" class="spin" />
+              保存
+            </button>
+          </div>
+          <div class="settings-form-grid" @keydown.enter.prevent="saveProxy">
+            <label class="field settings-field-span-2">
+              <span>代理地址</span>
+              <input v-model="form.proxy" class="input" placeholder="http://127.0.0.1:7890" />
+            </label>
+            <label class="field">
+              <span>用户名</span>
+              <input v-model="form.proxyUsername" class="input" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>密码</span>
+              <PasswordInput v-model="form.proxyPassword" autocomplete="off" placeholder="代理密码" />
+            </label>
+          </div>
+        </article>
+      </div>
+    </section>
 
-    <div class="settings-pair settings-bottom-pair">
-      <section id="settings-logs" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <RefreshCw :size="17" />
-            <h2>运行日志</h2>
-          </div>
-          <button class="btn settings-save-button" type="button" :disabled="saving === 'logs'" @click="saveLogs">
-            <Loader2 v-if="saving === 'logs'" :size="15" class="spin" />
-            保存
-          </button>
-        </div>
-        <p class="muted small settings-card-help">
-          内存中保留最近 N 条日志，超出上限丢弃最旧的；保存天数用于日志落盘后的清理，两者同时生效。
-        </p>
-        <div class="settings-form-stack" @keydown.enter.prevent="saveLogs">
-          <label class="field">
-            <span>保留日志条数</span>
-            <input v-model.number="form.logMaxEntries" class="input" type="number" min="100" max="200000" step="100" />
-          </label>
-          <label class="field">
-            <span>日志保存天数</span>
-            <input v-model.number="form.logRetentionDays" class="input" type="number" min="0" max="3650" />
-          </label>
-        </div>
-      </section>
-    </div>
-
-    <div class="settings-pair settings-bottom-pair">
-      <section id="settings-download" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <Download :size="17" />
-            <h2>下载设置</h2>
-          </div>
-          <button class="btn settings-save-button" type="button" :disabled="saving === 'download'" @click="saveDownload">
-            <Loader2 v-if="saving === 'download'" :size="15" class="spin" />
-            保存
-          </button>
-        </div>
-        <p class="muted small settings-card-help">
-          「全局同时下载章节数」是整台实例的上限：不管有多少内容源在排队，同时下载的章节都不会超过这个数。单个内容源可以在「资源拓展」里单独限制得更低。
-        </p>
-        <div class="settings-form-stack" @keydown.enter.prevent="saveDownload">
-          <label class="field">
-            <span>全局同时下载章节数</span>
-            <input v-model.number="form.maxChapterConcurrency" class="input" type="number" min="1" max="32" />
-          </label>
-          <label class="field">
-            <span>每章图片并发</span>
-            <input v-model.number="form.maxPageConcurrency" class="input" type="number" min="1" max="32" />
-          </label>
-          <div class="archive-number-row">
-            <span>每下载</span>
-            <input v-model.number="form.batchSize" class="input archive-number" type="number" min="0" max="1000" />
-            <span>章后暂停</span>
-            <input v-model.number="form.batchIntervalMinutes" class="input archive-number" type="number" min="0" max="1440" />
-            <span>分钟</span>
-          </div>
-          <p class="muted small">暂停按内容源全局生效，队列里其它内容源不受影响；填 0 表示不暂停。</p>
-        </div>
-      </section>
-      <section id="settings-telegram" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <Send :size="17" />
-            <h2>TG 通知</h2>
-          </div>
-          <button class="btn settings-save-button" type="button" :disabled="saving === 'telegram'" @click="saveTelegram">
-            <Loader2 v-if="saving === 'telegram'" :size="15" class="spin" />
-            保存
-          </button>
-        </div>
-        <p class="muted small settings-card-help">
-          在 @BotFather 创建机器人拿到 Token，把聊天 ID 填进允许列表后即可接收例行通知，也能直接用指令查看订阅、搜索并订阅作品。网络走「代理」栏目里的系统代理设置。
-        </p>
-        <div class="settings-form-stack" @keydown.enter.prevent="saveTelegram">
-          <label class="field">
-            <span>Bot Token</span>
-            <input v-model="form.telegramToken" class="input" autocomplete="off" placeholder="123456:ABC-DEF..." />
-          </label>
-          <label class="field">
-            <span>允许的 Chat ID</span>
-            <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
-          </label>
-          <button
-            class="function-toggle"
-            :class="{ active: form.telegramEnabled }"
-            type="button"
-            @click="form.telegramEnabled = !form.telegramEnabled"
-          >
-            <Send :size="16" />
-            <span>启用 TG 通知</span>
-          </button>
-        </div>
-      </section>
-    </div>
-
-    <div class="settings-pair settings-bottom-pair">
-      <section id="settings-archive" class="card card-pad settings-compact-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <Archive :size="17" />
-            <h2>订阅归档与繁转简</h2>
-          </div>
-          <Loader2 v-if="saving === 'archive' || saving === 'convert'" :size="16" class="spin muted" />
-        </div>
-        <p class="muted small settings-card-help">
-          全局设置。超过设定天数没有检测到更新时关闭订阅；关闭满 15 天无人重新启用后自动归档。
-        </p>
-        <div class="archive-number-row">
-          <span>超过</span>
-          <input
-            v-model.number="form.staleDays"
-            class="input archive-number"
-            type="number"
-            min="0"
-            max="3650"
-            step="1"
-            @input="scheduleArchiveSave"
-          />
-          <span>天未更新后关闭订阅</span>
-        </div>
-        <p class="muted small">留空或填 0 表示不启用，修改后自动保存。</p>
-        <div id="settings-convert" class="settings-feature-group">
-          <div class="inline settings-feature-heading">
-            <Languages :size="17" />
-            <h3>繁转简</h3>
+    <section class="settings-group">
+      <header class="settings-group-head">
+        <h2>下载与通知</h2>
+        <p>全局并发、暂停策略和 Telegram 通知。</p>
+      </header>
+      <div class="settings-grid-two settings-grid-balanced">
+        <article id="settings-download" class="card card-pad settings-panel">
+          <div class="settings-card-title">
+            <div class="inline">
+              <Download :size="18" />
+              <h3>下载设置</h3>
+            </div>
+            <button class="btn settings-save-button" type="button" :disabled="saving === 'download'" @click="saveDownload">
+              <Loader2 v-if="saving === 'download'" :size="15" class="spin" />
+              保存
+            </button>
           </div>
           <p class="muted small settings-card-help">
-            开启后探索发现、搜索结果和作品详情中的名称、作者、简介与标签统一显示为简体中文，原始数据与本地缓存不会被改写。
+            全局章节并发是实例总上限，单内容源仍可在资源拓展中设置更低值。
           </p>
-          <label class="switch-row">
-            <input v-model="form.convertToSimplified" type="checkbox" @change="saveConvertToSimplified" />
-            <span>全局繁转简</span>
-          </label>
-        </div>
-      </section>
-
-      <section id="settings-about" class="card card-pad settings-compact-card settings-about-card">
-        <div class="settings-card-title">
-          <div class="inline">
-            <CheckCircle2 :size="17" />
-            <h2>关于 Manco</h2>
+          <div class="settings-form-grid" @keydown.enter.prevent="saveDownload">
+            <label class="field">
+              <span>全局同时下载章节数</span>
+              <input v-model.number="form.maxChapterConcurrency" class="input" type="number" min="1" max="32" />
+            </label>
+            <label class="field">
+              <span>每章图片并发</span>
+              <input v-model.number="form.maxPageConcurrency" class="input" type="number" min="1" max="32" />
+            </label>
+            <div class="settings-pause-row settings-field-span-2">
+              <span>每下载</span>
+              <input v-model.number="form.batchSize" class="input archive-number" type="number" min="0" max="1000" />
+              <span>章后暂停</span>
+              <input v-model.number="form.batchIntervalMinutes" class="input archive-number" type="number" min="0" max="1440" />
+              <span>分钟</span>
+            </div>
+            <p class="muted small settings-field-span-2">填 0 表示不启用自动暂停。</p>
           </div>
-        </div>
-        <p class="muted small settings-card-help">
-          Manco 是漫画与书籍订阅下载工具，把来源里的章节打包为本地文件并持续跟踪更新。
-        </p>
-        <div class="inline settings-about-actions">
-          <button class="btn update-button" type="button" :disabled="checkingUpdate" @click="checkUpdate">
-            <Loader2 v-if="checkingUpdate" :size="15" class="spin" />
-            <RefreshCw v-else :size="15" />
-            检查更新
-          </button>
-          <a class="btn github-button" href="https://github.com/Hyaeve/manco" target="_blank" rel="noreferrer">
-            <Github :size="15" />
-            访问 GitHub
-            <ExternalLink :size="13" />
-          </a>
-        </div>
-      </section>
-    </div>
+        </article>
+
+        <article id="settings-telegram" class="card card-pad settings-panel">
+          <div class="settings-card-title">
+            <div class="inline">
+              <Send :size="18" />
+              <h3>TG 通知</h3>
+            </div>
+            <button class="btn settings-save-button" type="button" :disabled="saving === 'telegram'" @click="saveTelegram">
+              <Loader2 v-if="saving === 'telegram'" :size="15" class="spin" />
+              保存
+            </button>
+          </div>
+          <p class="muted small settings-card-help">
+            网络沿用上方系统代理；配置 Token 和允许的 Chat ID 后可接收通知与使用交互指令。
+          </p>
+          <div class="settings-form-grid" @keydown.enter.prevent="saveTelegram">
+            <label class="field settings-field-span-2">
+              <span>Bot Token</span>
+              <input v-model="form.telegramToken" class="input" autocomplete="off" placeholder="123456:ABC-DEF..." />
+            </label>
+            <label class="field settings-field-span-2">
+              <span>允许的 Chat ID</span>
+              <input v-model="form.telegramChatIds" class="input" autocomplete="off" placeholder="多个用逗号分隔，例如 -1001234567890, 123456789" />
+            </label>
+            <button
+              class="function-toggle settings-field-span-2"
+              :class="{ active: form.telegramEnabled }"
+              type="button"
+              @click="form.telegramEnabled = !form.telegramEnabled"
+            >
+              <Send :size="16" />
+              <span>启用 TG 通知</span>
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="settings-group">
+      <header class="settings-group-head">
+        <h2>维护与版本</h2>
+        <p>归档、日志、语言转换和程序信息。</p>
+      </header>
+      <div class="settings-grid-three">
+        <article id="settings-logs" class="card card-pad settings-panel">
+          <div class="settings-card-title">
+            <div class="inline">
+              <RefreshCw :size="18" />
+              <h3>运行日志</h3>
+            </div>
+            <button class="btn settings-save-button" type="button" :disabled="saving === 'logs'" @click="saveLogs">
+              <Loader2 v-if="saving === 'logs'" :size="15" class="spin" />
+              保存
+            </button>
+          </div>
+          <p class="muted small settings-card-help">内存条数与落盘保存天数同时生效。</p>
+          <div class="settings-form-grid" @keydown.enter.prevent="saveLogs">
+            <label class="field">
+              <span>保留日志条数</span>
+              <input v-model.number="form.logMaxEntries" class="input" type="number" min="100" max="200000" step="100" />
+            </label>
+            <label class="field">
+              <span>日志保存天数</span>
+              <input v-model.number="form.logRetentionDays" class="input" type="number" min="0" max="3650" />
+            </label>
+          </div>
+        </article>
+
+        <article id="settings-archive" class="card card-pad settings-panel">
+          <div class="settings-card-title">
+            <div class="inline">
+              <Archive :size="18" />
+              <h3>归档与繁转简</h3>
+            </div>
+            <span class="settings-status-pill">
+              <Loader2 v-if="saving === 'archive' || saving === 'convert'" :size="13" class="spin" />
+              自动保存
+            </span>
+          </div>
+          <p class="muted small settings-card-help">超期未更新后关闭订阅，关闭满 15 天后自动归档。</p>
+          <div class="archive-number-row settings-pause-row">
+            <span>超过</span>
+            <input
+              v-model.number="form.staleDays"
+              class="input archive-number"
+              type="number"
+              min="0"
+              max="3650"
+              step="1"
+              @input="scheduleArchiveSave"
+            />
+            <span>天未更新</span>
+          </div>
+          <div id="settings-convert" class="settings-feature-group">
+            <div class="inline settings-feature-heading">
+              <Languages :size="17" />
+              <h3>繁转简</h3>
+            </div>
+            <label class="switch-row">
+              <input v-model="form.convertToSimplified" type="checkbox" @change="saveConvertToSimplified" />
+              <span>全局繁转简</span>
+            </label>
+          </div>
+        </article>
+
+        <article id="settings-about" class="card card-pad settings-panel settings-about-card">
+          <div class="settings-card-title">
+            <div class="inline">
+              <CheckCircle2 :size="18" />
+              <h3>关于 Manco</h3>
+            </div>
+          </div>
+          <p class="muted small settings-card-help">
+            漫画、书籍与其他来源的订阅下载管理工具。
+          </p>
+          <div class="settings-about-meta">
+            <span>当前版本</span>
+            <strong>{{ currentVersion || '未知' }}</strong>
+          </div>
+          <div class="settings-about-actions">
+            <button class="btn update-button" type="button" :disabled="checkingUpdate" @click="checkUpdate">
+              <Loader2 v-if="checkingUpdate" :size="15" class="spin" />
+              <RefreshCw v-else :size="15" />
+              检查更新
+            </button>
+            <a class="btn github-button" href="https://github.com/Hyaeve/manco" target="_blank" rel="noreferrer">
+              <Github :size="15" />
+              GitHub
+              <ExternalLink :size="13" />
+            </a>
+          </div>
+        </article>
+      </div>
+    </section>
   </div>
 </template>

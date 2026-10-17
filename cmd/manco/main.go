@@ -29,6 +29,7 @@ import (
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/sources"
 	"github.com/hyaeve/manco/internal/store"
+	"github.com/hyaeve/manco/internal/subscriptioncover"
 	"github.com/hyaeve/manco/internal/telegram"
 )
 
@@ -90,6 +91,10 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		return err
 	}
 	discoverItems, err := discovercache.Open(filepath.Join(cfg.DataDir, "discover"), 30*24*time.Hour)
+	if err != nil {
+		return err
+	}
+	subscriptionCovers, err := subscriptioncover.Open(filepath.Join(cfg.DataDir, "subscription-covers"))
 	if err != nil {
 		return err
 	}
@@ -167,21 +172,22 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		return err
 	}
 	server := api.New(api.Options{
-		Config:    cfg,
-		Store:     repository,
-		Configs:   configFiles,
-		Cache:     discoverCache,
-		Discover:  discoverItems,
-		Box:       box,
-		Registry:  registry,
-		Runtime:   pluginManager,
-		Engine:    engine,
-		Icons:     icons,
-		Scheduler: scanner,
-		Logger:    logger,
-		Logs:      logs,
-		Assets:    assets,
-		Telegram:  bot,
+		Config:             cfg,
+		Store:              repository,
+		Configs:            configFiles,
+		Cache:              discoverCache,
+		Discover:           discoverItems,
+		SubscriptionCovers: subscriptionCovers,
+		Box:                box,
+		Registry:           registry,
+		Runtime:            pluginManager,
+		Engine:             engine,
+		Icons:              icons,
+		Scheduler:          scanner,
+		Logger:             logger,
+		Logs:               logs,
+		Assets:             assets,
+		Telegram:           bot,
 	})
 	bot.SetApp(server)
 	// 旧的「打开添加内容源就把所有仓库枚举一遍」会把几百个扩展留在运行时里，
@@ -198,6 +204,11 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		logger.Printf("manco: restored %d plugin source(s) on startup", restored)
 	}
 	scanner.SetNotifier(bot)
+	scanner.SetAfterUpdate(func(ctx context.Context) {
+		if err := configFiles.PersistSubscriptions(ctx, repository); err != nil {
+			logger.Printf("manco: refresh subscription snapshot: %v", err)
+		}
+	})
 	settings, err := server.Settings(ctx)
 	if err != nil {
 		logger.Printf("manco: load settings: %v", err)
@@ -215,6 +226,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		})
 	}
 	bot.Start(ctx)
+	go server.RunInitialDownloadNotifications(ctx)
 	defer bot.Stop()
 	_ = repository.CleanupSessions(ctx, time.Now())
 	// A process restart invalidates all browser sessions, so every client has
@@ -222,10 +234,17 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	if err := repository.DeleteAllSessions(ctx); err != nil {
 		return err
 	}
+	interruptedJobs, err := repository.ListInterruptedJobs(ctx)
+	if err != nil {
+		logger.Printf("manco: list interrupted download jobs: %v", err)
+	}
 	if err := repository.RequeueRunningJobs(ctx); err != nil {
 		return err
 	}
 	engine.Start(ctx)
+	if len(interruptedJobs) > 0 {
+		bot.DownloadResumed(ctx, interruptedJobs)
+	}
 	scanner.Start(ctx)
 	// 登录保活：按各内容源设置的周期重新登录，避免 Token 过期后无法浏览或下载。
 	go func() {

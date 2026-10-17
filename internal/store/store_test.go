@@ -149,6 +149,57 @@ func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	}
 }
 
+func TestInitialDownloadBatchPendingIncludesRetries(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	job := createJob(t, repository, "initial")
+	pending, err := repository.InitialDownloadBatchPending(ctx, job.SourceID, job.ComicID)
+	if err != nil || !pending {
+		t.Fatalf("queued batch pending = %v, %v", pending, err)
+	}
+	retryAt := time.Now().Add(10 * time.Minute)
+	if err := repository.FailDownloadJob(ctx, job.ID, 10, 1, "retry", 1, &retryAt); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = repository.InitialDownloadBatchPending(ctx, job.SourceID, job.ComicID)
+	if err != nil || !pending {
+		t.Fatalf("retrying batch pending = %v, %v", pending, err)
+	}
+	if err := repository.FailDownloadJob(ctx, job.ID, 10, 1, "terminal", 2, nil); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = repository.InitialDownloadBatchPending(ctx, job.SourceID, job.ComicID)
+	if err != nil || pending {
+		t.Fatalf("terminal batch pending = %v, %v", pending, err)
+	}
+}
+
+func TestListInterruptedJobsIncludesRunningAndCanceled(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	running := createJob(t, repository, "running")
+	canceled := createJob(t, repository, "canceled")
+	queued := createJob(t, repository, "queued")
+	if err := repository.UpdateDownloadJob(ctx, running.ID, "running", 10, 2, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateDownloadJob(ctx, canceled.ID, "canceled", 10, 1, "", "shutdown"); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := repository.ListInterruptedJobs(ctx)
+	if err != nil {
+		t.Fatalf("list interrupted: %v", err)
+	}
+	if len(jobs) != 2 || jobs[0].ID != running.ID || jobs[1].ID != canceled.ID {
+		t.Fatalf("interrupted jobs = %+v, want %d and %d", jobs, running.ID, canceled.ID)
+	}
+	for _, job := range jobs {
+		if job.ID == queued.ID {
+			t.Fatal("ordinary queued job was included in restart notice")
+		}
+	}
+}
+
 func TestListDownloadJobsWithoutLimitReturnsEveryRecord(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)
@@ -644,6 +695,101 @@ func TestListDownloadJobsKeepsFailedWhenManyQueued(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("failed job %d missing from %d results", failed.ID, len(jobs))
+	}
+}
+
+func TestListSubscriptionsPageFiltersSortsAndCounts(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	items := []model.Subscription{
+		{SourceID: "comic-source", ComicID: "1", Title: "Zulu Comic", DownloadDir: "/downloads/a"},
+		{SourceID: "book-source", ComicID: "2", Title: "Alpha Book", DownloadDir: "/downloads/a"},
+		{SourceID: "other-source", ComicID: "3", Title: "Beta Video", DownloadDir: "/downloads/b"},
+	}
+	for _, item := range items {
+		item.Enabled = true
+		if _, err := repository.UpsertSubscription(ctx, item); err != nil {
+			t.Fatalf("create subscription %q: %v", item.Title, err)
+		}
+	}
+
+	page, total, err := repository.ListSubscriptionsPage(ctx, SubscriptionFilter{
+		SourceIDs:   []string{"book-source"},
+		Sort:        "title",
+		Descending:  false,
+		DownloadDir: "/downloads/a",
+	}, 10, 0)
+	if err != nil {
+		t.Fatalf("book page: %v", err)
+	}
+	if total != 1 || len(page) != 1 || page[0].Title != "Alpha Book" {
+		t.Fatalf("book page total=%d items=%+v", total, page)
+	}
+
+	page, total, err = repository.ListSubscriptionsPage(ctx, SubscriptionFilter{
+		ExcludeSourceIDs: []string{"book-source", "other-source"},
+		Sort:             "title",
+	}, 10, 0)
+	if err != nil {
+		t.Fatalf("comic page: %v", err)
+	}
+	if total != 1 || len(page) != 1 || page[0].Title != "Zulu Comic" {
+		t.Fatalf("comic page total=%d items=%+v", total, page)
+	}
+
+	page, total, err = repository.ListSubscriptionsPage(ctx, SubscriptionFilter{
+		DownloadDir: "/downloads/a",
+		Sort:        "title",
+		Descending:  true,
+	}, 1, 1)
+	if err != nil {
+		t.Fatalf("sorted second page: %v", err)
+	}
+	if total != 2 || len(page) != 1 || page[0].Title != "Alpha Book" {
+		t.Fatalf("sorted second page total=%d items=%+v", total, page)
+	}
+
+	counts, err := repository.SubscriptionSourceCounts(ctx)
+	if err != nil {
+		t.Fatalf("source counts: %v", err)
+	}
+	if counts["comic-source"] != 1 || counts["book-source"] != 1 || counts["other-source"] != 1 {
+		t.Fatalf("source counts = %+v", counts)
+	}
+	dirs, err := repository.SubscriptionDownloadDirs(ctx)
+	if err != nil {
+		t.Fatalf("download dirs: %v", err)
+	}
+	if len(dirs) != 2 || dirs[0] != "/downloads/a" || dirs[1] != "/downloads/b" {
+		t.Fatalf("download dirs = %+v", dirs)
+	}
+}
+
+func TestDownloadJobStatsForSubscriptionsOnlyScansRequestedWorks(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	completed := createJobForComic(t, repository, "wanted", "1")
+	if err := repository.UpdateDownloadJob(ctx, completed.ID, "completed", 1, 1, "/tmp/1.cbz", ""); err != nil {
+		t.Fatalf("complete wanted job: %v", err)
+	}
+	failed := createJobForComic(t, repository, "wanted", "2")
+	if err := repository.FailDownloadJob(ctx, failed.ID, 1, 0, "boom", 0, nil); err != nil {
+		t.Fatalf("fail wanted job: %v", err)
+	}
+	_ = createJobForComic(t, repository, "ignored", "3")
+
+	stats, err := repository.DownloadJobStatsForSubscriptions(ctx, []model.Subscription{
+		{SourceID: "jmcomic", ComicID: "wanted"},
+	})
+	if err != nil {
+		t.Fatalf("targeted stats: %v", err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("targeted stats = %+v", stats)
+	}
+	got := stats["jmcomic\x00wanted"]
+	if got.Succeeded != 1 || got.Failed != 1 || got.Pending != 0 {
+		t.Fatalf("wanted stats = %+v", got)
 	}
 }
 

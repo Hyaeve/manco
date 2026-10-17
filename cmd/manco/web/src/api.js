@@ -121,14 +121,22 @@ export const api = {
   comicDownloads: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/downloads`),
 
-  subscriptions: (limit = 0, offset = 0) => {
+  subscriptions: (limit = 0, offset = 0, options = {}) => {
     const params = new URLSearchParams()
     if (limit) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
+    if (options.kind && options.kind !== 'all') params.set('kind', options.kind)
+    if (options.dir) params.set('dir', options.dir)
+    if (options.sort) params.set('sort', options.sort)
+    if (typeof options.desc === 'boolean') params.set('desc', options.desc ? '1' : '0')
     const query = params.toString()
     return request(`/api/subscriptions${query ? `?${query}` : ''}`)
   },
   archivedSubscriptions: () => request('/api/subscriptions/archived'),
+  matchSubscription: (sourceId, comicId) => {
+    const params = new URLSearchParams({ sourceId, comicId })
+    return request(`/api/subscriptions/match?${params.toString()}`)
+  },
   createSubscription: (payload) => request('/api/subscriptions', { method: 'POST', body: JSON.stringify(payload) }),
   updateSubscription: (id, payload) =>
     request(`/api/subscriptions/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),

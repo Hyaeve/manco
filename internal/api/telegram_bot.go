@@ -140,7 +140,15 @@ func (s *Server) BotSubscribe(ctx context.Context, sourceID, comicID string) (mo
 	_ = s.configs.PersistSubscriptions(ctx, s.store)
 	// Historical chapters download right away; the stored baseline keeps later
 	// scheduled checks from re-queueing them.
-	queued, _, _ := s.scheduler.QueueAll(ctx, created)
+	s.registerInitialDownloadNotice(ctx, created)
+	queued, _, queueErr := s.scheduler.QueueAll(ctx, created)
+	if queueErr == nil && queued == 0 {
+		s.unregisterInitialDownloadNotice(ctx, created.SourceID, created.ComicID)
+	} else if queueErr != nil {
+		if pending, _ := s.store.InitialDownloadBatchPending(ctx, created.SourceID, created.ComicID); !pending {
+			s.unregisterInitialDownloadNotice(ctx, created.SourceID, created.ComicID)
+		}
+	}
 	s.engine.Notify()
 	return created, queued, nil
 }

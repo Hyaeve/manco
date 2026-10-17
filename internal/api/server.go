@@ -52,13 +52,14 @@ import (
 	"github.com/hyaeve/manco/internal/source/generic"
 	"github.com/hyaeve/manco/internal/sources"
 	"github.com/hyaeve/manco/internal/store"
+	"github.com/hyaeve/manco/internal/subscriptioncover"
 	"github.com/hyaeve/manco/internal/telegram"
 )
 
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.7"
+	appVersion    = "v0.6.8"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -87,21 +88,22 @@ var sourceIconFallbacks = map[string]string{
 }
 
 type Server struct {
-	cfg       config.Config
-	store     *store.Store
-	configs   *configstore.Files
-	cache     *diskcache.Cache
-	discover  *discovercache.Cache
-	box       *secret.Box
-	registry  *sources.Registry
-	runtime   *pluginruntime.Manager
-	engine    *downloader.Engine
-	icons     *iconcache.Cache
-	scheduler *scheduler.Scheduler
-	logger    *log.Logger
-	logs      *logbuf.Buffer
-	assets    fs.FS
-	telegram  *telegram.Service
+	cfg                config.Config
+	store              *store.Store
+	configs            *configstore.Files
+	cache              *diskcache.Cache
+	discover           *discovercache.Cache
+	subscriptionCovers *subscriptioncover.Cache
+	box                *secret.Box
+	registry           *sources.Registry
+	runtime            *pluginruntime.Manager
+	engine             *downloader.Engine
+	icons              *iconcache.Cache
+	scheduler          *scheduler.Scheduler
+	logger             *log.Logger
+	logs               *logbuf.Buffer
+	assets             fs.FS
+	telegram           *telegram.Service
 
 	discoverQueueOnce sync.Once
 	discoverQueue     chan discoverCacheTask
@@ -111,9 +113,7 @@ type Server struct {
 	coverCacheMu sync.Mutex
 	coverCache   map[string]coverCacheEntry
 
-	// 订阅快照：内容没变时不重复写盘（订阅页每 5 秒轮询一次）。
-	persistMu         sync.Mutex
-	subscriptionsHash [32]byte
+	initialDownloadMu sync.Mutex
 
 	// 活动通知的短缓存：前端每 15 秒轮询一次，同一份结果没必要重复聚合。
 	activityMu  sync.Mutex
@@ -129,8 +129,10 @@ type Server struct {
 }
 
 type coverCacheEntry struct {
-	value   string
-	expires time.Time
+	value        string
+	expires      time.Time
+	folderMod    int64
+	folderExists bool
 }
 
 const localCoverCacheTTL = 30 * time.Second
@@ -168,21 +170,22 @@ type Settings struct {
 }
 
 type Options struct {
-	Config    config.Config
-	Store     *store.Store
-	Configs   *configstore.Files
-	Cache     *diskcache.Cache
-	Discover  *discovercache.Cache
-	Box       *secret.Box
-	Registry  *sources.Registry
-	Runtime   *pluginruntime.Manager
-	Engine    *downloader.Engine
-	Icons     *iconcache.Cache
-	Scheduler *scheduler.Scheduler
-	Logger    *log.Logger
-	Logs      *logbuf.Buffer
-	Assets    fs.FS
-	Telegram  *telegram.Service
+	Config             config.Config
+	Store              *store.Store
+	Configs            *configstore.Files
+	Cache              *diskcache.Cache
+	Discover           *discovercache.Cache
+	SubscriptionCovers *subscriptioncover.Cache
+	Box                *secret.Box
+	Registry           *sources.Registry
+	Runtime            *pluginruntime.Manager
+	Engine             *downloader.Engine
+	Icons              *iconcache.Cache
+	Scheduler          *scheduler.Scheduler
+	Logger             *log.Logger
+	Logs               *logbuf.Buffer
+	Assets             fs.FS
+	Telegram           *telegram.Service
 }
 
 func New(options Options) *Server {
@@ -191,21 +194,22 @@ func New(options Options) *Server {
 		logger = log.Default()
 	}
 	return &Server{
-		cfg:       options.Config,
-		store:     options.Store,
-		configs:   options.Configs,
-		cache:     options.Cache,
-		discover:  options.Discover,
-		box:       options.Box,
-		registry:  options.Registry,
-		runtime:   options.Runtime,
-		engine:    options.Engine,
-		icons:     options.Icons,
-		scheduler: options.Scheduler,
-		logger:    logger,
-		logs:      options.Logs,
-		assets:    options.Assets,
-		telegram:  options.Telegram,
+		cfg:                options.Config,
+		store:              options.Store,
+		configs:            options.Configs,
+		cache:              options.Cache,
+		discover:           options.Discover,
+		subscriptionCovers: options.SubscriptionCovers,
+		box:                options.Box,
+		registry:           options.Registry,
+		runtime:            options.Runtime,
+		engine:             options.Engine,
+		icons:              options.Icons,
+		scheduler:          options.Scheduler,
+		logger:             logger,
+		logs:               options.Logs,
+		assets:             options.Assets,
+		telegram:           options.Telegram,
 	}
 }
 
@@ -381,6 +385,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources/{id}/filters", s.requireAuth(s.handleSourceFilters))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}", s.requireAuth(s.handleComic))
 	mux.HandleFunc("GET /api/discover/cover", s.requireAuth(s.handleDiscoverCover))
+	mux.HandleFunc("GET /api/subscription-cover", s.requireAuth(s.handleSubscriptionCover))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/chapters", s.requireAuth(s.handleChapters))
 	mux.HandleFunc("POST /api/sources/{id}/comics/{comicId}/preview", s.requireAuth(s.handleChapterPreview))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/preview/image", s.requireAuth(s.handleChapterPreviewImage))
@@ -388,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/subscriptions", s.requireAuth(s.handleListSubscriptions))
 	mux.HandleFunc("GET /api/subscriptions/archived", s.requireAuth(s.handleListArchivedSubscriptions))
+	mux.HandleFunc("GET /api/subscriptions/match", s.requireAuth(s.handleMatchSubscription))
 	mux.HandleFunc("POST /api/subscriptions", s.requireAuth(s.handleCreateSubscription))
 	mux.HandleFunc("PATCH /api/subscriptions/{id}", s.requireAuth(s.handleUpdateSubscription))
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.requireAuth(s.handleDeleteSubscription))
@@ -3385,10 +3391,48 @@ func (s *Server) handleDiscoverCover(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSubscriptionCover(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	comicID := strings.TrimSpace(r.URL.Query().Get("comicId"))
+	if sourceID == "" || comicID == "" || s.subscriptionCovers == nil {
+		http.NotFound(w, r)
+		return
+	}
+	file, err := s.subscriptionCovers.OpenCover(sourceID, comicID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if contentType := mime.TypeByExtension(filepath.Ext(info.Name())); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+}
+
 func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
 	// 下载结束后自动移除临时卡片（文件保留），顺带保证列表里的状态是干净的。
 	s.pruneTemporarySubscriptions(r.Context())
-	items, err := s.store.ListSubscriptions(r.Context())
+	filter := s.subscriptionFilterFromRequest(r)
+	limit := intParam(r, "limit", 0)
+	offset := intParam(r, "offset", 0)
+	var (
+		items []model.Subscription
+		total int
+		err   error
+	)
+	if limit > 0 {
+		items, total, err = s.store.ListSubscriptionsPage(r.Context(), filter, limit, offset)
+	} else {
+		items, err = s.store.ListSubscriptions(r.Context())
+		total = len(items)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3399,48 +3443,41 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 	for index := range items {
 		items[index] = s.subscriptionWithCovers(r.Context(), items[index])
 	}
-	// 启动时会用这份快照 Restore 回数据库，所以读取时也要保持它是最新的。
-	s.persistSubscriptionsIfChanged(r.Context(), items)
-	stats, err := s.store.DownloadJobStats(r.Context())
+	s.flushSubscriptionCoverIndex()
+	stats, err := s.store.DownloadJobStatsForSubscriptions(r.Context(), items)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	jobStats := make(map[string]model.DownloadJobStats, len(stats))
-	for key, value := range stats {
-		jobStats[key] = value
+	kindCounts := s.subscriptionKindCounts(r.Context())
+	downloadDirs, err := s.store.SubscriptionDownloadDirs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	// 订阅清单也分页：先返回一页，前端滚到底再补；快照仍然按全量写盘。
-	total := len(items)
-	if limit := intParam(r, "limit", 0); limit > 0 {
-		offset := intParam(r, "offset", 0)
-		if offset < 0 {
-			offset = 0
-		}
-		if offset > total {
-			offset = total
-		}
-		end := offset + limit
-		if end > total {
-			end = total
-		}
-		items = items[offset:end]
+	activePending, err := s.store.ActiveDownloadJobCount(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "jobStats": jobStats})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":         items,
+		"total":         total,
+		"jobStats":      stats,
+		"kindCounts":    kindCounts,
+		"downloadDirs":  downloadDirs,
+		"activePending": activePending,
+	})
 }
 
-// persistSubscriptionsIfChanged 只在内容变化时重写 configstore 的订阅快照。
 // pruneTemporarySubscriptions 移除「临时下载卡片」：只有仍有进行中或失败任务
 // 时保留卡片；完成、取消且无其他任务时移除，已经下载到本地的文件保持不动。
 func (s *Server) pruneTemporarySubscriptions(ctx context.Context) {
-	items, err := s.store.ListSubscriptions(ctx)
+	items, err := s.store.ListTemporarySubscriptions(ctx)
 	if err != nil {
 		return
 	}
 	for _, item := range items {
-		if !item.Temporary {
-			continue
-		}
 		jobs, err := s.store.DownloadJobsByComic(ctx, item.SourceID, item.ComicID)
 		if err != nil {
 			continue
@@ -3464,6 +3501,66 @@ func (s *Server) pruneTemporarySubscriptions(ctx context.Context) {
 	}
 }
 
+func (s *Server) subscriptionFilterFromRequest(r *http.Request) store.SubscriptionFilter {
+	query := r.URL.Query()
+	filter := store.SubscriptionFilter{
+		DownloadDir: strings.TrimSpace(query.Get("dir")),
+		Sort:        strings.ToLower(strings.TrimSpace(query.Get("sort"))),
+		Descending:  true,
+	}
+	if raw := strings.TrimSpace(query.Get("desc")); raw != "" {
+		filter.Descending = raw != "0" && !strings.EqualFold(raw, "false")
+	}
+	kind := strings.ToLower(strings.TrimSpace(query.Get("kind")))
+	if kind == "" || kind == "all" || s.registry == nil {
+		return filter
+	}
+	var bookSources, otherSources []string
+	for _, info := range s.registry.List() {
+		switch source.KindOf(info) {
+		case source.KindBook:
+			bookSources = append(bookSources, info.ID)
+		case source.KindOther:
+			otherSources = append(otherSources, info.ID)
+		}
+	}
+	switch kind {
+	case source.KindBook:
+		filter.SourceIDs = bookSources
+		filter.MatchNone = len(bookSources) == 0
+	case source.KindOther:
+		filter.SourceIDs = otherSources
+		filter.MatchNone = len(otherSources) == 0
+	case source.KindComic:
+		filter.ExcludeSourceIDs = append(filter.ExcludeSourceIDs, bookSources...)
+		filter.ExcludeSourceIDs = append(filter.ExcludeSourceIDs, otherSources...)
+	}
+	return filter
+}
+
+func (s *Server) subscriptionKindCounts(ctx context.Context) map[string]int {
+	counts := map[string]int{"all": 0, source.KindComic: 0, source.KindBook: 0, source.KindOther: 0}
+	kindBySource := map[string]string{}
+	if s.registry != nil {
+		for _, info := range s.registry.List() {
+			kindBySource[info.ID] = source.KindOf(info)
+		}
+	}
+	sourceCounts, err := s.store.SubscriptionSourceCounts(ctx)
+	if err != nil {
+		return counts
+	}
+	for sourceID, count := range sourceCounts {
+		kind := kindBySource[sourceID]
+		if kind == "" {
+			kind = source.KindComic
+		}
+		counts["all"] += count
+		counts[kind] += count
+	}
+	return counts
+}
+
 // cancelUnfinishedJobs 取消某部作品正在下载/排队的任务并删掉这些任务记录；
 // 已下载文件与已完成记录都不动。
 func (s *Server) cancelUnfinishedJobs(ctx context.Context, sub model.Subscription) {
@@ -3480,25 +3577,6 @@ func (s *Server) cancelUnfinishedJobs(ctx context.Context, sub model.Subscriptio
 	}
 }
 
-// 订阅页每 5 秒轮询一次，之前每次都要整份写盘。
-func (s *Server) persistSubscriptionsIfChanged(ctx context.Context, items []model.Subscription) {
-	raw, err := json.Marshal(items)
-	if err != nil {
-		return
-	}
-	sum := sha256.Sum256(raw)
-	s.persistMu.Lock()
-	unchanged := s.subscriptionsHash == sum
-	if !unchanged {
-		s.subscriptionsHash = sum
-	}
-	s.persistMu.Unlock()
-	if unchanged {
-		return
-	}
-	_ = s.configs.PersistSubscriptions(ctx, s.store)
-}
-
 // handleListArchivedSubscriptions 返回归档集里的订阅卡片，供订阅清单的“归档集”窗口展示。
 func (s *Server) handleListArchivedSubscriptions(w http.ResponseWriter, r *http.Request) {
 	items, err := s.store.ListArchivedSubscriptions(r.Context())
@@ -3512,7 +3590,8 @@ func (s *Server) handleListArchivedSubscriptions(w http.ResponseWriter, r *http.
 	for index := range items {
 		items[index] = s.subscriptionWithCovers(r.Context(), items[index])
 	}
-	stats, err := s.store.DownloadJobStats(r.Context())
+	s.flushSubscriptionCoverIndex()
+	stats, err := s.store.DownloadJobStatsForSubscriptions(r.Context(), items)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -3522,6 +3601,30 @@ func (s *Server) handleListArchivedSubscriptions(w http.ResponseWriter, r *http.
 		jobStats[key] = value
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "jobStats": jobStats})
+}
+
+func (s *Server) handleMatchSubscription(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	comicID := strings.TrimSpace(r.URL.Query().Get("comicId"))
+	if sourceID == "" || comicID == "" {
+		writeError(w, http.StatusBadRequest, "缺少 sourceId 或 comicId")
+		return
+	}
+	latestDownloadDir, err := s.store.LatestSubscriptionDownloadDir(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	item, err := s.store.SubscriptionByComic(r.Context(), sourceID, comicID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusOK, map[string]any{"item": nil, "latestDownloadDir": latestDownloadDir})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"item": item, "latestDownloadDir": latestDownloadDir})
 }
 
 func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -3613,17 +3716,212 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	response := map[string]any{"item": s.subscriptionWithCovers(r.Context(), saved)}
+	s.flushSubscriptionCoverIndex()
 	if payload.AllChapters {
+		s.registerInitialDownloadNotice(r.Context(), saved)
 		queued, skipped, queueErr := s.scheduler.QueueAll(r.Context(), saved)
 		if queueErr != nil {
 			s.logger.Printf("api: queue all subscription %d: %v", saved.ID, queueErr)
 			response["queueError"] = queueErr.Error()
+			if pending, _ := s.store.InitialDownloadBatchPending(r.Context(), saved.SourceID, saved.ComicID); !pending {
+				s.unregisterInitialDownloadNotice(r.Context(), saved.SourceID, saved.ComicID)
+			}
 		} else {
 			response["queued"] = queued
 			response["skipped"] = skipped
+			if queued == 0 {
+				s.unregisterInitialDownloadNotice(r.Context(), saved.SourceID, saved.ComicID)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+type initialDownloadNoticeState struct {
+	SubscriptionID int64     `json:"subscriptionId"`
+	SourceID       string    `json:"sourceId"`
+	ComicID        string    `json:"comicId"`
+	StartedAt      time.Time `json:"startedAt"`
+}
+
+func initialDownloadNoticeKey(sourceID, comicID string) string {
+	return sourceID + "\x00" + comicID
+}
+
+func (s *Server) initialDownloadNotices(ctx context.Context) map[string]initialDownloadNoticeState {
+	result := map[string]initialDownloadNoticeState{}
+	raw, err := s.store.Setting(ctx, "initial_download_notices")
+	if err == nil && strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &result)
+	}
+	return result
+}
+
+func (s *Server) saveInitialDownloadNotices(ctx context.Context, notices map[string]initialDownloadNoticeState) error {
+	raw, err := json.Marshal(notices)
+	if err != nil {
+		return err
+	}
+	return s.store.SetSetting(ctx, "initial_download_notices", string(raw))
+}
+
+func (s *Server) registerInitialDownloadNotice(ctx context.Context, subscription model.Subscription) {
+	s.initialDownloadMu.Lock()
+	defer s.initialDownloadMu.Unlock()
+	notices := s.initialDownloadNotices(ctx)
+	notices[initialDownloadNoticeKey(subscription.SourceID, subscription.ComicID)] = initialDownloadNoticeState{
+		SubscriptionID: subscription.ID,
+		SourceID:       subscription.SourceID,
+		ComicID:        subscription.ComicID,
+		StartedAt:      time.Now(),
+	}
+	if err := s.saveInitialDownloadNotices(ctx, notices); err != nil {
+		s.logger.Printf("api: register initial download notice %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
+	}
+}
+
+func (s *Server) unregisterInitialDownloadNotice(ctx context.Context, sourceID, comicID string) {
+	s.initialDownloadMu.Lock()
+	defer s.initialDownloadMu.Unlock()
+	notices := s.initialDownloadNotices(ctx)
+	delete(notices, initialDownloadNoticeKey(sourceID, comicID))
+	if err := s.saveInitialDownloadNotices(ctx, notices); err != nil {
+		s.logger.Printf("api: unregister initial download notice %s/%s: %v", sourceID, comicID, err)
+	}
+}
+
+// RunInitialDownloadNotifications checks historical download batches on a
+// low-frequency timer so a restart cannot lose a completion notification.
+func (s *Server) RunInitialDownloadNotifications(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	s.processInitialDownloadNotices(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.processInitialDownloadNotices(ctx)
+		}
+	}
+}
+
+func (s *Server) processInitialDownloadNotices(ctx context.Context) {
+	if s.telegram == nil || !s.telegram.NotificationReady() {
+		return
+	}
+	s.initialDownloadMu.Lock()
+	defer s.initialDownloadMu.Unlock()
+	notices := s.initialDownloadNotices(ctx)
+	if len(notices) == 0 {
+		return
+	}
+	changed := false
+	now := time.Now()
+	for key, state := range notices {
+		subscription, err := s.store.Subscription(ctx, state.SubscriptionID)
+		if errors.Is(err, store.ErrNotFound) {
+			delete(notices, key)
+			changed = true
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		pending, err := s.store.InitialDownloadBatchPending(ctx, state.SourceID, state.ComicID)
+		if err != nil || pending {
+			continue
+		}
+		jobs, err := s.store.DownloadJobsByComic(ctx, state.SourceID, state.ComicID)
+		if err != nil {
+			continue
+		}
+		succeeded := 0
+		failed := 0
+		for _, job := range jobs {
+			finished := job.UpdatedAt
+			if job.FinishedAt != nil {
+				finished = *job.FinishedAt
+			}
+			if finished.Before(state.StartedAt) {
+				continue
+			}
+			switch job.Status {
+			case "completed":
+				succeeded++
+			case "failed", "canceled":
+				failed++
+			}
+		}
+		item := s.subscriptionWithCovers(ctx, subscription)
+		author, description := s.subscriptionLocalMetadata(item)
+		if strings.TrimSpace(item.Author) == "" {
+			item.Author = author
+		}
+		notice := telegram.SubscriptionDownloadCompletedNotice{
+			Title:          item.Title,
+			Author:         item.Author,
+			Description:    description,
+			CoverURL:       item.Cover,
+			CoverFile:      s.localCoverFileForSubscription(item),
+			Succeeded:      succeeded,
+			Failed:         failed,
+			NextCheckLabel: nextSubscriptionCheckLabel(item.CronExpr, now),
+		}
+		s.telegram.SubscriptionDownloadCompleted(ctx, notice)
+		delete(notices, key)
+		changed = true
+	}
+	if changed {
+		if err := s.saveInitialDownloadNotices(ctx, notices); err != nil {
+			s.logger.Printf("api: save initial download notices: %v", err)
+		}
+	}
+}
+
+func (s *Server) localCoverFileForSubscription(subscription model.Subscription) string {
+	root, err := s.cleanDownloadDir(subscription.DownloadDir)
+	if err != nil {
+		return ""
+	}
+	series := strings.TrimSpace(subscription.SeriesDir)
+	if series == "" {
+		series = downloader.SeriesDirectoryName(subscription.Title, subscription.ConvertToSimplified)
+	}
+	covers, err := filepath.Glob(filepath.Join(root, downloader.SafeName(series), "cover.*"))
+	if err != nil || len(covers) == 0 {
+		return ""
+	}
+	sort.Strings(covers)
+	return covers[0]
+}
+
+func nextSubscriptionCheckLabel(expression string, now time.Time) string {
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		return "未启用自动追更"
+	}
+	next, err := cronutil.Next(expression, now)
+	if err != nil {
+		return "Cron 表达式无效"
+	}
+	localNow := now.In(time.Local)
+	localNext := next.In(time.Local)
+	today := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, localNow.Location())
+	target := time.Date(localNext.Year(), localNext.Month(), localNext.Day(), 0, 0, 0, 0, localNext.Location())
+	days := int(target.Sub(today).Hours() / 24)
+	clock := localNext.Format("15:04")
+	switch days {
+	case 0:
+		return "今天 " + clock
+	case 1:
+		return "明天 " + clock
+	case 2:
+		return "后天 " + clock
+	default:
+		weekdays := []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+		return "下周" + strings.TrimPrefix(weekdays[int(localNext.Weekday())], "周") + " " + clock
+	}
 }
 
 func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -3714,6 +4012,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 	updated = s.subscriptionWithCovers(r.Context(), updated)
+	s.flushSubscriptionCoverIndex()
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -4561,29 +4860,33 @@ func (s *Server) localCoverForDir(root, folder string) string {
 		return ""
 	}
 	key := root + "\x00" + folder
-	if value, ok := s.cachedLocalCover(key); ok {
+	var folderMod int64
+	folderExists := false
+	if info, statErr := os.Stat(folder); statErr == nil {
+		folderMod = info.ModTime().UnixNano()
+		folderExists = true
+	}
+	if value, ok := s.cachedLocalCover(key, folderMod, folderExists); ok {
 		return value
 	}
 	value := resolveLocalCover(root, folder)
-	// 只缓存命中的结果：目录里还没有 cover 时不能缓存，否则刚下载完的作品
-	// 会在 TTL 内一直查不到封面。
-	if value != "" {
-		s.rememberLocalCover(key, value)
-	}
+	// 未命中也缓存，但同时记录目录状态。目录或封面发生变化时签名会失效，
+	// 因此既不会每轮轮询都扫描 NAS，也不会把刚下载的封面缓存成长期空白。
+	s.rememberLocalCover(key, value, folderMod, folderExists)
 	return value
 }
 
-func (s *Server) cachedLocalCover(key string) (string, bool) {
+func (s *Server) cachedLocalCover(key string, folderMod int64, folderExists bool) (string, bool) {
 	s.coverCacheMu.Lock()
 	defer s.coverCacheMu.Unlock()
 	entry, ok := s.coverCache[key]
-	if !ok || time.Now().After(entry.expires) {
+	if !ok || time.Now().After(entry.expires) || entry.folderMod != folderMod || entry.folderExists != folderExists {
 		return "", false
 	}
 	return entry.value, true
 }
 
-func (s *Server) rememberLocalCover(key, value string) {
+func (s *Server) rememberLocalCover(key, value string, folderMod int64, folderExists bool) {
 	s.coverCacheMu.Lock()
 	defer s.coverCacheMu.Unlock()
 	if s.coverCache == nil {
@@ -4593,7 +4896,12 @@ func (s *Server) rememberLocalCover(key, value string) {
 	if len(s.coverCache) > 4096 {
 		s.coverCache = make(map[string]coverCacheEntry, 64)
 	}
-	s.coverCache[key] = coverCacheEntry{value: value, expires: time.Now().Add(localCoverCacheTTL)}
+	s.coverCache[key] = coverCacheEntry{
+		value:        value,
+		expires:      time.Now().Add(localCoverCacheTTL),
+		folderMod:    folderMod,
+		folderExists: folderExists,
+	}
 }
 
 func resolveLocalCover(root, folder string) string {
@@ -4618,10 +4926,60 @@ func resolveLocalCover(root, folder string) string {
 
 func (s *Server) subscriptionWithCovers(ctx context.Context, subscription model.Subscription) model.Subscription {
 	subscription.LocalCover = s.localCoverForSubscription(subscription)
-	if subscription.LocalCover == "" && s.discover != nil {
-		subscription.CachedCover = s.discover.CachedCoverURL(subscription.SourceID, subscription.ComicID)
+	indexedCover := ""
+	if s.subscriptionCovers != nil {
+		coverSource := localCoverFileFromToken(subscription, subscription.LocalCover)
+		if coverSource == "" && s.discover != nil {
+			coverSource = s.discover.CachedCoverPath(subscription.SourceID, subscription.ComicID)
+		}
+		if url, err := s.subscriptionCovers.Update(subscription, coverSource); err == nil {
+			indexedCover = url
+		} else {
+			s.logger.Printf("api: index subscription cover %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
+		}
+	}
+	if subscription.LocalCover == "" {
+		switch {
+		case indexedCover != "":
+			subscription.CachedCover = indexedCover
+		case s.discover != nil:
+			subscription.CachedCover = s.discover.CachedCoverURL(subscription.SourceID, subscription.ComicID)
+		}
 	}
 	return subscription
+}
+
+func localCoverFileFromToken(subscription model.Subscription, token string) string {
+	if strings.TrimSpace(token) == "" {
+		return ""
+	}
+	separator := strings.LastIndex(token, "|")
+	if separator <= 0 || separator == len(token)-1 {
+		return ""
+	}
+	root := token[:separator]
+	relative := filepath.FromSlash(token[separator+1:])
+	if filePath, err := filepath.Abs(root); err == nil {
+		root = filePath
+	}
+	candidate := filepath.Join(root, relative)
+	relativeToRoot, err := filepath.Rel(root, candidate)
+	if err != nil || relativeToRoot == ".." || strings.HasPrefix(relativeToRoot, ".."+string(os.PathSeparator)) {
+		return ""
+	}
+	if info, err := os.Stat(candidate); err != nil || info.IsDir() || info.Size() == 0 {
+		return ""
+	}
+	return candidate
+}
+
+func (s *Server) flushSubscriptionCoverIndex() {
+	if s.subscriptionCovers == nil {
+		return
+	}
+	if err := s.subscriptionCovers.Flush(); err != nil {
+		s.logger.Printf("api: flush subscription cover index: %v", err)
+	}
 }
 
 func (s *Server) localCoverFallbacks(ctx context.Context) map[string]string {
@@ -4945,6 +5303,7 @@ type localItemEntry struct {
 	Cover       string           `json:"cover,omitempty"`
 	CachedCover string           `json:"cachedCover,omitempty"`
 	SourceCover string           `json:"sourceCover,omitempty"`
+	CoverBlur   bool             `json:"coverBlur,omitempty"`
 	Files       []localFileEntry `json:"files"`
 	TotalFiles  int              `json:"totalFiles"`
 	Size        int64            `json:"size"`
@@ -4989,8 +5348,19 @@ func localPath(root, rel string) string {
 // produced by a recorded download job.
 func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 	roots := s.localRoots(r.Context())
+	subscriptions, _ := s.store.ListAllSubscriptions(r.Context())
+	coverBlurByComic := make(map[string]bool, len(subscriptions))
+	blurSignature := make([]string, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		key := subscription.SourceID + "\x00" + subscription.ComicID
+		coverBlurByComic[key] = subscription.CoverBlur
+		if subscription.CoverBlur {
+			blurSignature = append(blurSignature, key)
+		}
+	}
+	sort.Strings(blurSignature)
 	// 60 秒内的重复请求直接用上次扫描结果，刷新页面不再等 NAS 目录遍历。
-	cacheKey := strings.Join(roots, "\x00")
+	cacheKey := strings.Join(roots, "\x00") + "\x01" + strings.Join(blurSignature, "\x00")
 	s.libraryMu.Lock()
 	if s.libraryItems != nil && s.libraryKey == cacheKey && time.Since(s.libraryAt) < 60*time.Second {
 		items := s.libraryItems
@@ -5026,6 +5396,7 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 					item.CachedCover = s.discover.CachedCoverURL(sourceID, comicID)
 				}
 				item.SourceCover = fallbacks[sourceID+"\x00"+comicID]
+				item.CoverBlur = coverBlurByComic[sourceID+"\x00"+comicID]
 			}
 			for i := range item.Files {
 				item.Files[i].Path = localPath(root, item.Files[i].Path)
@@ -6659,6 +7030,7 @@ func (s *Server) handleDashboardUpcoming(w http.ResponseWriter, r *http.Request)
 		LocalCover  string    `json:"localCover,omitempty"`
 		Author      string    `json:"author,omitempty"`
 		Description string    `json:"description,omitempty"`
+		CoverBlur   bool      `json:"coverBlur,omitempty"`
 		CronExpr    string    `json:"cronExpr"`
 		NextRun     time.Time `json:"nextRun"`
 	}
@@ -6690,6 +7062,11 @@ func (s *Server) handleDashboardUpcoming(w http.ResponseWriter, r *http.Request)
 	items := make([]upcomingItem, 0, len(candidates))
 	for _, candidate := range candidates {
 		item := s.subscriptionWithCovers(r.Context(), candidate.subscription)
+		if s.subscriptionCovers != nil {
+			if _, indexed := s.subscriptionCovers.Lookup(item.SourceID, item.ComicID); !indexed {
+				go s.materializeSubscriptionCover(candidate.subscription)
+			}
+		}
 		author, description := s.subscriptionLocalMetadata(item)
 		if strings.TrimSpace(item.Author) == "" {
 			item.Author = author
@@ -6711,11 +7088,47 @@ func (s *Server) handleDashboardUpcoming(w http.ResponseWriter, r *http.Request)
 			LocalCover:  item.LocalCover,
 			Author:      strings.TrimSpace(item.Author),
 			Description: strings.TrimSpace(description),
+			CoverBlur:   item.CoverBlur,
 			CronExpr:    item.CronExpr,
 			NextRun:     candidate.next,
 		})
 	}
+	s.flushSubscriptionCoverIndex()
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) materializeSubscriptionCover(subscription model.Subscription) {
+	if s.subscriptionCovers == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var materialize subscriptioncover.Materializer
+	client := http.DefaultClient
+	if s.registry != nil {
+		client = s.registry.Client()
+		if adapter, err := s.registry.Get(subscription.SourceID); err == nil {
+			if imageSource, ok := adapter.(source.ImageSource); ok {
+				account, accountErr := s.registry.Account(ctx, subscription.SourceID)
+				if accountErr == nil {
+					materialize = func(ctx context.Context, comic model.Comic) ([]byte, string, error) {
+						select {
+						case pluginCoverFetchSlots <- struct{}{}:
+							defer func() { <-pluginCoverFetchSlots }()
+						case <-ctx.Done():
+							return nil, "", ctx.Err()
+						}
+						return imageSource.CoverImage(ctx, account, comic)
+					}
+				}
+			}
+		}
+	}
+	if _, err := s.subscriptionCovers.Materialize(ctx, client, subscription, materialize); err != nil {
+		s.logger.Printf("api: materialize subscription cover %s/%s: %v", subscription.SourceID, subscription.ComicID, err)
+		return
+	}
+	s.flushSubscriptionCoverIndex()
 }
 
 func (s *Server) subscriptionLocalMetadata(subscription model.Subscription) (string, string) {

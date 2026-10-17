@@ -137,6 +137,24 @@ func (c *Cache) CachedCoverURL(sourceID, comicID string) string {
 	return coverURL(sourceID, entry.Kind, id)
 }
 
+// CachedCoverPath returns the materialized cover path for callers that need to
+// copy the image into another persistent cache without issuing another request.
+func (c *Cache) CachedCoverPath(sourceID, comicID string) string {
+	if c == nil {
+		return ""
+	}
+	entry, ok := c.findIndexed(sourceID, comicID)
+	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
+		return ""
+	}
+	filePath := filepath.Join(entry.Path, entry.CoverFile)
+	info, err := os.Stat(filePath)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return ""
+	}
+	return filePath
+}
+
 func (c *Cache) Get(sourceID, kind, comicID string) (model.ComicDetail, bool) {
 	entry, path, ok := c.read(sourceID, kind, comicID)
 	if !ok {

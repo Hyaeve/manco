@@ -163,24 +163,28 @@ onMounted(async () => {
     loading.value = false
   }
   try {
+    const resolvedComicId = comic.value?.id || comicId
     const [sourcePayload, subscriptionPayload] = await Promise.all([
       api.sources().catch(() => ({ items: [] })),
-      api.subscriptions().catch(() => ({ items: [] })),
+      api.matchSubscription(sourceId, resolvedComicId).catch(() => ({ item: null, latestDownloadDir: '' })),
     ])
     const source = (sourcePayload.items || []).find((item) => item.id === sourceId)
     sourceAccounts.value = sourcePayload.accounts || {}
     isBook.value = source?.kind === 'book'
-    existingSubscription.value =
-      (subscriptionPayload.items || []).find((item) => {
-        if (String(item.sourceId) !== String(sourceId)) return false
-        return [comicId, comic.value?.id].some((id) => String(id) === String(item.comicId))
-      }) || null
+    let matchedSubscription = subscriptionPayload.item || null
+    if (!matchedSubscription && String(resolvedComicId) !== String(comicId)) {
+      matchedSubscription = await api
+        .matchSubscription(sourceId, comicId)
+        .then((payload) => payload.item || null)
+        .catch(() => null)
+    }
+    existingSubscription.value = matchedSubscription
     if (sourceDefaultDownloadDir.value) {
       // 该内容源设了默认下载位置时优先使用它。
       subForm.value.downloadDir = sourceDefaultDownloadDir.value
       downloadForm.value.downloadDir = sourceDefaultDownloadDir.value
-    } else if (!lastSubscriptionDownloadDir() && subscriptionPayload.items?.length) {
-      const latestDownloadDir = subscriptionPayload.items[0].downloadDir || ''
+    } else if (!lastSubscriptionDownloadDir() && subscriptionPayload.latestDownloadDir) {
+      const latestDownloadDir = subscriptionPayload.latestDownloadDir
       subForm.value.downloadDir = latestDownloadDir
       rememberSubscriptionDownloadDir(latestDownloadDir)
     }

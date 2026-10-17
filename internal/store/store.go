@@ -18,24 +18,57 @@ var ErrNotFound = errors.New("not found")
 var ErrUsernameTaken = errors.New("username already exists")
 
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	read *sql.DB
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-8192)")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &Store{db: db}
 	if err := store.migrate(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	readDB, err := sql.Open("sqlite", path+"?mode=ro&_pragma=busy_timeout(10000)&_pragma=query_only(1)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-8192)")
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	readDB.SetMaxOpenConns(3)
+	readDB.SetMaxIdleConns(3)
+	store.read = readDB
+	if _, err := db.ExecContext(context.Background(), `PRAGMA optimize`); err != nil {
+		_ = readDB.Close()
 		_ = db.Close()
 		return nil, err
 	}
 	return store, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) reader() *sql.DB {
+	if s.read != nil {
+		return s.read
+	}
+	return s.db
+}
+
+func (s *Store) Close() error {
+	_, _ = s.db.Exec(`PRAGMA optimize`)
+	var readErr error
+	if s.read != nil {
+		readErr = s.read.Close()
+	}
+	writeErr := s.db.Close()
+	if readErr != nil {
+		return readErr
+	}
+	return writeErr
+}
 
 func (s *Store) migrate(ctx context.Context) error {
 	statements := []string{
@@ -117,6 +150,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			UNIQUE(source_id, comic_id, chapter_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_download_jobs_status ON download_jobs(status, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_download_jobs_completed_finished ON download_jobs(finished_at DESC, id DESC) WHERE status = 'completed'`,
+		`CREATE INDEX IF NOT EXISTS idx_download_jobs_retry_due ON download_jobs(next_retry_at ASC) WHERE status = 'failed' AND next_retry_at IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS custom_sources (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
@@ -207,6 +242,17 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "subscriptions", "chapter_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_active_created ON subscriptions(created_at ASC, id ASC) WHERE archived_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_active_updated ON subscriptions(updated_at DESC, id DESC) WHERE archived_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_active_title ON subscriptions(title COLLATE NOCASE ASC, id ASC) WHERE archived_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_active_dir ON subscriptions(download_dir ASC, created_at ASC, id ASC) WHERE archived_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_subscriptions_archived ON subscriptions(archived_at DESC, id DESC) WHERE archived_at IS NOT NULL`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
 	if err := s.ensureColumn(ctx, "download_jobs", "retry_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
 		return err
 	}
@@ -268,7 +314,7 @@ func (s *Store) migrate(ctx context.Context) error {
 // DownloadJobStats aggregates per-work completed and failed chapter counts so
 // subscription cards stay accurate even when the task list itself is paged.
 func (s *Store) DownloadJobStats(ctx context.Context) (map[string]model.DownloadJobStats, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.reader().QueryContext(ctx, `
 		SELECT source_id, comic_id,
 			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
 			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
@@ -289,6 +335,60 @@ func (s *Store) DownloadJobStats(ctx context.Context) (map[string]model.Download
 		stats[sourceID+"\x00"+comicID] = model.DownloadJobStats{Succeeded: succeeded, Failed: failed, Pending: pending}
 	}
 	return stats, rows.Err()
+}
+
+// DownloadJobStatsForSubscriptions aggregates only the works visible on the
+// current page. The subscription page used to scan every historical job on
+// each poll just to render at most a few dozen cards.
+func (s *Store) DownloadJobStatsForSubscriptions(ctx context.Context, subscriptions []model.Subscription) (map[string]model.DownloadJobStats, error) {
+	stats := map[string]model.DownloadJobStats{}
+	if len(subscriptions) == 0 {
+		return stats, nil
+	}
+	seen := make(map[string]bool, len(subscriptions))
+	values := make([]string, 0, len(subscriptions))
+	args := make([]any, 0, len(subscriptions)*2)
+	for _, subscription := range subscriptions {
+		key := subscription.SourceID + "\x00" + subscription.ComicID
+		if subscription.SourceID == "" || subscription.ComicID == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		values = append(values, "(?, ?)")
+		args = append(args, subscription.SourceID, subscription.ComicID)
+	}
+	if len(values) == 0 {
+		return stats, nil
+	}
+	query := `
+		WITH wanted(source_id, comic_id) AS (VALUES ` + strings.Join(values, ",") + `)
+		SELECT jobs.source_id, jobs.comic_id,
+			SUM(CASE WHEN jobs.status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
+			SUM(CASE WHEN jobs.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN jobs.status IN ('queued', 'running', 'waiting', 'paused') THEN 1 ELSE 0 END) AS pending
+		FROM download_jobs AS jobs
+		INNER JOIN wanted ON wanted.source_id = jobs.source_id AND wanted.comic_id = jobs.comic_id
+		GROUP BY jobs.source_id, jobs.comic_id`
+	rows, err := s.reader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sourceID, comicID string
+		var succeeded, failed, pending int
+		if err := rows.Scan(&sourceID, &comicID, &succeeded, &failed, &pending); err != nil {
+			return nil, err
+		}
+		stats[sourceID+"\x00"+comicID] = model.DownloadJobStats{Succeeded: succeeded, Failed: failed, Pending: pending}
+	}
+	return stats, rows.Err()
+}
+
+func (s *Store) ActiveDownloadJobCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued', 'running', 'waiting', 'paused')`).Scan(&count)
+	return count, err
 }
 
 func (s *Store) ensureColumn(ctx context.Context, table, column, declaration string) error {
@@ -356,7 +456,7 @@ func (s *Store) EnsureUser(ctx context.Context, username, passwordHash string) e
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
+	err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
 	return count, err
 }
 
@@ -369,7 +469,7 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) e
 }
 
 func (s *Store) ListUsers(ctx context.Context) ([]model.User, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, username, password_hash, created_at FROM users ORDER BY id`)
+	rows, err := s.reader().QueryContext(ctx, `SELECT id, username, password_hash, created_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +501,7 @@ func (s *Store) UpsertUser(ctx context.Context, user model.User) error {
 
 func (s *Store) UserByUsername(ctx context.Context, username string) (model.User, error) {
 	var user model.User
-	err := s.db.QueryRowContext(ctx, `SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username).
+	err := s.reader().QueryRowContext(ctx, `SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username).
 		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.User{}, ErrNotFound
@@ -416,7 +516,7 @@ func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID int6
 
 func (s *Store) UserBySession(ctx context.Context, tokenHash string, now time.Time) (model.User, error) {
 	var user model.User
-	err := s.db.QueryRowContext(ctx, `
+	err := s.reader().QueryRowContext(ctx, `
 		SELECT u.id, u.username, u.password_hash, u.created_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`, tokenHash, now.UTC()).
@@ -466,11 +566,11 @@ func (s *Store) UpsertSourceAccount(ctx context.Context, account model.SourceAcc
 }
 
 func (s *Store) SourceAccount(ctx context.Context, sourceID string) (model.SourceAccount, error) {
-	return s.scanAccount(s.db.QueryRowContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at FROM source_accounts WHERE source_id = ?`, sourceID))
+	return s.scanAccount(s.reader().QueryRowContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at FROM source_accounts WHERE source_id = ?`, sourceID))
 }
 
 func (s *Store) ListSourceAccounts(ctx context.Context) ([]model.SourceAccount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at FROM source_accounts ORDER BY source_id`)
+	rows, err := s.reader().QueryContext(ctx, `SELECT id, source_id, username, secret_cipher, token_cipher, cookie_cipher, user_agent_cipher, home_url, extra_json, updated_at FROM source_accounts ORDER BY source_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -538,11 +638,11 @@ func (s *Store) UpsertCustomSource(ctx context.Context, item model.CustomSource)
 }
 
 func (s *Store) CustomSource(ctx context.Context, id string) (model.CustomSource, error) {
-	return scanCustomSource(s.db.QueryRowContext(ctx, `SELECT id, name, kind, description, homepage, icon, repo_url, config_json, enabled, hidden, created_at, updated_at FROM custom_sources WHERE id = ?`, id))
+	return scanCustomSource(s.reader().QueryRowContext(ctx, `SELECT id, name, kind, description, homepage, icon, repo_url, config_json, enabled, hidden, created_at, updated_at FROM custom_sources WHERE id = ?`, id))
 }
 
 func (s *Store) ListCustomSources(ctx context.Context) ([]model.CustomSource, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, kind, description, homepage, icon, repo_url, config_json, enabled, hidden, created_at, updated_at FROM custom_sources ORDER BY created_at ASC, id ASC`)
+	rows, err := s.reader().QueryContext(ctx, `SELECT id, name, kind, description, homepage, icon, repo_url, config_json, enabled, hidden, created_at, updated_at FROM custom_sources ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -606,11 +706,11 @@ func (s *Store) UpsertExtensionRepository(ctx context.Context, item model.Extens
 }
 
 func (s *Store) ExtensionRepository(ctx context.Context, id string) (model.ExtensionRepository, error) {
-	return scanExtensionRepository(s.db.QueryRowContext(ctx, `SELECT id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories WHERE id = ?`, id))
+	return scanExtensionRepository(s.reader().QueryRowContext(ctx, `SELECT id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories WHERE id = ?`, id))
 }
 
 func (s *Store) ListExtensionRepositories(ctx context.Context) ([]model.ExtensionRepository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories ORDER BY created_at ASC, id ASC`)
+	rows, err := s.reader().QueryContext(ctx, `SELECT id, name, custom_name, kind, url, description, icon, enabled, catalog_json, last_sync_at, last_error, created_at, updated_at FROM extension_repositories ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +753,7 @@ func (s *Store) DeleteExtensionRepository(ctx context.Context, id string) error 
 // result is reused until the repository re-syncs a new version.
 func (s *Store) ExtensionCandidates(ctx context.Context, repositoryID, extensionID string) (string, string, error) {
 	var payload, version string
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader().QueryRowContext(ctx,
 		`SELECT payload_json, version FROM extension_source_cache WHERE repository_id = ? AND extension_id = ?`,
 		repositoryID, extensionID).Scan(&payload, &version)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -724,16 +824,30 @@ func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) 
 }
 
 func (s *Store) SubscriptionByComic(ctx context.Context, sourceID, comicID string) (model.Subscription, error) {
-	return scanSubscription(s.db.QueryRowContext(ctx, subscriptionSelect+` WHERE source_id = ? AND comic_id = ?`, sourceID, comicID))
+	return scanSubscription(s.reader().QueryRowContext(ctx, subscriptionSelect+` WHERE source_id = ? AND comic_id = ?`, sourceID, comicID))
 }
 
 func (s *Store) Subscription(ctx context.Context, id int64) (model.Subscription, error) {
-	return scanSubscription(s.db.QueryRowContext(ctx, subscriptionSelect+` WHERE id = ?`, id))
+	return scanSubscription(s.reader().QueryRowContext(ctx, subscriptionSelect+` WHERE id = ?`, id))
+}
+
+func (s *Store) LatestSubscriptionDownloadDir(ctx context.Context) (string, error) {
+	var dir string
+	err := s.reader().QueryRowContext(ctx, `
+		SELECT download_dir
+		FROM subscriptions
+		WHERE archived_at IS NULL AND TRIM(download_dir) <> ''
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`).Scan(&dir)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return dir, err
 }
 
 func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, error) {
 	// 订阅清单按订阅先后排序（最早 → 最新），和本地仓库的目录胶囊、TG 列表一致。
-	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NULL ORDER BY created_at ASC, id ASC`)
+	rows, err := s.reader().QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NULL ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -751,9 +865,158 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 
 const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary FROM subscriptions`
 
+type SubscriptionFilter struct {
+	SourceIDs        []string
+	ExcludeSourceIDs []string
+	DownloadDir      string
+	Sort             string
+	Descending       bool
+	MatchNone        bool
+}
+
+func subscriptionFilterClause(filter SubscriptionFilter) (string, []any) {
+	clauses := []string{"archived_at IS NULL"}
+	args := make([]any, 0, len(filter.SourceIDs)+len(filter.ExcludeSourceIDs)+1)
+	if filter.MatchNone {
+		clauses = append(clauses, "0 = 1")
+	}
+	if sourceIDs := filter.SourceIDs; len(sourceIDs) > 0 {
+		placeholders := make([]string, len(sourceIDs))
+		for index, sourceID := range sourceIDs {
+			placeholders[index] = "?"
+			args = append(args, sourceID)
+		}
+		clauses = append(clauses, "source_id IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if excluded := filter.ExcludeSourceIDs; len(excluded) > 0 {
+		placeholders := make([]string, len(excluded))
+		for index, sourceID := range excluded {
+			placeholders[index] = "?"
+			args = append(args, sourceID)
+		}
+		clauses = append(clauses, "source_id NOT IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if dir := strings.TrimSpace(filter.DownloadDir); dir != "" {
+		clauses = append(clauses, "download_dir = ?")
+		args = append(args, dir)
+	}
+	return strings.Join(clauses, " AND "), args
+}
+
+func subscriptionOrder(filter SubscriptionFilter) string {
+	column := "updated_at"
+	switch strings.ToLower(strings.TrimSpace(filter.Sort)) {
+	case "created":
+		column = "created_at"
+	case "title":
+		column = "title COLLATE NOCASE"
+	}
+	direction := "ASC"
+	if filter.Descending {
+		direction = "DESC"
+	}
+	return column + " " + direction + ", id " + direction
+}
+
+// ListSubscriptionsPage applies the subscription page's filters, sort, limit
+// and offset inside SQLite. The previous handler loaded and sorted all
+// subscriptions in Go, so the browser's virtual list did not reduce server work.
+func (s *Store) ListSubscriptionsPage(ctx context.Context, filter SubscriptionFilter, limit, offset int) ([]model.Subscription, int, error) {
+	if limit <= 0 {
+		limit = 60
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	where, args := subscriptionFilterClause(filter)
+	var total int
+	if err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions WHERE `+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any(nil), args...), limit, offset)
+	rows, err := s.reader().QueryContext(ctx, subscriptionSelect+` WHERE `+where+` ORDER BY `+subscriptionOrder(filter)+` LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]model.Subscription, 0, limit)
+	for rows.Next() {
+		item, err := scanSubscription(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *Store) SubscriptionSourceCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT source_id, COUNT(*)
+		FROM subscriptions
+		WHERE archived_at IS NULL
+		GROUP BY source_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var sourceID string
+		var count int
+		if err := rows.Scan(&sourceID, &count); err != nil {
+			return nil, err
+		}
+		counts[sourceID] = count
+	}
+	return counts, rows.Err()
+}
+
+func (s *Store) SubscriptionDownloadDirs(ctx context.Context) ([]string, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT download_dir
+		FROM subscriptions
+		WHERE archived_at IS NULL AND TRIM(download_dir) <> ''
+		GROUP BY download_dir
+		ORDER BY MIN(created_at) ASC, download_dir ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	dirs := make([]string, 0, 8)
+	for rows.Next() {
+		var dir string
+		if err := rows.Scan(&dir); err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, rows.Err()
+}
+
+func (s *Store) ListTemporarySubscriptions(ctx context.Context) ([]model.Subscription, error) {
+	rows, err := s.reader().QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NULL AND temporary = 1 ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subscriptions []model.Subscription
+	for rows.Next() {
+		item, err := scanSubscription(rows)
+		if err != nil {
+			return nil, err
+		}
+		subscriptions = append(subscriptions, item)
+	}
+	return subscriptions, rows.Err()
+}
+
 // ListArchivedSubscriptions 返回归档集里的订阅：按归档时间倒序，最近归档的排在最前。
 func (s *Store) ListArchivedSubscriptions(ctx context.Context) ([]model.Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, id DESC`)
+	rows, err := s.reader().QueryContext(ctx, subscriptionSelect+` WHERE archived_at IS NOT NULL ORDER BY archived_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -770,7 +1033,7 @@ func (s *Store) ListArchivedSubscriptions(ctx context.Context) ([]model.Subscrip
 }
 
 func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, subscriptionSelect+` ORDER BY created_at ASC, id ASC`)
+	rows, err := s.reader().QueryContext(ctx, subscriptionSelect+` ORDER BY created_at ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -972,11 +1235,11 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 }
 
 func (s *Store) DownloadJobByChapter(ctx context.Context, sourceID, comicID, chapterID string) (model.DownloadJob, error) {
-	return scanJob(s.db.QueryRowContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND chapter_id = ?`, sourceID, comicID, chapterID))
+	return scanJob(s.reader().QueryRowContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND chapter_id = ?`, sourceID, comicID, chapterID))
 }
 
 func (s *Store) DownloadJob(ctx context.Context, id int64) (model.DownloadJob, error) {
-	return scanJob(s.db.QueryRowContext(ctx, jobSelect+` WHERE id = ?`, id))
+	return scanJob(s.reader().QueryRowContext(ctx, jobSelect+` WHERE id = ?`, id))
 }
 
 // DownloadJobPage returns one page of the task list together with the total row
@@ -1004,10 +1267,10 @@ func (s *Store) DownloadJobPage(ctx context.Context, status string, limit, offse
 		order = `COALESCE(finished_at, updated_at, created_at) DESC, id DESC`
 	}
 	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE `+where).Scan(&total); err != nil {
+	if err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE `+where).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, limit, offset)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1030,7 +1293,7 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 	}
 	// 进行中、失败和已完成记录分开查询，再合并结果。失败记录不能被大量
 	// 排队任务挤出结果集，因此三类记录各自使用独立的 LIMIT。
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.reader().QueryContext(ctx, `
 		SELECT * FROM (
 			SELECT id, source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, status, total_pages, completed_pages, file_path, error, retry_count, next_retry_at, download_dir, convert_to_simplified, chapter_marker, created_at, updated_at, started_at, finished_at
 			FROM download_jobs WHERE status NOT IN ('completed', 'failed', 'canceled')
@@ -1067,7 +1330,7 @@ func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.Downlo
 }
 
 func (s *Store) NextQueuedJob(ctx context.Context) (model.DownloadJob, bool, error) {
-	job, err := scanJob(s.db.QueryRowContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC LIMIT 1`))
+	job, err := scanJob(s.reader().QueryRowContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC LIMIT 1`))
 	if errors.Is(err, ErrNotFound) {
 		return model.DownloadJob{}, false, nil
 	}
@@ -1091,7 +1354,7 @@ func (s *Store) RequeueRunningJobs(ctx context.Context) error {
 }
 
 func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error) {
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC`)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE status = 'queued' ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1108,7 +1371,27 @@ func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
 }
 
 func (s *Store) ListRunningJobs(ctx context.Context) ([]model.DownloadJob, error) {
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE status = 'running' ORDER BY id ASC`)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE status = 'running' ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []model.DownloadJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
+// ListInterruptedJobs returns jobs that were active when the previous process
+// stopped. Graceful shutdown marks running jobs canceled before exit, so both
+// states are included before RequeueRunningJobs converts them back to queued.
+func (s *Store) ListInterruptedJobs(ctx context.Context) ([]model.DownloadJob, error) {
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE status IN ('running', 'canceled') ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1201,7 +1484,7 @@ func (s *Store) UpdateDownloadProgress(ctx context.Context, id int64, completedP
 // UnfinishedDownloadJobsByComic 返回某部作品还在下载或排队中的任务。删除订阅
 // 卡片时用它决定要取消哪些任务，也用来判断临时卡片是否可以移除。
 func (s *Store) UnfinishedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
-	rows, err := s.db.QueryContext(ctx, jobSelect+`
+	rows, err := s.reader().QueryContext(ctx, jobSelect+`
 		WHERE source_id = ? AND comic_id = ? AND status IN ('queued', 'running', 'waiting', 'paused')
 		ORDER BY id ASC`, sourceID, comicID)
 	if err != nil {
@@ -1217,6 +1500,19 @@ func (s *Store) UnfinishedDownloadJobsByComic(ctx context.Context, sourceID, com
 		jobs = append(jobs, job)
 	}
 	return jobs, rows.Err()
+}
+
+func (s *Store) InitialDownloadBatchPending(ctx context.Context, sourceID, comicID string) (bool, error) {
+	var count int
+	err := s.reader().QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM download_jobs
+		WHERE source_id = ? AND comic_id = ?
+			AND (
+				status IN ('queued', 'running', 'waiting', 'paused')
+				OR (status = 'failed' AND next_retry_at IS NOT NULL)
+			)`, sourceID, comicID).Scan(&count)
+	return count > 0, err
 }
 
 func (s *Store) DeleteDownloadJob(ctx context.Context, id int64) error {
@@ -1246,7 +1542,7 @@ func (s *Store) DownloadJobActivity(ctx context.Context, limit int) ([]ActivityG
 	// 只聚合最近 30 天的任务：通知窗口不需要全量历史，限定时间范围才能让
 	// SQLite 走索引、避免每次轮询都整表 GROUP BY。
 	since := time.Now().Add(-30 * 24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.reader().QueryContext(ctx, `
 		SELECT source_id, comic_id, MAX(comic_title) AS title,
 			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
 			SUM(CASE WHEN status IN ('failed', 'canceled') THEN 1 ELSE 0 END) AS failed,
@@ -1308,7 +1604,7 @@ func parseSQLiteTime(value string) time.Time {
 // completed and failed records, so a full refresh can clear them before
 // re-queuing the chapters from the source.
 func (s *Store) DownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
 	if err != nil {
 		return nil, err
 	}
@@ -1336,18 +1632,28 @@ func (s *Store) DeleteDownloadJobsForComic(ctx context.Context, sourceID, comicI
 
 func (s *Store) Stats(ctx context.Context) (model.Stats, error) {
 	var stats model.Stats
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions`).Scan(&stats.Subscriptions)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued','running','waiting','paused')`).Scan(&stats.ActiveJobs)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'running'`).Scan(&stats.RunningJobs)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status IN ('queued','waiting','paused')`).Scan(&stats.QueuedJobs)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'failed'`).Scan(&stats.FailedJobs)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.CompletedJobs)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE status = 'completed'`).Scan(&stats.LibraryItems)
-	return stats, nil
+	err := s.reader().QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM subscriptions),
+			COALESCE(SUM(CASE WHEN status IN ('queued','running','waiting','paused') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('queued','waiting','paused') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0)
+		FROM download_jobs`).Scan(
+		&stats.Subscriptions,
+		&stats.ActiveJobs,
+		&stats.RunningJobs,
+		&stats.QueuedJobs,
+		&stats.FailedJobs,
+		&stats.CompletedJobs,
+	)
+	stats.LibraryItems = stats.CompletedJobs
+	return stats, err
 }
 
 func (s *Store) ListSettings(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key, value FROM settings ORDER BY key`)
+	rows, err := s.reader().QueryContext(ctx, `SELECT key, value FROM settings ORDER BY key`)
 	if err != nil {
 		return nil, err
 	}
@@ -1365,7 +1671,7 @@ func (s *Store) ListSettings(ctx context.Context) (map[string]string, error) {
 
 func (s *Store) Setting(ctx context.Context, key string) (string, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	err := s.reader().QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -1414,7 +1720,7 @@ func (s *Store) UpdateUsername(ctx context.Context, id int64, username string) e
 // subscription work. Fill state is deliberately unbounded by task-list page
 // limits, history-size caps or age-based activity windows.
 func (s *Store) CompletedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status = 'completed' ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status = 'completed' ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
 	if err != nil {
 		return nil, err
 	}
@@ -1434,7 +1740,7 @@ func (s *Store) CompletedDownloadJobsByComic(ctx context.Context, sourceID, comi
 // FailedDownloadJobsByComic returns every failed or canceled chapter for a work
 // so the subscription checker can retry them without touching finished files.
 func (s *Store) FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
-	rows, err := s.db.QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status IN ('failed', 'canceled') ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status IN ('failed', 'canceled') ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
 	if err != nil {
 		return nil, err
 	}

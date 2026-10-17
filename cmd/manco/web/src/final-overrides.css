@@ -919,6 +919,107 @@
   gap: 18px;
 }
 
+.settings-workspace {
+  display: grid;
+  width: min(100%, 1280px);
+  margin: 0 auto;
+  gap: 26px;
+}
+
+.settings-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 4px 2px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-page-head h1 {
+  margin: 3px 0 5px;
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.settings-page-head p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.settings-eyebrow {
+  color: var(--primary-strong);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.settings-version-pill,
+.settings-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.settings-group {
+  display: grid;
+  gap: 13px;
+}
+
+.settings-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.settings-group-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.settings-group-head p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-grid-two,
+.settings-grid-three {
+  display: grid;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.settings-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-panel {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  flex-direction: column;
+  scroll-margin-top: 24px;
+}
+
+.settings-grid-three .settings-about-card {
+  min-height: 0;
+}
+
 .settings-card-title {
   display: flex;
   align-items: center;
@@ -931,10 +1032,59 @@
   font-size: 16px;
 }
 
+.settings-card-title h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
 .settings-form-stack {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px 14px;
+}
+
+.settings-field-span-2 {
+  grid-column: 1 / -1;
+}
+
+.settings-form-grid .field {
+  min-width: 0;
+}
+
+.settings-pause-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.settings-about-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0 16px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.settings-about-meta span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-about-meta strong {
+  font-size: 13px;
 }
 
 /* 设置页保存按钮不再单独配色，统一跟随主按钮（--primary）。 */
@@ -971,7 +1121,51 @@
 }
 
 .settings-about-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
+  margin-top: auto;
+}
+
+@media (max-width: 1080px) {
+  .settings-grid-three {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-grid-three > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 820px) {
+  .settings-page-head,
+  .settings-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .settings-grid-two,
+  .settings-grid-three {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-grid-three > :last-child {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .settings-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-field-span-2 {
+    grid-column: auto;
+  }
+
+  .settings-page-head h1 {
+    font-size: 24px;
+  }
 }
 
 .update-button {
@@ -5180,11 +5374,29 @@ svg.source-editor-icon {
 .settings-save-button {
   min-width: 96px;
   padding-inline: 20px;
-  /* 高饱和橘色，按钮里的「保存」拉开字距 */
-  background: #f26a12;
-  border-color: #d95f0f;
-  color: #fff;
+  /* 与侧栏选中态一致：淡橘底、深色字，不再使用高饱和橘。 */
+  background: #fde5d2;
+  border-color: color-mix(in srgb, #e07a2f 34%, var(--border));
+  color: #2f2a24;
   letter-spacing: 0.12em;
+}
+
+.settings-save-button:hover:not(:disabled) {
+  background: #fdd9bf;
+  border-color: color-mix(in srgb, #e07a2f 46%, var(--border));
+  color: #2f2a24;
+}
+
+[data-theme='dark'] .settings-save-button {
+  background: #4a3a1f;
+  border-color: #6a5430;
+  color: #ffd88a;
+}
+
+[data-theme='dark'] .settings-save-button:hover:not(:disabled) {
+  background: #5a4627;
+  border-color: #82683a;
+  color: #ffe2a4;
 }
 
 .function-option-grid {

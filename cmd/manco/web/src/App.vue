@@ -103,7 +103,7 @@ const media = window.matchMedia('(prefers-color-scheme: dark)')
 const navItems = [
   { name: 'dashboard', label: '信息总览', to: '/', icon: LayoutDashboard },
   { name: 'discover', label: '探索发现', to: '/discover', icon: Compass },
-  { name: 'subscriptions', label: '订阅清单', to: '/subscriptions', icon: Rss },
+  { name: 'subscriptions', label: '订阅计划', to: '/subscriptions', icon: Rss },
   { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },
   { name: 'local', label: '本地仓库', to: '/local', icon: HardDrive },
   { name: 'sources', label: '资源拓展', to: '/sources', icon: Server },

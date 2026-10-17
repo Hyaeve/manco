@@ -308,6 +308,12 @@ func (s *Service) Enabled() bool {
 	return s.cfg.Enabled && s.cfg.Token != ""
 }
 
+func (s *Service) NotificationReady() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.Enabled && s.cfg.Token != "" && len(s.cfg.ChatIDs) > 0
+}
+
 // Start begins polling if the bot is enabled.
 func (s *Service) Start(ctx context.Context) {
 	s.mu.Lock()

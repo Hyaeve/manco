@@ -206,6 +206,29 @@ func TestRenderDownloadingRunningOnlyAndPauseNext(t *testing.T) {
 	}
 }
 
+func TestRenderSubscriptionDownloadCompletedNotice(t *testing.T) {
+	text := renderSubscriptionDownloadCompleted(SubscriptionDownloadCompletedNotice{
+		Title:          "测试作品",
+		Author:         "测试作者",
+		Description:    "这是一段作品简介。",
+		Succeeded:      25,
+		Failed:         2,
+		NextCheckLabel: "明天 21:30",
+	})
+	for _, want := range []string{
+		"<b>测试作品</b>",
+		"作者：测试作者",
+		"简介：这是一段作品简介。",
+		"历史章节下载完成：成功 25 章",
+		"下载失败：2 章",
+		"下次检查更新：明天 21:30",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("completion notice missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestRenderResultDetailIncludesChapterCountAndCleanSummary(t *testing.T) {
 	entry := resultEntry{
 		Title:        "星海镖师",

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Archive,
   BookOpen,
@@ -35,6 +35,9 @@ const items = ref([])
 const jobs = ref([])
 const sources = ref({})
 const jobStatsData = ref({})
+const kindCountsData = ref({ all: 0, comic: 0, book: 0, other: 0 })
+const downloadDirs = ref([])
+const activePending = ref(0)
 const kindFilter = ref('all')
 const activeDir = ref('')
 const loading = ref(true)
@@ -69,6 +72,7 @@ let lastJobsSignature = ''
 let selectAnchor = -1
 let timer = 0
 let scrollFrame = 0
+let loadGeneration = 0
 
 const form = ref({
   cronExpr: '',
@@ -79,27 +83,13 @@ const form = ref({
   coverBlur: false,
 })
 
-// 有排队/进行中的章节时才轮询刷新；数量由 /api/subscriptions 的 jobStats 给出。
-const hasActive = computed(() =>
-  Object.values(jobStatsData.value || {}).some((value) => Number(value?.pending || 0) > 0),
-)
+// 有排队/进行中的章节时才轮询刷新；这是全库轻量计数，不受当前分页影响。
+const hasActive = computed(() => activePending.value > 0)
 
 function itemKind(item) {
   const kind = sources.value[item.sourceId]?.kind
   return kind === 'book' || kind === 'other' ? kind : 'comic'
 }
-
-const downloadDirs = computed(() => {
-  const seen = new Set()
-  const dirs = []
-  for (const item of items.value) {
-    const dir = String(item.downloadDir || '').trim()
-    if (!dir || seen.has(dir)) continue
-    seen.add(dir)
-    dirs.push(dir)
-  }
-  return dirs
-})
 
 function dirLabel(dir) {
   const cleaned = String(dir || '').replace(/[\\/]+$/, '')
@@ -129,6 +119,7 @@ watch([sortMode, sortDesc], () => {
   } catch {
     // 隐私模式下写不进去，忽略
   }
+  reloadSubscriptionList()
 })
 
 function onSortChange({ mode, desc }) {
@@ -136,34 +127,8 @@ function onSortChange({ mode, desc }) {
   sortDesc.value = desc
 }
 
-const sortedItems = computed(() => {
-  const direction = sortDesc.value ? -1 : 1
-  const rows = [...items.value]
-  rows.sort((a, b) => {
-    let left
-    let right
-    if (sortMode.value === 'title') {
-      left = String(a.title || '')
-      right = String(b.title || '')
-    } else if (sortMode.value === 'created') {
-      left = String(a.createdAt || '')
-      right = String(b.createdAt || '')
-    } else {
-      left = String(a.updatedAt || '')
-      right = String(b.updatedAt || '')
-    }
-    if (left === right) return 0
-    return (left > right ? 1 : -1) * direction
-  })
-  return rows
-})
-
-const filteredItems = computed(() => {
-  let rows = sortedItems.value
-  if (kindFilter.value !== 'all') rows = rows.filter((item) => itemKind(item) === kindFilter.value)
-  if (activeDir.value) rows = rows.filter((item) => String(item.downloadDir || '').trim() === activeDir.value)
-  return rows
-})
+// 服务端已按筛选和排序返回结果，前端不再对已加载分页二次排序或过滤。
+const filteredItems = computed(() => items.value)
 
 const visibleItems = computed(() =>
   filteredItems.value.slice(virtualStartIndex.value, virtualEndIndex.value),
@@ -221,15 +186,35 @@ function handlePageScroll() {
   })
 }
 
+function subscriptionQueryOptions() {
+  return {
+    kind: kindFilter.value,
+    dir: activeDir.value,
+    sort: sortMode.value,
+    desc: sortDesc.value,
+  }
+}
+
+function reloadSubscriptionList() {
+  if (scrollEl) scrollEl.scrollTop = 0
+  return load(false, true)
+}
+
 async function loadMoreSubscriptions() {
   if (loadingMoreSubscriptions.value || items.value.length >= totalSubscriptions.value) return
+  const generation = loadGeneration
+  const offset = items.value.length
   loadingMoreSubscriptions.value = true
   try {
-    const payload = await api.subscriptions(SUBS_PAGE_SIZE, items.value.length)
+    const payload = await api.subscriptions(SUBS_PAGE_SIZE, offset, subscriptionQueryOptions())
+    if (generation !== loadGeneration) return
     const next = payload.items || []
     if (next.length) items.value = [...items.value, ...next]
     totalSubscriptions.value = Number(payload.total ?? totalSubscriptions.value)
     if (payload.jobStats) jobStatsData.value = { ...jobStatsData.value, ...payload.jobStats }
+    if (payload.kindCounts) kindCountsData.value = payload.kindCounts
+    if (Array.isArray(payload.downloadDirs)) downloadDirs.value = payload.downloadDirs
+    activePending.value = Number(payload.activePending ?? activePending.value)
     await nextTick()
     updateVirtualWindow()
   } catch (err) {
@@ -327,8 +312,7 @@ function clearSubscriptionSelection() {
 }
 
 function kindCount(kind) {
-  if (kind === 'all') return items.value.length
-  return items.value.filter((item) => itemKind(item) === kind).length
+  return Number(kindCountsData.value?.[kind] || 0)
 }
 
 function stopPolling() {
@@ -341,7 +325,7 @@ function stopPolling() {
 function startPolling() {
   stopPolling()
   timer = window.setInterval(() => {
-    if (hasActive.value) load(true)
+    if (hasActive.value && !loading.value && !loadingMoreSubscriptions.value) load(true, false)
   }, 5000)
 }
 
@@ -384,6 +368,7 @@ function onWindowResize() {
 watch([kindFilter, activeDir], () => {
   if (scrollEl) scrollEl.scrollTop = 0
   nextTick(updateVirtualWindow)
+  reloadSubscriptionList()
 })
 
 watch(() => filteredItems.value.length, () => nextTick(updateVirtualWindow))
@@ -397,23 +382,25 @@ function closeMenus(event) {
   openMenu.value = 0
 }
 
-async function load(silent = false) {
+async function load(silent = false, reset = true) {
+  const generation = ++loadGeneration
   if (!silent) loading.value = true
   try {
     const [subscriptions, downloads, sourcePayload] = await Promise.all([
-      api.subscriptions(SUBS_PAGE_SIZE, 0),
+      api.subscriptions(SUBS_PAGE_SIZE, 0, subscriptionQueryOptions()),
       // 统计信息由 /api/subscriptions 的 jobStats 直接给出，不再额外拉一次
       // 几百条下载任务——那个请求服务端每条都要查本地封面与元数据，5 秒
       // 轮询一次会把机器拖住。
       Promise.resolve({ items: [] }),
       Object.keys(sources.value).length ? Promise.resolve({ items: [] }) : api.sources().catch(() => ({ items: [] })),
     ])
+    if (generation !== loadGeneration) return
     for (const source of sourcePayload.items || []) {
       sources.value = { ...sources.value, [source.id]: source }
     }
     const pageItems = subscriptions.items || []
     let nextItems = pageItems
-    if (silent && items.value.length) {
+    if (!reset && items.value.length) {
       const updates = new Map(pageItems.map((item) => [item.id, item]))
       const existing = new Set(items.value.map((item) => item.id))
       nextItems = items.value.map((item) => updates.get(item.id) || item)
@@ -434,16 +421,20 @@ async function load(silent = false) {
         item.autoDownload,
       ]),
     )
-    if (!silent || itemsSignature !== lastItemsSignature) {
+    if (reset || !silent || itemsSignature !== lastItemsSignature) {
       items.value = nextItems
       lastItemsSignature = itemsSignature
     }
     const nextStats = subscriptions.jobStats || {}
-    const statsSignature = JSON.stringify(nextStats)
-    if (!silent || statsSignature !== lastStatsSignature) {
-      jobStatsData.value = nextStats
+    const mergedStats = reset ? nextStats : { ...jobStatsData.value, ...nextStats }
+    const statsSignature = JSON.stringify(mergedStats)
+    if (reset || !silent || statsSignature !== lastStatsSignature) {
+      jobStatsData.value = mergedStats
       lastStatsSignature = statsSignature
     }
+    kindCountsData.value = subscriptions.kindCounts || { all: totalSubscriptions.value, comic: 0, book: 0, other: 0 }
+    downloadDirs.value = Array.isArray(subscriptions.downloadDirs) ? subscriptions.downloadDirs : []
+    activePending.value = Number(subscriptions.activePending || 0)
     const nextJobs = downloads.items || []
     const jobsSignature = JSON.stringify(nextJobs.map((job) => [job.id, job.status]))
     if (!silent || jobsSignature !== lastJobsSignature) {
