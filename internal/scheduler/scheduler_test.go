@@ -31,6 +31,10 @@ func (s *stubSubscriptions) Subscription(_ context.Context, id int64) (model.Sub
 	return model.Subscription{}, errors.New("not found")
 }
 
+func (s *stubSubscriptions) UpdateSubscriptionChapterCount(context.Context, int64, int) error {
+	return nil
+}
+
 func (s *stubSubscriptions) UpdateSubscriptionCheck(_ context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
 	for _, item := range s.items {
 		if item.ID != id {

@@ -1,16 +1,17 @@
 :root {
   color-scheme: light;
-  --bg: #faf8f3;
-  --surface: #fffefb;
-  --surface-muted: #f6f3ec;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
+  /* 日光主题：暖米底 + 近白卡片 + 米色分层，参考 StrmStation 的观感 */
+  --bg: #f7f3ec;
+  --surface: #fffdf9;
+  --surface-muted: #f4efe7;
+  --border: #ece4d8;
+  --border-strong: #d9cdbb;
   --text: #0f172a;
   --text-muted: #64748b;
   --primary: #4f46e5;
   --primary-strong: #4338ca;
   /* 选中态统一成侧栏那块淡橘 */
-  --primary-soft: #fdf0e5;
+  --primary-soft: #fde5d2;
   --select-highlight: #fdf0e5;
   --select-highlight-strong: #f2c6a1;
   --select-highlight-text: #7a4a1f;
@@ -63,7 +64,7 @@
     --text-muted: #c2ae93;
     --primary: #f2b544;
     --primary-strong: #ffd06a;
-    --primary-soft: #3a2f1c;
+    --primary-soft: #4a3a1f;
     --select-highlight: #3a2f1c;
     --select-highlight-strong: #6b4f2a;
     --select-highlight-text: #ffd88a;

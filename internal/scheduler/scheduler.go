@@ -26,6 +26,7 @@ type Subscriptions interface {
 	ListSubscriptions(ctx context.Context) ([]model.Subscription, error)
 	Subscription(ctx context.Context, id int64) (model.Subscription, error)
 	UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error
+	UpdateSubscriptionChapterCount(ctx context.Context, id int64, count int) error
 }
 
 // Notifier receives routine check results so an external service (for example
@@ -147,6 +148,8 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription) 
 		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
 	}
 	newest := chapters[len(chapters)-1]
+	// 每次成功拉到章节列表都刷新总章节数，供订阅卡片的「共 N 话」使用。
+	_ = s.subscriptions.UpdateSubscriptionChapterCount(ctx, subscription.ID, len(chapters))
 	if subscription.LastChapterID == "" {
 		// First observation only records a baseline.
 		return s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), false)

@@ -1491,13 +1491,13 @@
 :root {
   --primary: #e8a35c;
   --primary-strong: #c87b34;
-  --primary-soft: #fdf0e5;
+  --primary-soft: #fde5d2;
 }
 
 [data-theme='dark'] {
   --primary: #f2b544;
   --primary-strong: #ffd06a;
-  --primary-soft: #3a2f1c;
+  --primary-soft: #4a3a1f;
 }
 
 /* 所有滚动条统一为极浅灰色细条。 */
@@ -5024,6 +5024,12 @@ svg.source-editor-icon {
 
 .sidebar nav button.active {
   color: #2f2a24;
+  /* 选中：比悬浮更深一档的橘 */
+  background: #fde5d2;
+}
+
+.sidebar nav button:hover:not(.active) {
+  /* 悬浮中间态：介于未选中与选中之间 */
   background: #fdf0e5;
 }
 
@@ -5033,13 +5039,22 @@ svg.source-editor-icon {
 
 [data-theme='dark'] .sidebar nav button.active {
   color: #ffd88a;
+  background: #4a3a1f;
+}
+
+[data-theme='dark'] .sidebar nav button:hover:not(.active) {
   background: #3a2f1c;
 }
 
 /* 系统设置保存按钮：加宽，避免「保存」两个字挤在一起。 */
 .settings-save-button {
-  min-width: 88px;
+  min-width: 96px;
   padding-inline: 20px;
+  /* 高饱和橘色，按钮里的「保存」拉开字距 */
+  background: #f26a12;
+  border-color: #d95f0f;
+  color: #fff;
+  letter-spacing: 0.12em;
 }
 
 .function-option-grid {
@@ -5102,6 +5117,21 @@ svg.source-editor-icon {
 }
 
 /* 二级排序选择器：选中/悬浮改为淡淡的橘色。 */
+/* 各页面栏目（分段控件 / 标签页）：字号图标略放大，选中用深橘、悬浮用浅橘，
+   与侧栏保持同一套状态逻辑。 */
+.segmented button {
+  font-size: 14px;
+}
+
+.segmented button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.segmented button:not(.active):hover {
+  background: var(--select-highlight);
+}
+
 .chapter-sort-group button:hover,
 .chapter-sort-group button.active {
   background: color-mix(in srgb, #f26a12 14%, var(--surface));
@@ -5186,6 +5216,23 @@ svg.source-editor-icon {
   flex: 0 0 auto;
 }
 
+/* 排序按钮与左侧目录胶囊严格同高同基线。 */
+.local-root-row {
+  align-items: center;
+}
+
+.local-root-row .chapter-sort-wrap,
+.local-root-row .chapter-sort-trigger {
+  display: flex;
+  align-items: center;
+  height: 34px;
+}
+
+.local-root-row .chapter-sort-trigger {
+  box-sizing: border-box;
+  padding-block: 0;
+}
+
 /* 下拉选择器统一用侧栏选中态那块淡黄，替换之前的蓝/灰高亮。 */
 .rounded-select-trigger:hover,
 .rounded-select-popup [class*='option']:hover,
@@ -5208,41 +5255,40 @@ svg.source-editor-icon {
 @keyframes manco-float-in {
   from {
     opacity: 0;
-    /* 从自身右下角向左上浮出：先缩小并往右下偏移，再扩回原位 */
-    transform: translate(18px, 18px) scale(0.9);
+    /* 原位淡入 + 极小放大，不再位移 */
+    transform: scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translate(0, 0) scale(1);
+    transform: scale(1);
   }
 }
 
 /* 切页面时由 App.vue 加上 .page-enter 重播一次（KeepAlive 缓存下动画不会自动重播）。 */
 .content-scroll.page-enter > * {
   animation: manco-float-in 0.32s ease-out both;
-  transform-origin: bottom right;
+  transform-origin: center;
 }
 
 /* 网格封面 / 卡片内容逐个浮出：每个卡片轻微上浮 + 淡入，前几项错开一点。 */
 @keyframes manco-card-in {
   from {
     opacity: 0;
-    transform: translate(14px, 14px) scale(0.88);
+    transform: scale(0.96);
   }
   to {
     opacity: 1;
-    transform: translate(0, 0) scale(1);
+    transform: scale(1);
   }
 }
 
 .local-library-card,
 .subscription-card,
 .source-card-simple,
-.completed-task-group,
-.download-row {
+.completed-task-group {
   animation: manco-card-in 0.34s ease-out both;
-  /* 以自身右下角为原点放大，视觉上从右下往左上铺开 */
-  transform-origin: bottom right;
+  /* 以自身中心为原点，从内向外浮现 */
+  transform-origin: center;
 }
 
 .local-library-grid > :nth-child(2),
@@ -5265,8 +5311,7 @@ svg.source-editor-icon {
   .local-library-card,
   .subscription-card,
   .source-card-simple,
-  .completed-task-group,
-  .download-row {
+  .completed-task-group {
     animation: none;
   }
 }

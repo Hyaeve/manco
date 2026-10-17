@@ -587,13 +587,6 @@ async function remove(item, removeFile) {
           </article>
         </div>
       </div>
-      <div v-if="items.length < totalTasks" class="download-load-more">
-        <button class="btn secondary small" type="button" :disabled="loadingMore" @click="loadMoreTasks">
-          <Loader2 v-if="loadingMore" :size="14" class="spin" />
-          <RefreshCw v-else :size="14" />
-          加载更多（已加载 {{ items.length }} / {{ totalTasks }}）
-        </button>
-      </div>
     </div>
 
   </div>

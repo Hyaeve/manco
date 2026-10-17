@@ -873,6 +873,13 @@ func (s *Store) RestoreSubscription(ctx context.Context, id int64) error {
 	return err
 }
 
+// UpdateSubscriptionChapterCount 记录该作品在内容源里的总章节数（每次成功
+// 拉到章节列表都刷新），订阅卡片用它显示「共 N 话」。
+func (s *Store) UpdateSubscriptionChapterCount(ctx context.Context, id int64, count int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET chapter_count = ? WHERE id = ?`, count, id)
+	return err
+}
+
 func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE subscriptions SET last_chapter_id = ?, last_chapter_title = ?, last_chapter_order = ?,
