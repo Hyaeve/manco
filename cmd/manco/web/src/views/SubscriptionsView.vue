@@ -15,13 +15,13 @@ import {
   Pencil,
   RefreshCcw,
   RefreshCw,
-  Rss,
   Save,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import ContentLink from '../components/ContentLink.vue'
 import FunctionOption from '../components/FunctionOption.vue'
 import SortMenu from '../components/SortMenu.vue'
@@ -852,11 +852,17 @@ function batchDelete() {
     <Loader2 :size="22" class="spin" />
     <span>加载订阅清单</span>
   </div>
-  <div v-else-if="!items.length" class="card empty">
-    <Rss :size="26" />
-    <p>还没有订阅。在探索发现打开作品后即可订阅追更。</p>
-        <ContentLink class="btn small" to="/discover">去探索发现</ContentLink>
-  </div>
+  <CollectionEmptyState
+    v-else-if="!items.length"
+    variant="subscriptions"
+    window-title="订阅信箱"
+    heading="还没有订阅"
+    description="在探索发现打开作品后即可订阅追更。黑白猫和狸花猫会在这里等你的第一封信。"
+  >
+    <template #actions>
+      <ContentLink class="btn small" to="/discover">去探索发现</ContentLink>
+    </template>
+  </CollectionEmptyState>
   <div v-else-if="!filteredItems.length" class="card empty">
     <p>当前栏目下没有订阅。</p>
   </div>

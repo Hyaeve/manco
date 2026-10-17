@@ -8,12 +8,12 @@ import {
   Check,
   Download,
   Film,
-  FolderOpen,
   Languages,
   Layers3,
   ListChecks,
   Loader2,
   Merge,
+  RefreshCw,
   Search,
   Tag,
   Trash2,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
+import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import SortMenu from '../components/SortMenu.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
@@ -640,6 +641,16 @@ function downloadReaderFile() {
         </button>
       </div>
       <span class="spacer" />
+      <button
+        class="icon-btn library-refresh-button"
+        type="button"
+        :disabled="loading"
+        aria-label="刷新本地仓库"
+        title="刷新本地仓库"
+        @click="load"
+      >
+        <RefreshCw :size="17" :class="{ spin: loading }" />
+      </button>
       <label class="search-field local-search">
         <Search :size="16" />
         <input v-model="query" aria-label="筛选本地作品" placeholder="搜索作品或作者" />
@@ -672,10 +683,13 @@ function downloadReaderFile() {
       <Loader2 :size="22" class="spin" />
       <span>正在读取本地仓库</span>
     </div>
-    <div v-else-if="!items.length" class="card empty">
-      <FolderOpen :size="26" />
-      <p>本地仓库还是空的。下载完成后，漫画 CBZ 与书籍 EPUB 会显示在这里。</p>
-    </div>
+    <CollectionEmptyState
+      v-else-if="!items.length"
+      variant="local"
+      window-title="本地书架"
+      heading="本地书架还是空的"
+      description="下载完成的漫画、书籍和其他资源会收进这里。先让猫咪帮你守着一格空书架。"
+    />
     <div v-else-if="!filtered.length" class="card empty">
       <Search :size="26" />
       <p>没有匹配的作品。</p>
