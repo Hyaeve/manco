@@ -486,6 +486,10 @@ function clearChapterSearch() {
 }
 
 async function openReader(file) {
+  if (file.kind === 'other') {
+    window.location.href = api.localFileUrl(file.path, true)
+    return
+  }
   readerLoading.value = true
   try {
     if (file.ext === 'cbz' || file.ext === 'zip') {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,8 @@ var ErrAuthRequired = errors.New("source account is not connected")
 const DefaultReloginDays = 7
 
 // Source kinds. Comic sources yield image chapters packed into CBZ files;
-// book sources yield EPUB files.
+// book sources yield EPUB files; other sources preserve the native file type
+// reported by the source.
 const (
 	KindComic = "comic"
 	KindBook  = "book"
@@ -184,6 +186,13 @@ type FileContentSource interface {
 type ImageSource interface {
 	PageImage(ctx context.Context, account Account, comicID string, chapter model.Chapter, page model.Page) ([]byte, string, error)
 	CoverImage(ctx context.Context, account Account, comic model.Comic) ([]byte, string, error)
+}
+
+// PageFileSource streams source page bytes without loading large media into
+// memory. It is preferred over ImageSource when downloading other-source
+// chapters such as video, audio, PDF or native archives.
+type PageFileSource interface {
+	PageFile(ctx context.Context, account Account, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, error)
 }
 
 // FilterSource is implemented by sources that discover their filter controls

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +39,7 @@ type Adapter struct {
 
 var _ source.ChapterArchiveSource = (*Adapter)(nil)
 var _ source.DetailWithChaptersSource = (*Adapter)(nil)
+var _ source.PageFileSource = (*Adapter)(nil)
 
 func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 	if manager == nil {
@@ -200,11 +203,12 @@ func (a *Adapter) Pages(ctx context.Context, account source.Account, _ string, c
 		}
 		id, _ := encodeObject(item)
 		page := model.Page{
-			URL:      stringValue(item["url"]),
-			AssetID:  id,
-			Referer:  a.info.Homepage,
-			Headers:  stringMap(item["headers"]),
-			FileName: "",
+			URL:         stringValue(item["url"]),
+			AssetID:     id,
+			Referer:     a.info.Homepage,
+			Headers:     stringMap(item["headers"]),
+			FileName:    firstNonEmpty(stringValue(item["fileName"]), stringValue(item["filename"])),
+			ContentType: firstNonEmpty(stringValue(item["contentType"]), stringValue(item["mimeType"])),
 		}
 		pages = append(pages, page)
 	}
@@ -224,6 +228,34 @@ func (a *Adapter) PageImage(ctx context.Context, account source.Account, _ strin
 		return nil, "", err
 	}
 	return a.readArtifact(result)
+}
+
+// PageFile opens the materialized parser artifact directly so large
+// other-source files can be streamed to their final extension without a full
+// in-memory copy.
+func (a *Adapter) PageFile(ctx context.Context, account source.Account, _ string, _ model.Chapter, page model.Page) (io.ReadCloser, string, string, error) {
+	raw, err := decodeObject(page.AssetID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	result, err := a.call(ctx, "image", map[string]any{"page": raw}, source.AccountUsesProxy(account))
+	if err != nil {
+		return nil, "", "", err
+	}
+	artifact, ok := result["artifact"].(map[string]any)
+	if !ok {
+		return nil, "", "", errors.New("解析器没有返回页面文件")
+	}
+	relativePath := stringValue(artifact["relativePath"])
+	path := a.manager.ImagePath(a.config.Runtime, relativePath)
+	if path == "" {
+		return nil, "", "", errors.New("解析器返回了不安全页面路径")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return file, stringValue(artifact["contentType"]), filepath.Base(relativePath), nil
 }
 
 func (a *Adapter) CoverImage(ctx context.Context, account source.Account, comic model.Comic) ([]byte, string, error) {

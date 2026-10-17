@@ -192,6 +192,7 @@ type Page struct {
 	Referer         string            `json:"referer,omitempty"`
 	Headers         map[string]string `json:"headers,omitempty"`
 	FileName        string            `json:"fileName,omitempty"`
+	ContentType     string            `json:"contentType,omitempty"`
 	DescrambleParts int               `json:"descrambleParts,omitempty"`
 	AssetID         string            `json:"assetId,omitempty"`
 }

@@ -57,7 +57,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.5"
+	appVersion    = "v0.6.5.1"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -4696,6 +4696,7 @@ func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items
 
 func (s *Server) scanLocalDir(root, name string) localItemEntry {
 	item := localItemEntry{Title: name, Path: name, Kind: "comic", Files: []localFileEntry{}}
+	kindFromMetadata := false
 	folder := filepath.Join(root, name)
 	files, err := os.ReadDir(folder)
 	if err != nil {
@@ -4703,6 +4704,16 @@ func (s *Server) scanLocalDir(root, name string) localItemEntry {
 	}
 	for _, file := range files {
 		if file.IsDir() {
+			if strings.HasPrefix(file.Name(), ".") {
+				continue
+			}
+			nested, size, updated := scanNestedOtherFiles(folder, name, file.Name())
+			item.Files = append(item.Files, nested...)
+			item.TotalFiles += len(nested)
+			item.Size += size
+			if updated.After(item.UpdatedAt) {
+				item.UpdatedAt = updated
+			}
 			continue
 		}
 		info, err := file.Info()
@@ -4719,25 +4730,23 @@ func (s *Server) scanLocalDir(root, name string) localItemEntry {
 		case "book.json":
 			item.Kind = "book"
 			applyBookMeta(filepath.Join(folder, file.Name()), &item)
+			kindFromMetadata = true
 			continue
 		case "comicinfo.xml":
 			applyComicMeta(filepath.Join(folder, file.Name()), &item)
+			kindFromMetadata = true
 			continue
 		case "series.json":
 			applySeriesMeta(filepath.Join(folder, file.Name()), &item)
+			kindFromMetadata = true
 			continue
 		case "metadata.opf":
 			applyOPFMeta(filepath.Join(folder, file.Name()), &item)
+			kindFromMetadata = true
 			continue
 		}
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(file.Name())), ".")
-		kind := ""
-		switch ext {
-		case "cbz", "zip":
-			kind = "comic"
-		case "txt", "epub":
-			kind = "book"
-		}
+		kind := localFileKindForExtension(ext)
 		if kind == "" {
 			continue
 		}
@@ -4755,19 +4764,70 @@ func (s *Server) scanLocalDir(root, name string) localItemEntry {
 		}
 	}
 	sort.SliceStable(item.Files, func(i, j int) bool { return item.Files[i].Name < item.Files[j].Name })
-	if item.Kind == "comic" && len(item.Files) > 0 {
-		allBook := true
+	if !kindFromMetadata && len(item.Files) > 0 {
+		allSame := true
+		kind := item.Files[0].Kind
 		for _, file := range item.Files {
-			if file.Kind != "book" {
-				allBook = false
+			if file.Kind != kind {
+				allSame = false
 				break
 			}
 		}
-		if allBook {
-			item.Kind = "book"
+		if allSame {
+			item.Kind = kind
 		}
 	}
 	return item
+}
+
+func scanNestedOtherFiles(seriesDir, seriesName, subdir string) ([]localFileEntry, int64, time.Time) {
+	entries, err := os.ReadDir(filepath.Join(seriesDir, subdir))
+	if err != nil {
+		return nil, 0, time.Time{}
+	}
+	files := make([]localFileEntry, 0, len(entries))
+	var size int64
+	var updated time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(entry.Name())), ".")
+		kind := localFileKindForExtension(ext)
+		if kind == "" {
+			continue
+		}
+		files = append(files, localFileEntry{
+			Name:    entry.Name(),
+			Path:    filepath.ToSlash(filepath.Join(seriesName, subdir, entry.Name())),
+			Ext:     ext,
+			Kind:    kind,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		})
+		size += info.Size()
+		if info.ModTime().After(updated) {
+			updated = info.ModTime()
+		}
+	}
+	return files, size, updated
+}
+
+func localFileKindForExtension(extension string) string {
+	switch strings.ToLower(strings.TrimSpace(extension)) {
+	case "cbz", "zip", "cbr", "rar":
+		return "comic"
+	case "txt", "epub":
+		return "book"
+	case "pdf", "mp4", "m4v", "mkv", "webm", "mov", "avi", "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "m3u8", "html", "json", "bin", "jpg", "jpeg", "png", "gif", "webp", "avif", "svg":
+		return "other"
+	default:
+		return ""
+	}
 }
 
 func applyBookMeta(path string, item *localItemEntry) {
@@ -4826,6 +4886,10 @@ func applyComicMeta(path string, item *localItemEntry) {
 	for _, tag := range item.Tags {
 		if tag == "书籍" {
 			item.Kind = "book"
+			break
+		}
+		if tag == "其他" {
+			item.Kind = "other"
 			break
 		}
 	}

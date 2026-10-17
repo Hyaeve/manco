@@ -1,7 +1,8 @@
-// Package downloader turns queued chapter jobs into one CBZ archive per chapter.
-// Images are always written to a temporary directory first and are only moved
-// into the library after the archive is complete, so a crash never leaves a
-// half-written .cbz in the download directory.
+// Package downloader turns queued chapter jobs into library files. Comic image
+// chapters become CBZ, books become EPUB, and other-source files preserve the
+// content type reported by the source. Temporary data is written outside the
+// final library path so an interrupted download cannot leave a half-written
+// chapter behind.
 package downloader
 
 import (
@@ -19,6 +20,7 @@ import (
 	"image/png"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -574,6 +576,12 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	account, err := e.registry.Account(ctx, job.SourceID)
 	if err != nil {
 		return err
+	}
+	if source.KindOf(item.Info()) == source.KindOther {
+		if len(job.MergeChapters) > 1 {
+			return errors.New("其他源不支持合并下载，请按章节保留来源文件")
+		}
+		return e.downloadOther(ctx, item, account, job)
 	}
 	if len(job.MergeChapters) > 1 {
 		if source.KindOf(item.Info()) == source.KindBook {
@@ -1349,6 +1357,191 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	return e.markCompleted(ctx, job, 1, 1, outputPath)
 }
 
+// downloadOther preserves the content type returned by an "other" source
+// instead of blindly wrapping every chapter as CBZ. A single file keeps its
+// source extension, image sequences still become CBZ, and multi-file chapters
+// keep each original file in a chapter directory.
+func (e *Engine) downloadOther(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
+	chapter := model.Chapter{ID: job.ChapterID, ComicID: job.ComicID, Title: job.ChapterTitle, Order: job.ChapterOrder}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", 0, 0, "", ""); err != nil {
+		return err
+	}
+	pages, err := item.Pages(ctx, account, job.ComicID, chapter)
+	if err != nil {
+		return fmt.Errorf("list other source files: %w", err)
+	}
+	if len(pages) == 0 {
+		return errors.New("其他源章节没有可下载文件")
+	}
+	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", len(pages), 0, "", ""); err != nil {
+		return err
+	}
+
+	downloadRoot, err := e.jobDownloadDir(job)
+	if err != nil {
+		return err
+	}
+	comicTitle := job.ComicTitle
+	chapterTitle := job.ChapterTitle
+	metadata := model.Comic{SourceID: job.SourceID, ID: job.ComicID, Title: comicTitle, Cover: job.ComicCover}
+	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
+		metadata = detail
+		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
+		metadata.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
+		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+	} else {
+		e.logger.Printf("downloader: other source detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
+	}
+	if job.ConvertToSimplified {
+		comicTitle = convertToSimplifiedText(comicTitle)
+		chapterTitle = convertToSimplifiedText(chapterTitle)
+		metadata.Title = convertToSimplifiedText(metadata.Title)
+		metadata.Author = convertToSimplifiedText(metadata.Author)
+		metadata.Description = convertToSimplifiedText(metadata.Description)
+		metadata.Status = convertToSimplifiedText(metadata.Status)
+		for index := range metadata.Tags {
+			metadata.Tags[index] = convertToSimplifiedText(metadata.Tags[index])
+		}
+	}
+	comicDir := filepath.Join(downloadRoot, SafeName(metadata.Title))
+	if err := os.MkdirAll(comicDir, 0o755); err != nil {
+		return err
+	}
+	tempDir := e.stagingDir(job)
+	if err := os.RemoveAll(tempDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		return err
+	}
+	finished := false
+	defer func() {
+		if finished {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	client := e.registry.ClientForAccount(account)
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	type otherPage struct {
+		path        string
+		extension   string
+		contentType string
+	}
+	results := make([]otherPage, len(pages))
+	semaphore := make(chan struct{}, e.pageConcurrency(job.SourceID))
+	otherCtx, cancelPages := context.WithCancel(ctx)
+	defer cancelPages()
+	var wait sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+	completed := 0
+	for index, page := range pages {
+		index, page := index, page
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			select {
+			case semaphore <- struct{}{}:
+			case <-otherCtx.Done():
+				return
+			}
+			defer func() { <-semaphore }()
+			stream, contentType, filename, address, openErr := openPageContent(otherCtx, client, account, item, job.ComicID, chapter, page)
+			if openErr != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("第 %d 个文件下载失败: %w", index+1, openErr)
+					cancelPages()
+				}
+				errMu.Unlock()
+				return
+			}
+			path, extension, savedContentType, writeErr := writeOtherPage(stream, tempDir, index, source.FirstNonEmpty(contentType, page.ContentType), source.FirstNonEmpty(filename, page.FileName), source.FirstNonEmpty(address, page.URL))
+			_ = stream.Close()
+			if writeErr != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("第 %d 个文件保存失败: %w", index+1, writeErr)
+					cancelPages()
+				}
+				errMu.Unlock()
+				return
+			}
+			results[index] = otherPage{path: path, extension: extension, contentType: savedContentType}
+			errMu.Lock()
+			completed++
+			current := completed
+			errMu.Unlock()
+			_ = e.store.UpdateDownloadProgress(ctx, job.ID, current)
+		}()
+	}
+	wait.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	if completed != len(pages) {
+		return errors.New("其他源章节文件下载不完整")
+	}
+
+	allImages := true
+	for _, result := range results {
+		if !isImageFileExtension(result.extension) {
+			allImages = false
+			break
+		}
+	}
+	var outputPath string
+	switch {
+	case len(results) == 1:
+		outputPath = filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, results[0].extension))
+		if err := copyFileAtomic(results[0].path, outputPath); err != nil {
+			return err
+		}
+	case allImages:
+		outputPath = filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+		entries := make([]pageEntry, 0, len(results))
+		for index, result := range results {
+			entries = append(entries, pageEntry{name: fmt.Sprintf("%03d%s", index+1, result.extension), path: result.path})
+		}
+		if err := writeZip(outputPath, entries); err != nil {
+			return err
+		}
+	default:
+		chapterDir := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ""))
+		if err := os.RemoveAll(chapterDir); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(chapterDir, 0o755); err != nil {
+			return err
+		}
+		for index, result := range results {
+			target := filepath.Join(chapterDir, fmt.Sprintf("%03d%s", index+1, result.extension))
+			if err := copyFileAtomic(result.path, target); err != nil {
+				return err
+			}
+		}
+		outputPath = chapterDir
+	}
+
+	e.metaMu.Lock()
+	_, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, "", 0, len(results), countSeriesBookFiles(comicDir))
+	e.metaMu.Unlock()
+	if metaErr != nil {
+		e.logger.Printf("downloader: other source metadata %s/%s: %v", job.SourceID, job.ComicID, metaErr)
+	}
+	if err := e.markCompleted(ctx, job, len(results), len(results), outputPath); err != nil {
+		return err
+	}
+	finished = true
+	return nil
+}
+
 // downloadBookArchive packages a plugin book chapter as one EPUB. HTML and
 // illustrations are materialized through the source runtime so parser headers
 // and descrambling behavior remain intact.
@@ -1670,6 +1863,9 @@ func writeSeriesMetadataFilesWithCount(comic model.Comic, info model.SourceInfo,
 	if source.KindOf(info) == source.KindBook {
 		bookType = "book"
 		readingDirection = "LEFT_TO_RIGHT"
+	} else if source.KindOf(info) == source.KindOther {
+		bookType = "other"
+		readingDirection = "LEFT_TO_RIGHT"
 	}
 	payload, err := json.MarshalIndent(MylarSeries{
 		Version: "1.0.1",
@@ -1833,6 +2029,8 @@ func comicGenreValues(comic model.Comic, info model.SourceInfo) []string {
 	label := "漫画"
 	if source.KindOf(info) == source.KindBook {
 		label = "书籍"
+	} else if source.KindOf(info) == source.KindOther {
+		label = "其他"
 	}
 	if !seen[label] {
 		values = append(values, label)
@@ -2172,7 +2370,7 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 func chapterComicInfo(item source.Source, comic model.Comic, chapterTitle string, chapterOrder float64, pageCount int) ComicInfo {
 	info := item.Info()
 	manga := "YesAndRightToLeft"
-	if source.KindOf(info) == source.KindBook {
+	if source.KindOf(info) == source.KindBook || source.KindOf(info) == source.KindOther {
 		manga = "No"
 	}
 	genres := comicGenreValues(comic, info)
@@ -2258,6 +2456,288 @@ func fetchPageImage(ctx context.Context, client *http.Client, account source.Acc
 	}
 	data, err := fetchImage(ctx, client, account, page)
 	return data, false, err
+}
+
+func openPageContent(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, string, error) {
+	if fileSource, ok := item.(source.PageFileSource); ok {
+		reader, contentType, filename, err := fileSource.PageFile(ctx, account, comicID, chapter, page)
+		return reader, contentType, filename, page.URL, err
+	}
+	if materializer, ok := item.(source.ImageSource); ok {
+		data, contentType, err := materializer.PageImage(ctx, account, comicID, chapter, page)
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		return io.NopCloser(bytes.NewReader(data)), contentType, page.FileName, page.URL, nil
+	}
+	return openHTTPPageContent(ctx, client, account, page)
+}
+
+func openHTTPPageContent(ctx context.Context, client *http.Client, account source.Account, page model.Page) (io.ReadCloser, string, string, string, error) {
+	candidates := append([]string{page.URL}, page.Alternatives...)
+	userAgents := make([]string, 0, 2)
+	if ua := strings.TrimSpace(account.UserAgent); ua != "" {
+		userAgents = append(userAgents, ua)
+	}
+	if len(userAgents) == 0 || userAgents[0] != source.DefaultUserAgent {
+		userAgents = append(userAgents, source.DefaultUserAgent)
+	}
+	var lastErr error
+	for _, address := range candidates {
+		if strings.TrimSpace(address) == "" {
+			continue
+		}
+		for _, userAgent := range userAgents {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			request.Header.Set("User-Agent", userAgent)
+			request.Header.Set("Accept", "*/*")
+			request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
+			if page.Referer != "" {
+				request.Header.Set("Referer", page.Referer)
+			}
+			for key, value := range page.Headers {
+				request.Header.Set(key, value)
+			}
+			for key, value := range source.HeaderCookie(account.Cookie) {
+				request.Header.Set(key, value)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if response.StatusCode < 200 || response.StatusCode >= 300 {
+				lastErr = fmt.Errorf("HTTP %d", response.StatusCode)
+				_ = response.Body.Close()
+				continue
+			}
+			address := page.URL
+			if response.Request != nil && response.Request.URL != nil {
+				address = response.Request.URL.String()
+			}
+			return response.Body, response.Header.Get("Content-Type"), contentDispositionFilename(response.Header.Get("Content-Disposition")), address, nil
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的文件地址")
+	}
+	return nil, "", "", "", lastErr
+}
+
+func contentDispositionFilename(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(value)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(params["filename"])
+}
+
+func writeOtherPage(reader io.Reader, dir string, index int, contentType, filename, address string) (string, string, string, error) {
+	sample := make([]byte, 512)
+	count, err := io.ReadFull(reader, sample)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", "", "", err
+	}
+	if count == 0 {
+		return "", "", "", errors.New("来源文件为空")
+	}
+	extension := sourceFileExtension(contentType, filename, address, sample[:count])
+	path := filepath.Join(dir, fmt.Sprintf("%03d%s", index+1, extension))
+	file, err := os.Create(path)
+	if err != nil {
+		return "", "", "", err
+	}
+	if _, err := file.Write(sample[:count]); err != nil {
+		_ = file.Close()
+		return "", "", "", err
+	}
+	if _, err := io.Copy(file, reader); err != nil {
+		_ = file.Close()
+		return "", "", "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", "", "", err
+	}
+	return path, extension, contentType, nil
+}
+
+var safeFileExtensionPattern = regexp.MustCompile(`^\.[a-z0-9]{1,10}$`)
+
+func sourceFileExtension(contentType, filename, address string, sample []byte) string {
+	if extension := explicitFileExtension(filename); extension != "" {
+		return extension
+	}
+	if extension := contentTypeFileExtension(contentType); extension != "" {
+		return extension
+	}
+	if extension := detectBinaryExtension(sample); extension != "" {
+		return extension
+	}
+	if parsed, err := url.Parse(strings.TrimSpace(address)); err == nil {
+		if extension := explicitFileExtension(parsed.Path); extension != "" {
+			return extension
+		}
+	}
+	return ".bin"
+}
+
+func explicitFileExtension(value string) string {
+	extension := strings.ToLower(strings.TrimSpace(filepath.Ext(strings.TrimSpace(value))))
+	if safeFileExtensionPattern.MatchString(extension) {
+		return extension
+	}
+	return ""
+}
+
+func contentTypeFileExtension(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if err != nil {
+		mediaType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	}
+	switch strings.ToLower(mediaType) {
+	case "application/epub+zip":
+		return ".epub"
+	case "application/pdf":
+		return ".pdf"
+	case "application/zip", "application/x-zip-compressed":
+		return ".zip"
+	case "application/vnd.comicbook+zip", "application/vnd.comicbook-rar":
+		if strings.Contains(strings.ToLower(mediaType), "rar") {
+			return ".cbr"
+		}
+		return ".cbz"
+	case "application/x-rar-compressed", "application/vnd.rar":
+		return ".rar"
+	case "application/x-7z-compressed":
+		return ".7z"
+	case "application/ogg":
+		return ".ogg"
+	case "application/vnd.apple.mpegurl", "application/x-mpegurl":
+		return ".m3u8"
+	case "video/mp4":
+		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "video/x-matroska":
+		return ".mkv"
+	case "video/quicktime":
+		return ".mov"
+	case "video/x-msvideo":
+		return ".avi"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/mp4", "audio/x-m4a":
+		return ".m4a"
+	case "audio/flac", "audio/x-flac":
+		return ".flac"
+	case "audio/wav", "audio/x-wav":
+		return ".wav"
+	case "audio/ogg":
+		return ".ogg"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/svg+xml":
+		return ".svg"
+	case "text/plain":
+		return ".txt"
+	case "text/html":
+		return ".html"
+	case "application/json":
+		return ".json"
+	default:
+		return ""
+	}
+}
+
+func detectBinaryExtension(data []byte) string {
+	if extension := detectImageExtension(data); extension != "" {
+		return extension
+	}
+	if len(data) < 4 {
+		return ""
+	}
+	switch {
+	case bytes.HasPrefix(data, []byte("%PDF")):
+		return ".pdf"
+	case bytes.HasPrefix(data, []byte("PK\x03\x04")):
+		if bytes.Contains(data, []byte("application/epub+zip")) {
+			return ".epub"
+		}
+		return ".zip"
+	case len(data) >= 8 && bytes.Equal(data[4:8], []byte("ftyp")):
+		return ".mp4"
+	case bytes.HasPrefix(data, []byte{0x1A, 0x45, 0xDF, 0xA3}):
+		return ".mkv"
+	case bytes.HasPrefix(data, []byte("ID3")):
+		return ".mp3"
+	case bytes.HasPrefix(data, []byte("OggS")):
+		return ".ogg"
+	case bytes.HasPrefix(data, []byte("fLaC")):
+		return ".flac"
+	case len(data) >= 12 && bytes.Equal(data[0:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WAVE")):
+		return ".wav"
+	default:
+		return ""
+	}
+}
+
+func isImageFileExtension(extension string) bool {
+	switch strings.ToLower(strings.TrimSpace(extension)) {
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".svg":
+		return true
+	default:
+		return false
+	}
+}
+
+func copyFileAtomic(sourcePath, targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	tempPath := targetPath + ".part"
+	targetFile, err := os.Create(tempPath)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(targetFile, sourceFile); err != nil {
+		_ = targetFile.Close()
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := targetFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, targetPath); err == nil {
+		return nil
+	}
+	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return nil
 }
 
 func fetchCoverImage(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic) ([]byte, error) {

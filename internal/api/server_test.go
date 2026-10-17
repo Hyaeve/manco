@@ -354,3 +354,41 @@ func TestFetchGitHubAtomReadsLatestVersion(t *testing.T) {
 		t.Fatalf("releaseURL = %q", releaseURL)
 	}
 }
+
+func TestScanLocalDirIncludesOtherSourceFiles(t *testing.T) {
+	root := t.TempDir()
+	seriesDir := filepath.Join(root, "其他作品")
+	if err := os.MkdirAll(filepath.Join(seriesDir, "第2话"), 0o755); err != nil {
+		t.Fatalf("mkdir series: %v", err)
+	}
+	metadata := `<?xml version="1.0" encoding="UTF-8"?>
+<ComicInfo>
+  <Series>其他作品</Series>
+  <Genre>其他</Genre>
+  <Notes>source=other-stub comicId=1</Notes>
+</ComicInfo>`
+	if err := os.WriteFile(filepath.Join(seriesDir, "ComicInfo.xml"), []byte(metadata), 0o644); err != nil {
+		t.Fatalf("write ComicInfo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "第1话.mp4"), []byte("video"), 0o644); err != nil {
+		t.Fatalf("write video: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(seriesDir, "第2话", "001.webm"), []byte("webm"), 0o644); err != nil {
+		t.Fatalf("write nested video: %v", err)
+	}
+
+	item := (&Server{}).scanLocalDir(root, "其他作品")
+	if item.Kind != "other" || item.SourceID != "other-stub" || item.ComicID != "1" {
+		t.Fatalf("scanned other item = %+v", item)
+	}
+	if len(item.Files) != 2 {
+		t.Fatalf("scanned files = %+v, want direct mp4 and nested webm", item.Files)
+	}
+	extensions := map[string]string{}
+	for _, file := range item.Files {
+		extensions[file.Ext] = file.Kind
+	}
+	if extensions["mp4"] != "other" || extensions["webm"] != "other" {
+		t.Fatalf("other source file kinds = %+v", extensions)
+	}
+}

@@ -293,6 +293,32 @@ func TestBookFileExtension(t *testing.T) {
 	}
 }
 
+func TestSourceFileExtensionPrefersSourceMetadata(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		filename    string
+		address     string
+		sample      []byte
+		want        string
+	}{
+		{name: "mime video", contentType: "video/mp4", want: ".mp4"},
+		{name: "filename wins", contentType: "application/octet-stream", filename: "movie.mkv", want: ".mkv"},
+		{name: "epub", contentType: "application/epub+zip", want: ".epub"},
+		{name: "pdf magic", contentType: "application/octet-stream", sample: []byte("%PDF-1.7"), want: ".pdf"},
+		{name: "matroska magic", contentType: "application/octet-stream", sample: []byte{0x1A, 0x45, 0xDF, 0xA3}, want: ".mkv"},
+		{name: "url fallback", address: "https://example.test/media/movie.webm", sample: []byte("data"), want: ".webm"},
+		{name: "unknown", contentType: "application/octet-stream", sample: []byte("data"), want: ".bin"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sourceFileExtension(test.contentType, test.filename, test.address, test.sample); got != test.want {
+				t.Fatalf("sourceFileExtension() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 // 禁漫等来源的图床按 User-Agent 做防盗链，图片请求必须优先使用来源账号
 // 里配置的 UA，否则浏览与封面正常但下载章节会失败。
 func TestFetchImageUsesAccountUserAgent(t *testing.T) {

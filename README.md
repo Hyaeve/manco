@@ -21,7 +21,7 @@ services:
       - ./config:/app/config
       - ./data:/app/data
       # 按需映射下载目录，例如：
-      # - /vol3/1000/家庭影音/:/家庭影音:shared
+      # - ./Manco:/Manco:shared
     environment:
       - TZ=Asia/Shanghai
     restart: unless-stopped
@@ -92,7 +92,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.6.5 && git push origin v0.6.5   # 构建并发布 :v0.6.5
+git tag v0.6.5.1 && git push origin v0.6.5.1   # 构建并发布 :v0.6.5.1
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 

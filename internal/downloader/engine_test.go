@@ -185,6 +185,18 @@ type staticSource struct {
 	pages  map[string][]model.Page
 }
 
+type otherSource struct {
+	*staticSource
+}
+
+func (s *otherSource) Info() model.SourceInfo {
+	info := s.staticSource.Info()
+	info.ID = "other-stub"
+	info.Name = "其他测试源"
+	info.Kind = source.KindOther
+	return info
+}
+
 func (s *staticSource) Info() model.SourceInfo {
 	return model.SourceInfo{ID: "stub", Name: "测试源", CanSearch: true, CanBrowse: true}
 }
@@ -574,6 +586,55 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(downloadDir, "测试作品", obsolete)); !os.IsNotExist(err) {
 			t.Fatalf("obsolete metadata sidecar %s should not exist: %v", obsolete, err)
 		}
+	}
+}
+
+func TestOtherSourcePreservesProvidedContentType(t *testing.T) {
+	media := []byte("video-bytes-with-mp4-content-type")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(media)
+	}))
+	defer server.Close()
+
+	registry := sources.NewRegistry(server.Client(), nil, nil)
+	registry.Register(&otherSource{staticSource: &staticSource{
+		detail: model.Comic{SourceID: "other-stub", ID: "video-1", Title: "其他作品", Author: "作者"},
+		pages: map[string][]model.Page{
+			"chapter-1": {{URL: server.URL + "/stream", ContentType: "video/mp4"}},
+		},
+	}})
+	store := &memoryJobs{}
+	downloadDir := t.TempDir()
+	engine := NewEngine(registry, store, downloadDir, 1, 1, log.New(io.Discard, "", 0))
+	job, err := store.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID:     "other-stub",
+		ComicID:      "video-1",
+		ComicTitle:   "其他作品",
+		ChapterID:    "chapter-1",
+		ChapterTitle: "第1话",
+		ChapterOrder: 1,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := engine.download(context.Background(), job); err != nil {
+		t.Fatalf("download other source: %v", err)
+	}
+	output := filepath.Join(downloadDir, "其他作品", "第1话.mp4")
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read downloaded media: %v", err)
+	}
+	if !bytes.Equal(data, media) {
+		t.Fatalf("downloaded media changed: %q", data)
+	}
+	stored, _ := store.find(job.ID)
+	if stored.Status != "completed" || stored.FilePath != output {
+		t.Fatalf("stored job = %+v", stored)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(downloadDir, "其他作品", "*.cbz")); len(matches) != 0 {
+		t.Fatalf("other source was incorrectly wrapped as CBZ: %v", matches)
 	}
 }
 
