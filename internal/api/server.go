@@ -3329,13 +3329,29 @@ func (s *Server) handleChapterPreviewFile(w http.ResponseWriter, r *http.Request
 func previewMediaContentType(contentType, filename, address string) string {
 	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
 	if contentType != "" && contentType != "application/octet-stream" {
+		if contentType == "audio/webm" {
+			return "video/webm"
+		}
 		return contentType
+	}
+	videoTypes := map[string]string{
+		".m4v":  "video/x-m4v",
+		".mkv":  "video/x-matroska",
+		".mov":  "video/quicktime",
+		".mp4":  "video/mp4",
+		".ogv":  "video/ogg",
+		".ts":   "video/mp2t",
+		".webm": "video/webm",
 	}
 	for _, candidate := range []string{filename, address} {
 		if parsed, err := url.Parse(candidate); err == nil {
 			candidate = parsed.Path
 		}
-		if detected := mime.TypeByExtension(strings.ToLower(path.Ext(candidate))); detected != "" {
+		extension := strings.ToLower(path.Ext(candidate))
+		if detected := videoTypes[extension]; detected != "" {
+			return detected
+		}
+		if detected := mime.TypeByExtension(extension); detected != "" {
 			return detected
 		}
 	}
