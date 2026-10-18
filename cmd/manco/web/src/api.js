@@ -102,6 +102,7 @@ export const api = {
     return request(`/api/search?${params.toString()}`)
   },
   sourceFilters: (id) => request(`/api/sources/${encodeURIComponent(id)}/filters`),
+  testSource: (id) => request(`/api/sources/${encodeURIComponent(id)}/test`, { method: 'POST' }),
   browse: (id, filters = {}, page = 1, signal) => {
     const params = new URLSearchParams({ page: String(page) })
     for (const [key, value] of Object.entries(filters)) {
@@ -118,6 +119,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ chapter }),
     }),
+  chapterPreviewFileUrl: (id, comicId, key, index) => {
+    if (!id || !comicId || !key || index < 0) return ''
+    const params = new URLSearchParams({ key, index: String(index) })
+    return `/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/preview/file?${params.toString()}`
+  },
   comicDownloads: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}/downloads`),
 
@@ -196,6 +202,8 @@ export const api = {
     if (download) params.set('download', '1')
     return `/api/local/cbz/file?${params.toString()}`
   },
+  localCBZDocument: (path, entry) =>
+    request(`/api/local/cbz/document?path=${encodeURIComponent(path)}&entry=${encodeURIComponent(entry)}`),
   localEPUBFileUrl: (path, entry, download = false) => {
     if (!path || !entry) return ''
     const params = new URLSearchParams({ path, entry })

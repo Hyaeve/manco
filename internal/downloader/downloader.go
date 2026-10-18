@@ -605,7 +605,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 	if source.KindOf(item.Info()) == source.KindOther {
 		if len(job.MergeChapters) > 1 {
-			return errors.New("其他源不支持合并下载，请按章节保留来源文件")
+			return errors.New("视频源不支持合并下载，请按章节保留来源文件")
 		}
 		return e.downloadOther(ctx, item, account, job)
 	}
@@ -1031,7 +1031,7 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 	}
 	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
-	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".epub"))
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
 	epubChapters := make([]epubChapter, 0, len(chapters))
 	epubImages := make([]pageEntry, 0, len(chapters)*8)
 
@@ -1089,7 +1089,7 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
-	if err := writeEPUB(outputPath, metadata, comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID), epubChapters, epubImages); err != nil {
+	if err := writeBookCBZ(outputPath, item, metadata, chapterTitle, job.ChapterOrder, epubChapters, epubImages); err != nil {
 		return err
 	}
 	e.metaMu.Lock()
@@ -1273,9 +1273,9 @@ func SimplifiedText(value string) string {
 	return convertToSimplifiedText(value)
 }
 
-// downloadBook persists one EPUB per chapter for book sources. Native EPUB
-// files are kept unchanged; plain text and archive-style chapters are packaged
-// into EPUB, alongside the shared metadata sidecars.
+// downloadBook prefers generated CBZ for text/HTML chapters. Native CBZ is
+// retained, ZIP is normalized to CBZ, and source-provided EPUB/PDF files are
+// kept in their native format.
 func (e *Engine) downloadBook(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) error {
 	chapter := model.Chapter{ID: job.ChapterID, ComicID: job.ComicID, Title: job.ChapterTitle, Order: job.ChapterOrder}
 	// Mark the job running before the (potentially large) ebook fetch so the
@@ -1350,30 +1350,45 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		return err
 	}
 	outputName := chapterTitle
+	outputExtension := ".cbz"
 	if !isText {
 		if base := bookFileBaseName(filename); base != "" {
 			outputName = base
 		}
+		nativeExtension := bookFileExtension(filename)
+		if nativeExtension == ".bin" {
+			nativeExtension = detectBinaryExtension(data)
+		}
+		switch nativeExtension {
+		case ".cbz":
+			outputExtension = ".cbz"
+		case ".zip":
+			outputExtension = ".cbz"
+		case ".epub":
+			outputExtension = ".epub"
+		case ".pdf":
+			outputExtension = ".pdf"
+		default:
+			if nativeExtension == "" {
+				nativeExtension = "未知"
+			}
+			return fmt.Errorf("书籍文件格式 %s 不受支持，仅接受 CBZ、EPUB 或 PDF", nativeExtension)
+		}
 	}
-	outputPath := filepath.Join(comicDir, ChapterFileName(outputName, job.ChapterOrder, job.ChapterMarker, ".epub"))
+	outputPath := filepath.Join(comicDir, ChapterFileName(outputName, job.ChapterOrder, job.ChapterMarker, outputExtension))
 	if isText {
-		if err := writeEPUB(
+		if err := writeBookCBZ(
 			outputPath,
+			item,
 			metadata,
-			comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+			chapterTitle,
+			job.ChapterOrder,
 			[]epubChapter{{Title: chapterTitle, HTML: plainTextToXHTML(text)}},
 			nil,
 		); err != nil {
 			return err
 		}
 	} else {
-		extension := bookFileExtension(filename)
-		if !strings.EqualFold(extension, ".epub") {
-			if extension == "" {
-				extension = "未知"
-			}
-			return fmt.Errorf("该书源返回了非 EPUB 格式（%s），当前书籍下载仅支持 EPUB", extension)
-		}
 		if err := writeFileAtomic(outputPath, data); err != nil {
 			return err
 		}
@@ -1401,7 +1416,7 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 		return fmt.Errorf("list other source files: %w", err)
 	}
 	if len(pages) == 0 {
-		return errors.New("其他源章节没有可下载文件")
+		return errors.New("视频源章节没有可下载文件")
 	}
 	if err := e.store.UpdateDownloadJob(ctx, job.ID, "running", len(pages), 0, "", ""); err != nil {
 		return err
@@ -1517,7 +1532,7 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 		return firstErr
 	}
 	if completed != len(pages) {
-		return errors.New("其他源章节文件下载不完整")
+		return errors.New("视频源章节文件下载不完整")
 	}
 
 	allImages := true
@@ -1573,7 +1588,7 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 	return nil
 }
 
-// downloadBookArchive packages a plugin book chapter as one EPUB. HTML and
+// downloadBookArchive packages a plugin book chapter as one CBZ. HTML and
 // illustrations are materialized through the source runtime so parser headers
 // and descrambling behavior remain intact.
 func (e *Engine) downloadBookArchive(
@@ -1683,11 +1698,13 @@ func (e *Engine) downloadBookArchive(
 	if err != nil {
 		return fmt.Errorf("rewrite chapter HTML: %w", err)
 	}
-	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".epub"))
-	if err := writeEPUB(
+	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+	if err := writeBookCBZ(
 		outputPath,
+		item,
 		metadata,
-		comicPageURL(item.Info().Homepage, metadata.SourceID, metadata.ID),
+		chapterTitle,
+		job.ChapterOrder,
 		[]epubChapter{{Title: chapterTitle, HTML: html}},
 		epubImages,
 	); err != nil {
@@ -2860,6 +2877,12 @@ func PreviewPageImage(ctx context.Context, client *http.Client, account source.A
 		contentType = http.DetectContentType(data)
 	}
 	return data, contentType, nil
+}
+
+// OpenPreviewPageFile streams one source page for the browser player without
+// writing it into the download directory.
+func OpenPreviewPageFile(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, string, error) {
+	return openPageContent(ctx, client, account, item, comicID, chapter, page)
 }
 
 func openPageContent(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, string, error) {

@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.9"
+	appVersion    = "v0.6.10"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -386,12 +386,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/search", s.requireAuth(s.handleGlobalSearch))
 	mux.HandleFunc("GET /api/sources/{id}/browse", s.requireAuth(s.handleBrowse))
 	mux.HandleFunc("GET /api/sources/{id}/filters", s.requireAuth(s.handleSourceFilters))
+	mux.HandleFunc("POST /api/sources/{id}/test", s.requireAuth(s.handleSourceTest))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}", s.requireAuth(s.handleComic))
 	mux.HandleFunc("GET /api/discover/cover", s.requireAuth(s.handleDiscoverCover))
 	mux.HandleFunc("GET /api/subscription-cover", s.requireAuth(s.handleSubscriptionCover))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/chapters", s.requireAuth(s.handleChapters))
 	mux.HandleFunc("POST /api/sources/{id}/comics/{comicId}/preview", s.requireAuth(s.handleChapterPreview))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/preview/image", s.requireAuth(s.handleChapterPreviewImage))
+	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/preview/file", s.requireAuth(s.handleChapterPreviewFile))
 	mux.HandleFunc("GET /api/sources/{id}/comics/{comicId}/downloads", s.requireAuth(s.handleComicDownloads))
 
 	mux.HandleFunc("GET /api/subscriptions", s.requireAuth(s.handleListSubscriptions))
@@ -419,6 +421,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/local/file", s.requireAuth(s.handleLocalFile))
 	mux.HandleFunc("GET /api/local/cbz", s.requireAuth(s.handleLocalCBZ))
 	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
+	mux.HandleFunc("GET /api/local/cbz/document", s.requireAuth(s.handleLocalCBZDocument))
 	mux.HandleFunc("GET /api/local/epub", s.requireAuth(s.handleLocalEPUB))
 	mux.HandleFunc("GET /api/local/epub/file", s.requireAuth(s.handleLocalEPUBFile))
 	mux.HandleFunc("POST /api/local/merge", s.requireAuth(s.handleLocalMerge))
@@ -2830,6 +2833,43 @@ func (s *Server) handleSourceFilters(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": filters})
 }
 
+func (s *Server) handleSourceTest(w http.ResponseWriter, r *http.Request) {
+	item, account, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	startedAt := time.Now()
+	probe, err := testSourceConnection(ctx, item, account)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "内容源连接测试失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"probe":     probe,
+		"latencyMs": time.Since(startedAt).Milliseconds(),
+	})
+}
+
+func testSourceConnection(ctx context.Context, item source.Source, account source.Account) (string, error) {
+	info := item.Info()
+	switch {
+	case info.CanBrowse:
+		_, err := item.Browse(ctx, account, model.BrowseOptions{}, 1)
+		return "browse", err
+	case info.CanSearch:
+		_, err := item.Search(ctx, account, "test", 1)
+		return "search", err
+	default:
+		if _, err := sourceFilterGroups(ctx, item); err == nil {
+			return "filters", nil
+		}
+		return "", errors.New("该内容源没有可用的连通性测试入口")
+	}
+}
+
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	item, account, ok := s.resolveSource(w, r)
 	if !ok {
@@ -3147,6 +3187,15 @@ func (s *Server) handleChapterPreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if source.KindOf(item.Info()) == source.KindOther {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"kind":      "video",
+			"title":     title,
+			"key":       token,
+			"pageCount": len(pages),
+		})
+		return
+	}
 	urls := make([]string, 0, len(pages))
 	for index := range pages {
 		urls = append(urls, fmt.Sprintf(
@@ -3167,6 +3216,10 @@ func (s *Server) handleChapterPreview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChapterPreviewImage(w http.ResponseWriter, r *http.Request) {
 	item, account, ok := s.resolveSource(w, r)
 	if !ok {
+		return
+	}
+	if source.KindOf(item.Info()) == source.KindOther {
+		writeError(w, http.StatusBadRequest, "视频源请使用媒体播放接口")
 		return
 	}
 	token := strings.TrimSpace(r.URL.Query().Get("key"))
@@ -3212,6 +3265,84 @@ func (s *Server) handleChapterPreviewImage(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Cache-Control", "private, max-age=300")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	_, _ = w.Write(data)
+}
+
+func (s *Server) handleChapterPreviewFile(w http.ResponseWriter, r *http.Request) {
+	item, account, ok := s.resolveSource(w, r)
+	if !ok {
+		return
+	}
+	if source.KindOf(item.Info()) != source.KindOther {
+		writeError(w, http.StatusBadRequest, "当前内容源不支持媒体播放接口")
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("key"))
+	index := intParam(r, "index", -1)
+	if token == "" || index < 0 {
+		writeError(w, http.StatusBadRequest, "无效的媒体页面")
+		return
+	}
+	raw, _, ok := s.cache.Get("chapter-preview:" + token)
+	if !ok {
+		writeError(w, http.StatusGone, "预览已过期，请重新打开章节")
+		return
+	}
+	var preview cachedChapterPreview
+	if json.Unmarshal(raw, &preview) != nil ||
+		preview.SourceID != item.Info().ID ||
+		preview.ComicID != r.PathValue("comicId") ||
+		index >= len(preview.Pages) {
+		writeError(w, http.StatusGone, "预览已过期，请重新打开章节")
+		return
+	}
+	client := s.registry.ClientForAccount(account)
+	if client == nil {
+		client = source.NewHTTPClient()
+	}
+	reader, contentType, filename, address, err := downloader.OpenPreviewPageFile(
+		r.Context(),
+		client,
+		account,
+		item,
+		preview.ComicID,
+		preview.Chapter,
+		preview.Pages[index],
+	)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "加载媒体文件失败："+err.Error())
+		return
+	}
+	defer reader.Close()
+	contentType = previewMediaContentType(contentType, filename, address)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Accept-Ranges", "none")
+	if filename != "" {
+		if disposition := mime.FormatMediaType("inline", map[string]string{"filename": filename}); disposition != "" {
+			w.Header().Set("Content-Disposition", disposition)
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, reader)
+}
+
+func previewMediaContentType(contentType, filename, address string) string {
+	contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+	if contentType != "" && contentType != "application/octet-stream" {
+		return contentType
+	}
+	for _, candidate := range []string{filename, address} {
+		if parsed, err := url.Parse(candidate); err == nil {
+			candidate = parsed.Path
+		}
+		if detected := mime.TypeByExtension(strings.ToLower(path.Ext(candidate))); detected != "" {
+			return detected
+		}
+	}
+	if contentType != "" {
+		return contentType
+	}
+	return "application/octet-stream"
 }
 
 // handleComicDownloads 列出某作品已经下载完成的章节 ID，供归档集查看“哪些章节下过”。
@@ -5933,7 +6064,17 @@ func isImageArchiveEntry(name string) bool {
 	}
 }
 
-// handleLocalCBZ lists image entries from a downloaded chapter archive.
+func isDocumentArchiveEntry(name string) bool {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".xhtml", ".html", ".htm":
+		return true
+	default:
+		return false
+	}
+}
+
+// handleLocalCBZ lists the reading order for downloaded CBZ books. Image-only
+// archives keep returning them as items for thumbnails and legacy readers.
 func (s *Server) handleLocalCBZ(w http.ResponseWriter, r *http.Request) {
 	target, err := s.resolveLocalTarget(r.Context(), r.URL.Query().Get("path"))
 	if err != nil {
@@ -5949,15 +6090,30 @@ func (s *Server) handleLocalCBZ(w http.ResponseWriter, r *http.Request) {
 	type entry struct {
 		Name string `json:"name"`
 		Size uint64 `json:"size"`
+		Kind string `json:"kind"`
 	}
 	items := make([]entry, 0, len(archive.File))
+	imagePages := make([]entry, 0, len(archive.File))
+	documentPages := make([]entry, 0, len(archive.File))
 	for _, file := range archive.File {
-		if file.FileInfo().IsDir() || !isImageArchiveEntry(file.Name) || strings.Contains(file.Name, "..") {
+		if file.FileInfo().IsDir() || strings.Contains(file.Name, "..") {
 			continue
 		}
-		items = append(items, entry{Name: file.Name, Size: file.UncompressedSize64})
+		switch {
+		case isImageArchiveEntry(file.Name):
+			image := entry{Name: file.Name, Size: file.UncompressedSize64, Kind: "image"}
+			items = append(items, image)
+			imagePages = append(imagePages, image)
+		case isDocumentArchiveEntry(file.Name):
+			documentPages = append(documentPages, entry{Name: file.Name, Size: file.UncompressedSize64, Kind: "document"})
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	pages := imagePages
+	if len(documentPages) > 0 {
+		pages = documentPages
+	}
+	sort.Slice(pages, func(i, j int) bool { return pages[i].Name < pages[j].Name })
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "pages": pages})
 }
 
 // handleLocalCBZFile streams one image entry without extracting the archive.
@@ -6002,6 +6158,54 @@ func (s *Server) handleLocalCBZFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "CBZ 条目不存在")
+}
+
+func (s *Server) handleLocalCBZDocument(w http.ResponseWriter, r *http.Request) {
+	target, err := s.resolveLocalTarget(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entryName := strings.TrimSpace(r.URL.Query().Get("entry"))
+	if entryName == "" || strings.Contains(entryName, "..") || !isDocumentArchiveEntry(entryName) {
+		writeError(w, http.StatusBadRequest, "无效的 CBZ 文档条目")
+		return
+	}
+	archive, err := zip.OpenReader(target)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "无法读取 CBZ 文件: "+err.Error())
+		return
+	}
+	defer archive.Close()
+	for _, file := range archive.File {
+		if file.Name != entryName || file.FileInfo().IsDir() {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(reader, 32<<20))
+		closeErr := reader.Close()
+		if readErr != nil {
+			writeError(w, http.StatusBadGateway, readErr.Error())
+			return
+		}
+		if closeErr != nil {
+			writeError(w, http.StatusBadGateway, closeErr.Error())
+			return
+		}
+		html, title := sanitizeEPUBChapterHTML(raw)
+		html = strings.ReplaceAll(
+			html,
+			"/api/local/epub/file?entry=",
+			"/api/local/cbz/file?path="+url.QueryEscape(strings.TrimSpace(r.URL.Query().Get("path")))+"&entry=",
+		)
+		writeJSON(w, http.StatusOK, map[string]any{"html": html, "title": title})
+		return
+	}
+	writeError(w, http.StatusNotFound, "CBZ 文档条目不存在")
 }
 
 type epubReaderChapter struct {

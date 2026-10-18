@@ -573,3 +573,58 @@ func TestPruneTemporarySubscriptionsKeepsFailedDownloads(t *testing.T) {
 		t.Fatalf("completed temporary subscription still exists, error = %v", err)
 	}
 }
+
+func TestPreviewMediaContentTypeUsesFilenameAndURLFallbacks(t *testing.T) {
+	cases := []struct {
+		name        string
+		contentType string
+		filename    string
+		address     string
+		want        string
+	}{
+		{
+			name:        "preserves source video type",
+			contentType: "video/webm; charset=binary",
+			want:        "video/webm",
+		},
+		{
+			name:        "uses filename for generic type",
+			contentType: "application/octet-stream",
+			filename:    "episode.mp4",
+			want:        "video/mp4",
+		},
+		{
+			name:    "uses URL path",
+			address: "https://media.example.test/chapter/video.webm?token=1",
+			want:    "video/webm",
+		},
+		{
+			name: "keeps unknown binary fallback",
+			want: "application/octet-stream",
+		},
+	}
+	for _, item := range cases {
+		t.Run(item.name, func(t *testing.T) {
+			if got := previewMediaContentType(item.contentType, item.filename, item.address); got != item.want {
+				t.Fatalf("previewMediaContentType() = %q, want %q", got, item.want)
+			}
+		})
+	}
+}
+
+func TestSourceConnectionProbeUsesBrowseWhenAvailable(t *testing.T) {
+	item := &lazyFilterFixture{
+		info: model.SourceInfo{
+			ID:        "browse-source",
+			Name:      "可浏览来源",
+			CanBrowse: true,
+		},
+	}
+	probe, err := testSourceConnection(context.Background(), item, source.Account{})
+	if err != nil {
+		t.Fatalf("testSourceConnection() error = %v", err)
+	}
+	if probe != "browse" {
+		t.Fatalf("testSourceConnection() probe = %q, want browse", probe)
+	}
+}

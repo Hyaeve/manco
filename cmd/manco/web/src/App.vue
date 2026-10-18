@@ -90,13 +90,13 @@ let sessionCheckTimer = 0
 let activityTimer = 0
 let prefetchHandle = 0
 
-const theme = ref(localStorage.getItem('manco-theme') || 'system')
+const theme = ref(localStorage.getItem('manco-theme') || 'light')
 const themeOptions = [
   { id: 'light', label: '日光', icon: Sun },
   { id: 'dark', label: '夜间', icon: Moon },
   { id: 'system', label: '跟随系统', icon: Monitor },
 ]
-const activeTheme = computed(() => themeOptions.find((item) => item.id === theme.value) || themeOptions[2])
+const activeTheme = computed(() => themeOptions.find((item) => item.id === theme.value) || themeOptions[0])
 
 const media = window.matchMedia('(prefers-color-scheme: dark)')
 

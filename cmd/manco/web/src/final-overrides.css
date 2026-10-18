@@ -1631,6 +1631,37 @@
   }
 }
 
+/* 空状态窗口占满内容页，仅保留少量底部呼吸空间。 */
+.page-empty-state.collection-empty {
+  display: flex;
+  width: min(100%, 980px);
+  height: calc(100dvh - 174px);
+  min-height: 520px;
+  flex-direction: column;
+  margin: 12px auto 18px;
+}
+
+.page-empty-state .collection-empty-scene {
+  flex: 1;
+}
+
+.source-add-row.is-added {
+  background: color-mix(in srgb, var(--primary-soft) 34%, var(--surface));
+}
+
+.source-add-row.is-added > img {
+  opacity: 0.78;
+}
+
+@media (max-width: 760px) {
+  .page-empty-state.collection-empty {
+    width: 100%;
+    height: calc(100dvh - 156px);
+    min-height: 460px;
+    margin-inline: 0;
+  }
+}
+
 /* 资源卡片拖拽排序 */
 .source-card-simple {
   grid-template-columns: 16px 48px minmax(0, 1fr);
@@ -5329,19 +5360,80 @@ svg.source-editor-icon {
   min-height: 280px;
 }
 
-/* 关于卡片右下角放橘猫图标水印，做成卡通元素而不是纯文字卡片。 */
-.settings-about-card::after {
-  content: '';
+.settings-about-card > :not(.settings-about-illustration) {
+  position: relative;
+  z-index: 1;
+}
+
+.settings-about-illustration {
   position: absolute;
-  right: -26px;
-  bottom: -30px;
-  width: 200px;
-  height: 200px;
-  background-image: url('/logo-icon.png');
-  background-repeat: no-repeat;
-  background-size: contain;
-  opacity: 0.16;
+  right: -10px;
+  bottom: -12px;
+  width: min(280px, 72%);
+  height: auto;
+  opacity: 0.85;
   pointer-events: none;
+}
+
+.settings-about-illustration .about-book-stack rect {
+  fill: color-mix(in srgb, var(--primary) 14%, var(--surface));
+  stroke: color-mix(in srgb, var(--primary) 52%, var(--border));
+  stroke-width: 2;
+}
+
+.settings-about-illustration .about-book-stack path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 34%, transparent);
+  stroke-linecap: round;
+  stroke-width: 1.4;
+}
+
+.settings-about-illustration .about-bookmark {
+  stroke: color-mix(in srgb, var(--primary-strong) 76%, var(--text)) !important;
+  stroke-width: 2.2 !important;
+}
+
+.settings-about-illustration .about-cat-body,
+.settings-about-illustration .about-cat-head,
+.settings-about-illustration .about-cat-ear {
+  fill: color-mix(in srgb, var(--text) 88%, #25211c);
+  stroke: color-mix(in srgb, var(--text) 72%, var(--border));
+  stroke-width: 2;
+}
+
+.settings-about-illustration .about-cat-patch {
+  fill: color-mix(in srgb, var(--surface) 88%, #fff);
+  opacity: 0.92;
+}
+
+.settings-about-illustration .about-cat-eye,
+.settings-about-illustration .about-cat-nose,
+.settings-about-illustration .about-cat-mouth,
+.settings-about-illustration .about-cat-tail,
+.settings-about-illustration .about-cat-paw {
+  fill: none;
+  stroke: color-mix(in srgb, var(--surface) 70%, #fef7ea);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
+.settings-about-illustration .about-cat-tail {
+  stroke: color-mix(in srgb, var(--text) 80%, var(--border));
+  stroke-width: 7;
+}
+
+.settings-about-illustration .about-sparkles {
+  fill: color-mix(in srgb, var(--primary) 65%, transparent);
+  stroke: color-mix(in srgb, var(--primary-strong) 70%, transparent);
+  stroke-width: 1.3;
+}
+
+[data-theme='dark'] .settings-about-illustration .about-cat-eye,
+[data-theme='dark'] .settings-about-illustration .about-cat-nose,
+[data-theme='dark'] .settings-about-illustration .about-cat-mouth,
+[data-theme='dark'] .settings-about-illustration .about-cat-paw {
+  stroke: #2c241d;
 }
 
 .subscription-card.disabled {
@@ -5855,5 +5947,130 @@ svg.source-editor-icon {
   .source-cat-loader img {
     animation: none;
     opacity: 0.3;
+  }
+}
+
+/* 内容源编辑：图标入口、名称与代理开关、浏览器验证地址。 */
+.source-editor-icon-button {
+  position: relative;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.source-editor-icon-button:hover {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  background: color-mix(in srgb, var(--primary-soft) 54%, var(--surface));
+  transform: translateY(-1px);
+}
+
+.source-editor-icon-button .source-editor-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.source-editor-icon-pencil {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--primary-strong);
+  box-sizing: content-box;
+}
+
+.source-name-proxy-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.source-name-field,
+.source-name-field .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.source-proxy-inline {
+  justify-self: start;
+  min-height: 38px;
+  margin: 0 0 0 0;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 9px;
+  background: var(--surface-muted);
+}
+
+.browser-domain-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.48fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.browser-domain-select,
+.browser-url-input,
+.browser-url-input .input {
+  width: 100%;
+  min-width: 0;
+}
+
+.input-with-action {
+  position: relative;
+}
+
+.input-with-action .input {
+  padding-right: 44px;
+}
+
+.input-with-action > .icon-btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+}
+
+.icon-library-source-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+}
+
+.icon-library-source-actions .inline {
+  min-width: 0;
+}
+
+.icon-library-source-actions strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .source-name-proxy-row,
+  .browser-domain-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .icon-library-source-actions {
+    flex-wrap: wrap;
+  }
+
+  .icon-library-source-actions .spacer {
+    display: none;
   }
 }

@@ -5,7 +5,6 @@ import {
   BookOpen,
   CircleCheck,
   Compass,
-  FileArchive,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -14,6 +13,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
 
@@ -448,7 +448,7 @@ async function removeSelected() {
     }
     if (failed) error.value = `有 ${failed} 个任务删除失败，请查看运行日志`
     if (failed < ids.length) clearSelection()
-    await load(true)
+    await load()
   } finally {
     busy.value = 0
   }
@@ -469,7 +469,7 @@ async function remove(item, removeFile) {
   error.value = ''
   try {
     await api.deleteDownload(item.id, removeFile)
-    items.value = items.value.filter((row) => row.id !== item.id)
+    await load()
     const next = new Set(selected.value)
     next.delete(item.id)
     selected.value = next
@@ -526,14 +526,21 @@ async function remove(item, removeFile) {
     <Loader2 :size="22" class="spin" />
     <span>加载任务列表</span>
   </div>
-  <div v-else-if="!items.length" class="card empty">
-    <FileArchive :size="26" />
-    <p>还没有下载任务。漫画章节会打包为 CBZ，书籍会生成或保留 EPUB。</p>
-    <ContentLink class="btn small" to="/discover">
-      <Compass :size="15" />
-      浏览漫画源
-    </ContentLink>
-  </div>
+  <CollectionEmptyState
+    v-else-if="!items.length"
+    class="page-empty-state"
+    variant="tasks"
+    window-title="任务列表"
+    heading="还没有下载任务"
+    description="下载任务会显示在这里。"
+  >
+    <template #actions>
+      <ContentLink class="btn small" to="/discover">
+        <Compass :size="15" />
+        浏览内容源
+      </ContentLink>
+    </template>
+  </CollectionEmptyState>
   <div v-else>
     <div v-if="!visible.length" class="card empty">
       <CircleCheck :size="26" />

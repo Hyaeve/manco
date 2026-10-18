@@ -30,6 +30,117 @@ type epubImage struct {
 	mediaType string
 }
 
+// writeBookCBZ packages generated book chapters as XHTML pages plus their
+// illustrations. Native EPUB and PDF files are left unchanged by callers.
+func writeBookCBZ(path string, item source.Source, book model.Comic, chapterTitle string, chapterOrder float64, chapters []epubChapter, images []pageEntry) error {
+	if len(chapters) == 0 && len(images) == 0 {
+		return fmt.Errorf("CBZ 至少需要一个页面")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	normalizedImages, err := normalizeEPUBImages(images)
+	if err != nil {
+		return err
+	}
+	chapterBodies := make([]string, len(chapters))
+	for index, chapter := range chapters {
+		body, normalizeErr := normalizeXHTMLFragment(chapter.HTML)
+		if normalizeErr != nil {
+			return fmt.Errorf("处理章节 %q 失败: %w", chapter.Title, normalizeErr)
+		}
+		chapterBodies[index] = body
+	}
+	infoPayload, err := marshalComicInfo(chapterComicInfo(
+		item,
+		book,
+		chapterTitle,
+		chapterOrder,
+		len(chapters)+len(normalizedImages),
+	))
+	if err != nil {
+		return err
+	}
+
+	temp := path + ".part"
+	file, err := os.Create(temp)
+	if err != nil {
+		return err
+	}
+	writer := zip.NewWriter(file)
+	closeWithCleanup := func(cause error) error {
+		_ = writer.Close()
+		_ = file.Close()
+		_ = os.Remove(temp)
+		return cause
+	}
+	write := func(name string, data []byte) error {
+		header := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: time.Now()}
+		handle, createErr := writer.CreateHeader(header)
+		if createErr != nil {
+			return createErr
+		}
+		_, writeErr := handle.Write(data)
+		return writeErr
+	}
+	writePath := func(image epubImage) error {
+		header := &zip.FileHeader{Name: image.name, Method: zip.Deflate, Modified: time.Now()}
+		handle, createErr := writer.CreateHeader(header)
+		if createErr != nil {
+			return createErr
+		}
+		sourceFile, openErr := os.Open(image.path)
+		if openErr != nil {
+			return openErr
+		}
+		_, copyErr := io.Copy(handle, sourceFile)
+		closeErr := sourceFile.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+
+	for index, chapter := range chapters {
+		document := buildEPUBChapterDocument(chapter.Title, chapterBodies[index])
+		if err := write(fmt.Sprintf("%04d.xhtml", index+1), []byte(document)); err != nil {
+			return closeWithCleanup(err)
+		}
+	}
+	for _, image := range normalizedImages {
+		if err := writePath(image); err != nil {
+			return closeWithCleanup(err)
+		}
+	}
+	if err := write("style.css", []byte(epubStylesheet)); err != nil {
+		return closeWithCleanup(err)
+	}
+	if err := write("ComicInfo.xml", infoPayload); err != nil {
+		return closeWithCleanup(err)
+	}
+	if err := writer.Close(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(temp)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(temp)
+		return err
+	}
+	if err := os.Rename(temp, path); err == nil {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(temp)
+		return err
+	}
+	if err := os.Rename(temp, path); err != nil {
+		_ = os.Remove(temp)
+		return err
+	}
+	return nil
+}
+
 // writeEPUB creates an EPUB 3 archive. The archive is written to a temporary
 // .part file first so a failed download never becomes visible as a complete
 // book.

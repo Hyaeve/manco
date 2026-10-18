@@ -6,6 +6,8 @@ import {
   BookOpen,
   Boxes,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Download,
   Film,
   Languages,
@@ -27,6 +29,8 @@ import SortMenu from '../components/SortMenu.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import { dirBasename, splitAuthors } from '../utils/metadata'
+import { paginateTextPages } from '../utils/reader'
+import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
 const items = ref([])
 const sourceKinds = ref({})
@@ -36,6 +40,10 @@ const kind = ref('all')
 const active = ref(null)
 const reader = ref(null)
 const readerLoading = ref(false)
+const readerPageIndex = ref(0)
+const readerCBZHTML = ref('')
+const readerCBZDocumentLoading = ref(false)
+let readerCBZRequestSeq = 0
 const selectionMode = ref(false)
 const selectedPaths = ref([])
 const selectionAnchor = ref(-1)
@@ -185,13 +193,37 @@ const heroStyle = computed(() => ({
 
 const readerTitle = computed(() => reader.value?.file?.name || '')
 const readerImages = computed(() => reader.value?.images || [])
+const readerCBZPages = computed(() => reader.value?.cbzPages || [])
 const readerText = computed(() => reader.value?.text || '')
+const readerTextPages = computed(() => paginateTextPages(readerText.value))
 const readerEpubChapters = computed(() =>
   (reader.value?.epubChapters || []).map((chapter) => ({
     ...chapter,
     html: rewriteEpubAssetUrls(chapter.html),
   })),
 )
+const readerVideo = computed(() => Boolean(reader.value?.video))
+const readerPdf = computed(() => Boolean(reader.value?.pdf))
+const currentReaderCBZPage = computed(() => readerCBZPages.value[readerPageIndex.value] || null)
+const currentReaderCBZImage = computed(() =>
+  currentReaderCBZPage.value?.kind === 'image' ? currentReaderCBZPage.value : null,
+)
+const currentReaderCBZDocument = computed(() =>
+  currentReaderCBZPage.value?.kind === 'document' ? currentReaderCBZPage.value : null,
+)
+const readerPageCount = computed(() => {
+  if (readerVideo.value || readerPdf.value) return reader.value?.file ? 1 : 0
+  if (readerCBZPages.value.length) return readerCBZPages.value.length
+  if (readerImages.value.length) return readerImages.value.length
+  if (readerEpubChapters.value.length) return readerEpubChapters.value.length
+  return readerTextPages.value.length
+})
+const currentReaderImage = computed(() => {
+  if (readerCBZPages.value.length) return currentReaderCBZImage.value
+  return readerImages.value[readerPageIndex.value] || null
+})
+const currentReaderEpubChapter = computed(() => readerEpubChapters.value[readerPageIndex.value] || null)
+const currentReaderText = computed(() => readerTextPages.value[readerPageIndex.value] || '')
 const selectedItems = computed(() => items.value.filter((item) => selectedPaths.value.includes(keyOf(item))))
 const selectedCount = computed(() => selectedItems.value.length)
 const selectedFileCount = computed(() =>
@@ -203,15 +235,26 @@ const selectedFileCount = computed(() =>
 onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
   scrollContainer = document.querySelector('.content-scroll')
   scrollContainer?.addEventListener('scroll', handleLibraryScroll, { passive: true })
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
   scrollContainer?.removeEventListener('scroll', handleLibraryScroll)
   scrollContainer = null
 })
+
+async function refreshSourceKinds() {
+  try {
+    const payload = await api.sources()
+    sourceKinds.value = Object.fromEntries((payload.items || []).map((source) => [source.id, source.kind || 'comic']))
+  } catch {
+    // 保留现有类型映射，等待下一次页面加载。
+  }
+}
 
 // 切走页面时退出多选。
 onDeactivated(() => {
@@ -324,8 +367,23 @@ function clearSelection() {
 }
 
 function handleKeydown(event) {
-  if (event.key !== 'Escape') return
-  if (selectionMode.value) clearSelection()
+  if (reader.value) {
+    if (event.key === 'Escape') {
+      closeReader()
+      return
+    }
+    const tagName = String(event.target?.tagName || '').toUpperCase()
+    if (tagName === 'VIDEO' || tagName === 'AUDIO' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName)) return
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      stepReaderPage(-1)
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      stepReaderPage(1)
+    }
+    return
+  }
+  if (event.key === 'Escape' && selectionMode.value) clearSelection()
 }
 
 async function simplifySelection() {
@@ -490,17 +548,30 @@ function clearChapterSearch() {
 
 async function openReader(file) {
   if (file.kind === 'other') {
-    window.location.href = api.localFileUrl(file.path, true)
+    readerPageIndex.value = 0
+    reader.value = { file, video: true, images: [], cbzPages: [], text: '', epubChapters: [] }
     return
   }
   readerLoading.value = true
+  readerPageIndex.value = 0
   try {
     if (file.ext === 'cbz' || file.ext === 'zip') {
       const payload = await api.localCBZ(file.path)
-      reader.value = { file, images: payload.items || [], text: '', epubChapters: [] }
+      const pages = Array.isArray(payload.pages) && payload.pages.length
+        ? payload.pages
+        : (payload.items || []).map((entry) => ({ ...entry, kind: 'image' }))
+      reader.value = {
+        file,
+        images: payload.items || [],
+        cbzPages: pages,
+        text: '',
+        epubChapters: [],
+      }
     } else if (file.ext === 'epub') {
       const payload = await api.localEPUB(file.path)
       reader.value = { file, images: [], text: '', epubChapters: payload.items || [] }
+    } else if (file.ext === 'pdf') {
+      reader.value = { file, pdf: true, images: [], cbzPages: [], text: '', epubChapters: [] }
     } else {
       reader.value = { file, images: [], text: '', epubChapters: [] }
       const response = await fetch(api.localFileUrl(file.path))
@@ -516,12 +587,51 @@ async function openReader(file) {
 }
 
 function closeReader() {
+  readerCBZRequestSeq += 1
   reader.value = null
+  readerPageIndex.value = 0
+  readerCBZHTML.value = ''
+  readerCBZDocumentLoading.value = false
 }
 
 function readerImageUrl(entry) {
   return api.localCBZFileUrl(reader.value.file.path, entry.name)
 }
+
+function rewriteCBZAssetUrls(html) {
+  if (!html || !reader.value?.file?.path) return html || ''
+  return html.replace(/\bsrc=(["'])([^"']+)\1/gi, (match, quote, source) => {
+    const value = String(source || '').trim()
+    if (!value || /^(?:data:|https?:|blob:|\/)/i.test(value)) return match
+    return `src=${quote}${api.localCBZFileUrl(reader.value.file.path, value.replace(/^\.\//, ''))}${quote}`
+  })
+}
+
+function stepReaderPage(delta) {
+  if (readerPageCount.value <= 1) return
+  readerPageIndex.value = Math.min(
+    readerPageCount.value - 1,
+    Math.max(0, readerPageIndex.value + delta),
+  )
+}
+
+watch(currentReaderCBZDocument, async (page) => {
+  const requestSeq = ++readerCBZRequestSeq
+  readerCBZHTML.value = ''
+  readerCBZDocumentLoading.value = false
+  if (!page || !reader.value?.file?.path) return
+  readerCBZDocumentLoading.value = true
+  try {
+    const payload = await api.localCBZDocument(reader.value.file.path, page.name)
+    if (requestSeq === readerCBZRequestSeq) {
+      readerCBZHTML.value = rewriteCBZAssetUrls(payload.html)
+    }
+  } catch (err) {
+    if (requestSeq === readerCBZRequestSeq) notify(`打开书籍页面失败：${err.message}`, true)
+  } finally {
+    if (requestSeq === readerCBZRequestSeq) readerCBZDocumentLoading.value = false
+  }
+}, { immediate: true })
 
 function rewriteEpubAssetUrls(html) {
   if (!html) return ''
@@ -636,7 +746,7 @@ function downloadReaderFile() {
         </button>
         <button type="button" :class="{ active: kind === 'other' }" @click="kind = 'other'">
           <Boxes :size="16" />
-          其他源
+          视频源
           <span class="segmented-count">{{ otherCount }}</span>
         </button>
       </div>
@@ -685,6 +795,7 @@ function downloadReaderFile() {
     </div>
     <CollectionEmptyState
       v-else-if="!items.length"
+      class="page-empty-state"
       variant="local"
       window-title="本地书架"
       heading="本地书架还是空的"
@@ -753,11 +864,19 @@ function downloadReaderFile() {
       <div class="modal-head">
         <div>
           <h2>{{ readerTitle }}</h2>
-          <p v-if="readerImages.length" class="muted small">
-            共 {{ readerImages.length }} 张 · 条漫模式
+          <p v-if="readerPdf" class="muted small">浏览器 PDF 阅读器</p>
+          <p v-else-if="readerVideo" class="muted small">浏览器播放器</p>
+          <p v-else-if="readerCBZPages.length" class="muted small">
+            共 {{ readerCBZPages.length }} 页 · 翻页阅读
+          </p>
+          <p v-else-if="readerImages.length" class="muted small">
+            共 {{ readerImages.length }} 页 · 翻页阅读
           </p>
           <p v-else-if="readerEpubChapters.length" class="muted small">
-            共 {{ readerEpubChapters.length }} 章
+            共 {{ readerEpubChapters.length }} 章 · 翻页阅读
+          </p>
+          <p v-else-if="readerTextPages.length" class="muted small">
+            共 {{ readerTextPages.length }} 页 · 翻页阅读
           </p>
         </div>
         <div class="inline">
@@ -776,23 +895,75 @@ function downloadReaderFile() {
         <span>正在打开</span>
       </div>
       <template v-else-if="reader">
-        <div v-if="readerImages.length" class="reader-view">
+        <div v-if="readerVideo && reader.file" class="preview-video-shell">
+          <video
+            class="browser-video-player"
+            :src="api.localFileUrl(reader.file.path)"
+            controls
+            playsinline
+            preload="metadata"
+          />
+          <a class="btn secondary small" :href="api.localFileUrl(reader.file.path)" target="_blank" rel="noreferrer">
+            新窗口播放
+          </a>
+        </div>
+        <iframe
+          v-else-if="readerPdf && reader.file"
+          class="browser-document-frame"
+          :src="api.localFileUrl(reader.file.path)"
+          :title="readerTitle"
+        />
+        <div v-else-if="currentReaderImage" class="reader-page-stage">
           <img
-            v-for="(entry, index) in readerImages"
-            :key="entry.name"
-            :src="readerImageUrl(entry)"
-            :alt="`第 ${index + 1} 张`"
-            loading="lazy"
+            :key="currentReaderImage.name"
+            :src="readerImageUrl(currentReaderImage)"
+            :alt="`第 ${readerPageIndex + 1} 页`"
+            loading="eager"
             decoding="async"
           />
         </div>
-        <article v-else-if="readerEpubChapters.length" class="epub-reader">
-          <section v-for="(chapter, index) in readerEpubChapters" :key="index" class="epub-chapter">
+        <article v-else-if="currentReaderCBZDocument" class="epub-reader reader-page-stage">
+          <div v-if="readerCBZDocumentLoading" class="empty">
+            <Loader2 :size="24" class="spin" />
+            <span>正在打开书籍页面</span>
+          </div>
+          <div v-else-if="readerCBZHTML" class="epub-chapter-body" v-html="readerCBZHTML"></div>
+          <div v-else class="empty">
+            <span>（空章节）</span>
+          </div>
+        </article>
+        <article v-else-if="currentReaderEpubChapter" class="epub-reader reader-page-stage">
+          <section class="epub-chapter">
             <!-- Content comes from the user's own downloaded EPUB and is sanitized by the backend. -->
-            <div class="epub-chapter-body" v-html="chapter.html"></div>
+            <div class="epub-chapter-body" v-html="currentReaderEpubChapter.html"></div>
           </section>
         </article>
-        <pre v-else class="reader-text">{{ readerText || '（空文件）' }}</pre>
+        <article v-else class="reader-text reader-page-text">
+          {{ currentReaderText || '（空文件）' }}
+        </article>
+        <div v-if="readerPageCount > 1" class="reader-pager">
+          <button
+            class="btn secondary small"
+            type="button"
+            :disabled="readerPageIndex <= 0"
+            aria-label="上一页"
+            @click="stepReaderPage(-1)"
+          >
+            <ChevronLeft :size="17" />
+            上一页
+          </button>
+          <span>{{ readerPageIndex + 1 }} / {{ readerPageCount }}</span>
+          <button
+            class="btn secondary small"
+            type="button"
+            :disabled="readerPageIndex >= readerPageCount - 1"
+            aria-label="下一页"
+            @click="stepReaderPage(1)"
+          >
+            下一页
+            <ChevronRight :size="17" />
+          </button>
+        </div>
       </template>
     </div>
   </div>

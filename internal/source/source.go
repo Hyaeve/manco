@@ -20,8 +20,8 @@ var ErrAuthRequired = errors.New("source account is not connected")
 const DefaultReloginDays = 7
 
 // Source kinds. Comic sources yield image chapters packed into CBZ files;
-// book sources yield EPUB files; other sources preserve the native file type
-// reported by the source.
+// book sources prefer generated CBZ and otherwise preserve native EPUB/PDF;
+// other sources preserve the native file type reported by the source.
 const (
 	KindComic = "comic"
 	KindBook  = "book"
@@ -153,13 +153,13 @@ type LoginResult struct {
 }
 
 // ContentSource is implemented by book sources whose chapter is plain text.
-// The downloader packages each chapter as EPUB. Sources that expose a real
+// The downloader packages each chapter as CBZ. Sources that expose a real
 // ebook file should implement FileContentSource, which takes precedence.
 type ContentSource interface {
 	ChapterContent(ctx context.Context, account Account, bookID string, chapter model.Chapter) (string, error)
 }
 
-// ChapterArchive is a rich book chapter payload intended for EPUB packaging.
+// ChapterArchive is a rich book chapter payload intended for CBZ packaging.
 // Plugin runtimes can return HTML plus source-specific image pages whose bytes
 // are materialized through ImageSource before the archive is written.
 type ChapterArchive struct {
@@ -168,15 +168,15 @@ type ChapterArchive struct {
 }
 
 // ChapterArchiveSource is implemented by book sources whose text and images
-// should be persisted as EPUB. FileContentSource still takes precedence for
+// should be persisted as CBZ. FileContentSource still takes precedence for
 // native ebook binaries.
 type ChapterArchiveSource interface {
 	ChapterArchive(ctx context.Context, account Account, bookID string, chapter model.Chapter) (ChapterArchive, error)
 }
 
 // FileContentSource is implemented by book sources that expose a real binary
-// file (for example EPUB, PDF, MOBI or AZW3). The downloader prefers this
-// interface over ContentSource so the original ebook is persisted unchanged.
+// file. The downloader accepts CBZ/EPUB/PDF and prefers those native files over
+// generated text packaging.
 type FileContentSource interface {
 	ChapterFile(ctx context.Context, account Account, bookID string, chapter model.Chapter) (data []byte, filename string, err error)
 }

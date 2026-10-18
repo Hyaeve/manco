@@ -31,6 +31,7 @@ import DirectoryPicker from '../components/DirectoryPicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
+import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 import { rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 
 const items = ref([])
@@ -365,6 +366,7 @@ onMounted(async () => {
   startPolling()
   window.addEventListener('click', closeMenus)
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
   await nextTick()
   updateVirtualWindow()
 })
@@ -377,7 +379,18 @@ onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('click', closeMenus)
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
 })
+
+async function handleSourcesChanged() {
+  try {
+    const payload = await api.sources()
+    sources.value = Object.fromEntries((payload.items || []).map((source) => [source.id, source]))
+  } catch {
+    // 来源映射刷新失败时仍刷新订阅列表，避免页面停留在旧状态。
+  }
+  await reloadSubscriptionList()
+}
 
 onDeactivated(() => {
   clearSubscriptionSelection()
@@ -852,7 +865,7 @@ function batchDelete() {
       </button>
       <button type="button" :class="{ active: kindFilter === 'other' }" @click="kindFilter = 'other'">
         <Film :size="16" />
-        其他源 <span class="segmented-count">{{ kindCount('other') }}</span>
+        视频源 <span class="segmented-count">{{ kindCount('other') }}</span>
       </button>
     </div>
     <span class="spacer" />
@@ -895,6 +908,7 @@ function batchDelete() {
   </div>
   <CollectionEmptyState
     v-else-if="!items.length"
+    class="page-empty-state"
     variant="subscriptions"
     window-title="订阅信箱"
     heading="还没有订阅"

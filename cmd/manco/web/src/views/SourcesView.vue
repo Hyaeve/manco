@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
+  Activity,
   Boxes,
   Check,
   ChevronDown,
@@ -9,6 +10,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   KeyRound,
   Loader2,
   MoreVertical,
@@ -34,6 +36,7 @@ import PasswordInput from '../components/PasswordInput.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
 import SitePicker from '../components/SitePicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
+import { emitSourcesChanged } from '../utils/sourceEvents'
 
 const sources = ref([])
 const repositories = ref([])
@@ -65,6 +68,7 @@ const browserSession = reactive({ url: '', userAgent: '' })
 const browserCookies = ref('')
 const sourceSelection = ref(new Set())
 const sourceAnchor = ref(-1)
+const sourceChecks = reactive({})
 const extensionCandidates = ref([])
 // 枚举内容源要先把插件装好并重启 JVM sidecar，单个扩展就要数秒；结果按
 // 「仓库ID:来源类型」缓存到 localStorage，重开窗口直接命中，不再重复安装。
@@ -145,6 +149,14 @@ const visibleSources = computed(() => {
   if (activeKind.value === 'other') return otherSources.value
   return comicSources.value
 })
+const browserDomainOptions = computed(() => {
+  if (!browserSource.value) return []
+  return [...new Set([
+    browserSession.url,
+    browserSource.value.homepage,
+    ...(browserSource.value.sites || []),
+  ].map((value) => String(value || '').trim()).filter(Boolean))]
+})
 const repositoryFilterOptions = computed(() => [
   { value: 'all', label: '全部仓库' },
   ...repositories.value.map((repository) => ({ value: repository.id, label: repository.name })),
@@ -214,6 +226,10 @@ const visibleCandidates = computed(() => {
     return `${item.name} ${item.sourceName || ''} ${item.description || ''}`.toLowerCase().includes(keyword)
   })
 })
+
+function candidateAdded(candidate) {
+  return Boolean(candidate?.id && sources.value.some((item) => item.id === candidate.id))
+}
 
 const selectableVisibleSources = computed(() => visibleSources.value.filter((item) => !item.builtin))
 const selectedSources = computed(() => sources.value.filter((item) => sourceSelection.value.has(item.id)))
@@ -408,6 +424,7 @@ async function removeSelectedSources() {
     }
     if (done > 0) clearSourceSelection()
     await load()
+    if (done > 0) emitSourcesChanged()
     notify(
       failed ? `卸载完成：成功 ${done} 项，失败 ${failed} 项` : `已卸载 ${done} 个内容源`,
       failed ? 'warning' : 'success',
@@ -426,11 +443,11 @@ function sourceStatus(item) {
   if (item.hidden) return { label: '已停用', className: 'warning' }
   if (connected(item.id)) return { label: '已连接', className: 'success' }
   if (item.needsLogin) return { label: '未连接', className: '' }
-  return { label: '可用', className: 'primary' }
+  return sourceChecks[item.id] || { label: '', className: '' }
 }
 
 function kindLabel(kind) {
-  return { comic: '漫画', book: '书籍', other: '其他' }[kind] || '资源'
+  return { comic: '漫画', book: '书籍', other: '视频' }[kind] || '资源'
 }
 
 function categoryFilters(item) {
@@ -553,14 +570,41 @@ async function openBrowserCheck(item) {
   busy.value = `browser-${item.id}`
   browserSource.value = item
   browserCookies.value = ''
-  browserSession.url = ''
+  browserSession.url = item.homepage || item.sites?.[0] || ''
   browserSession.userAgent = ''
+  browserOpen.value = true
   try {
     const session = await api.sourceBrowserSession(item.id)
     browserSession.url = session.url || item.homepage || ''
     browserSession.userAgent = session.userAgent || ''
-    browserOpen.value = true
   } catch (err) {
+    notify(`${item.name}：${err.message}`, 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+function openBrowserVerificationPage() {
+  let address = String(browserSession.url || '').trim()
+  if (!address) return
+  if (!/^https?:\/\//i.test(address)) address = `https://${address}`
+  browserSession.url = address
+  window.open(address, '_blank', 'noopener,noreferrer')
+}
+
+async function testSource(item) {
+  if (!item || busy.value === `test-${item.id}`) return
+  busy.value = `test-${item.id}`
+  try {
+    const result = await api.testSource(item.id)
+    const latency = Number(result.latencyMs || 0)
+    sourceChecks[item.id] = {
+      label: latency > 0 ? `连接正常 · ${latency}ms` : '连接正常',
+      className: 'success',
+    }
+    notify(`${item.name} 连接正常${latency > 0 ? `，耗时 ${latency}ms` : ''}`, 'success')
+  } catch (err) {
+    sourceChecks[item.id] = { label: '连接失败', className: 'danger' }
     notify(`${item.name}：${err.message}`, 'error')
   } finally {
     busy.value = ''
@@ -866,6 +910,7 @@ async function saveSource(item, login = false) {
     notify(login ? `${item.name} 登录成功，设置已保存` : `${item.name} 设置已保存`, 'success')
     editorOpen.value = false
     await load()
+    emitSourcesChanged()
   } catch (err) {
     notify(`${item.name}：${err.message}`, 'error')
   } finally {
@@ -878,6 +923,7 @@ async function toggleHidden(item) {
   try {
     const result = await api.updateSource(item.id, { hidden: !item.hidden })
     item.hidden = Boolean(result.hidden)
+    emitSourcesChanged()
     notify(item.hidden ? `${item.name} 已停用，不再参与探索发现` : `${item.name} 已启用`, 'success')
   } catch (err) {
     notify(err.message, 'error')
@@ -1233,13 +1279,54 @@ function syncExtensionCandidates() {
     : [selectedRepository.value].filter(Boolean)
   const seen = new Set()
   const collected = []
+  const syntheticAssigned = new Set()
+  let nextCache = { ...candidateCache.value }
+  let cacheChanged = false
   for (const target of targets) {
-    const rows = candidateCache.value[`${target.id}:${activeKind.value}`] || []
+    const cacheKey = `${target.id}:${activeKind.value}`
+    const rows = [...(nextCache[cacheKey] || [])]
     for (const candidate of rows) {
       if (!candidate?.id || seen.has(candidate.id)) continue
       seen.add(candidate.id)
       collected.push(candidate)
     }
+    // 已添加来源不再从候选缓存删除，升级或旧缓存缺失时用当前来源补齐，
+    // 这样卸载后仍能在原仓库候选列表中重新选择。
+    for (const source of sources.value) {
+      if (source.builtin || (source.kind || 'comic') !== activeKind.value) continue
+      if (source.repositoryName && source.repositoryName !== target.name) continue
+      if (!source.repositoryName && syntheticAssigned.has(source.id)) continue
+      if (rows.some((row) => row.id === source.id)) {
+        syntheticAssigned.add(source.id)
+        continue
+      }
+      rows.push({
+        id: source.id,
+        name: source.name,
+        sourceName: source.repositoryName || '已添加来源',
+        kind: source.kind || activeKind.value,
+        icon: source.icon || '',
+        homepage: source.homepage || '',
+        description: source.description || '',
+        repositoryId: target.id,
+        repositoryName: target.name,
+      })
+      nextCache[cacheKey] = rows
+      cacheChanged = true
+      syntheticAssigned.add(source.id)
+    }
+    for (const candidate of rows) {
+      if (!candidate?.id || seen.has(candidate.id)) continue
+      seen.add(candidate.id)
+      collected.push(candidate)
+    }
+    if (!nextCache[cacheKey]) {
+      nextCache[cacheKey] = rows
+    }
+  }
+  if (cacheChanged) {
+    candidateCache.value = nextCache
+    persistCandidateCache()
   }
   extensionCandidates.value = collected
 }
@@ -1346,14 +1433,8 @@ async function addCandidate(candidate) {
     })
     await api.saveAccount(saved.id, { useProxy: addUseProxy.value !== false }).catch(() => {})
     sources.value = [...sources.value, saved]
-    extensionCandidates.value = extensionCandidates.value.filter((item) => item.id !== candidate.id)
-    // 同步从本地候选缓存里移除，避免重开窗口又把已添加的来源列出来。
-    const nextCache = {}
-    for (const [key, rows] of Object.entries(candidateCache.value)) {
-      nextCache[key] = (rows || []).filter((item) => item.id !== candidate.id)
-    }
-    candidateCache.value = nextCache
-    persistCandidateCache()
+    syncExtensionCandidates()
+    emitSourcesChanged()
     notify(`${saved.name} 已添加`, 'success')
   } catch (err) {
     notify(`添加失败：${err.message}`, 'error')
@@ -1440,7 +1521,7 @@ function onDragEnd() {
         <span class="segmented-count">{{ bookSources.length }}</span>
       </button>
       <button type="button" :class="{ active: activeKind === 'other' }" @click="activeKind = 'other'">
-        其他源
+        视频源
         <span class="segmented-count">{{ otherSources.length }}</span>
       </button>
       <button type="button" :class="{ active: activeKind === 'repository' }" @click="activeKind = 'repository'">
@@ -1502,19 +1583,25 @@ function onDragEnd() {
         </button>
         <div class="source-simple-copy">
           <h2>{{ item.name }}</h2>
-          <span class="badge" :class="sourceStatus(item).className">{{ sourceStatus(item).label }}</span>
+          <span
+            v-if="sourceStatus(item).label"
+            class="badge"
+            :class="sourceStatus(item).className"
+          >
+            {{ sourceStatus(item).label }}
+          </span>
         </div>
         <div class="source-card-actions">
         <button
-          v-if="isPluginSource(item)"
           class="icon-btn source-verify-button"
           type="button"
-          aria-label="浏览器验证"
-          :disabled="busy === `browser-${item.id}`"
-          @click="openBrowserCheck(item)"
+          aria-label="测试内容源连接"
+          title="测试连接"
+          :disabled="busy === `test-${item.id}`"
+          @click="testSource(item)"
         >
-          <Loader2 v-if="busy === `browser-${item.id}`" :size="17" class="spin" />
-          <ShieldCheck v-else :size="17" />
+          <Loader2 v-if="busy === `test-${item.id}`" :size="17" class="spin" />
+          <Activity v-else :size="17" />
         </button>
         <button
           class="icon-btn source-category-button"
@@ -1744,23 +1831,30 @@ function onDragEnd() {
           </span>
         </div>
         <div v-else-if="visibleCandidates.length" class="source-add-list">
-          <article v-for="candidate in visibleCandidates" :key="candidate.id" class="source-add-row">
+          <article
+            v-for="candidate in visibleCandidates"
+            :key="candidate.id"
+            class="source-add-row"
+            :class="{ 'is-added': candidateAdded(candidate) }"
+          >
             <img v-if="candidate.icon" :src="candidate.icon" alt="" />
             <PackagePlus v-else :size="20" />
             <div class="extension-meta">
               <strong>{{ candidate.name }}</strong>
               <small>{{ candidateCategoryLabel(candidate.contentType || candidate.kind) }} · {{ candidate.sourceName }}</small>
             </div>
-            <span class="badge">{{ candidate.kind === 'book' ? '书籍' : candidate.kind === 'other' ? '其他' : '漫画' }}</span>
+            <span class="badge">{{ candidate.kind === 'book' ? '书籍' : candidate.kind === 'other' ? '视频' : '漫画' }}</span>
             <button
               class="btn small"
               type="button"
-              :disabled="busy === `candidate-${candidate.id}`"
+              :class="{ secondary: candidateAdded(candidate) }"
+              :disabled="busy === `candidate-${candidate.id}` || candidateAdded(candidate)"
               @click="addCandidate(candidate)"
             >
               <Loader2 v-if="busy === `candidate-${candidate.id}`" :size="14" class="spin" />
+              <Check v-else-if="candidateAdded(candidate)" :size="14" />
               <Plus v-else :size="14" />
-              添加
+              {{ candidateAdded(candidate) ? '已添加' : '添加' }}
             </button>
           </article>
         </div>
@@ -1852,7 +1946,29 @@ function onDragEnd() {
         <p class="muted small">先在浏览器打开验证地址并完成站点验证，再把该站点 Cookie 粘贴到下方导入。导入后解析器请求会复用这组会话。</p>
         <label class="field">
           <span>验证地址</span>
-          <input class="input" :value="browserSession.url" readonly />
+          <div class="browser-domain-row">
+            <select
+              v-if="browserDomainOptions.length > 1"
+              class="input browser-domain-select"
+              :value="browserSession.url"
+              @change="browserSession.url = $event.target.value"
+            >
+              <option v-for="domain in browserDomainOptions" :key="domain" :value="domain">{{ domain }}</option>
+            </select>
+            <div class="input-with-action browser-url-input">
+              <input v-model="browserSession.url" class="input" placeholder="输入验证网址" />
+              <button
+                class="icon-btn"
+                type="button"
+                aria-label="在新窗口打开验证地址"
+                title="在新窗口打开"
+                :disabled="!browserSession.url"
+                @click="openBrowserVerificationPage"
+              >
+                <ExternalLink :size="16" />
+              </button>
+            </div>
+          </div>
         </label>
         <label class="field">
           <span>导入 Cookie</span>
@@ -1882,13 +1998,22 @@ function onDragEnd() {
     <div class="modal modal-lg source-editor-modal">
       <div class="modal-head">
         <div class="inline">
-          <SourceIcon
-            class="source-editor-icon"
-            :src="editorSource.icon"
-            :kind="editorSource.kind"
-            :alt="editorSource.name"
-            :size="26"
-          />
+          <button
+            class="source-editor-icon-button"
+            type="button"
+            aria-label="更换内容源图标"
+            title="打开本地图标库"
+            @click="openIconLibrary()"
+          >
+            <SourceIcon
+              class="source-editor-icon"
+              :src="editorSource.icon"
+              :kind="editorSource.kind"
+              :alt="editorSource.name"
+              :size="26"
+            />
+            <Pencil class="source-editor-icon-pencil" :size="11" />
+          </button>
           <div>
             <div class="source-editor-name-row">
               <h2>{{ editorSource.name }}</h2>
@@ -1900,7 +2025,7 @@ function onDragEnd() {
                 {{ editorSource.repositoryName }}
               </span>
             </div>
-            <p class="muted small">
+            <p v-if="sourceStatus(editorSource).label" class="muted small">
               {{ sourceStatus(editorSource).label }}
             </p>
           </div>
@@ -1911,7 +2036,17 @@ function onDragEnd() {
       </div>
       <div class="modal-body">
         <section class="source-editor-section">
-            <label v-if="!editorSource.builtin" class="field">
+            <div v-if="isPluginSource(editorSource)" class="source-name-proxy-row">
+              <label class="field source-name-field">
+                <span>内容源名称</span>
+                <input v-model="forms[editorSource.id].name" class="input" placeholder="自定义显示名称" />
+              </label>
+              <label class="switch-row source-proxy-inline">
+                <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
+                <span>应用代理</span>
+              </label>
+            </div>
+            <label v-else-if="!editorSource.builtin" class="field">
               <span>内容源名称</span>
               <input v-model="forms[editorSource.id].name" class="input" placeholder="自定义显示名称" />
             </label>
@@ -2044,46 +2179,6 @@ function onDragEnd() {
         </section>
 
         <section class="source-editor-section">
-          <h3>图标</h3>
-          <div class="source-icon-editor">
-            <span class="source-icon-preview">
-              <SourceIcon :src="editorSource.icon" :kind="editorSource.kind" :alt="editorSource.name" :size="26" />
-            </span>
-            <div class="source-icon-actions">
-              <button
-                class="btn secondary small"
-                type="button"
-                :disabled="iconBusy === editorSource.id"
-                @click="retrySourceIcon(editorSource)"
-              >
-                <Loader2 v-if="iconBusy === editorSource.id" :size="14" class="spin" />
-                <RefreshCw v-else :size="14" />
-                重新获取
-              </button>
-              <button
-                class="btn secondary small"
-                type="button"
-                :disabled="iconBusy === editorSource.id"
-                @click="openIconLibrary()"
-              >
-                <Images :size="14" />
-                从图标库选择
-              </button>
-              <button
-                class="btn secondary small"
-                type="button"
-                :disabled="iconBusy === editorSource.id"
-                @click="resetSourceIcon(editorSource)"
-              >
-                <RotateCcw :size="14" />
-                恢复默认
-              </button>
-            </div>
-          </div>
-          <p class="muted small">默认从内容源网站获取图标并保存到 /data/icon；获取失败时显示对应类型的默认图标。</p>
-        </section>
-
-        <section class="source-editor-section">
           <h3>下载策略</h3>
           <label class="field">
             <span>默认下载位置</span>
@@ -2115,7 +2210,7 @@ function onDragEnd() {
           <p class="muted small">留空或填 0 表示不启用批量暂停。</p>
         </section>
 
-        <section class="source-editor-section">
+        <section v-if="!isPluginSource(editorSource)" class="source-editor-section">
           <h3>网络</h3>
           <label class="switch-row">
             <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
@@ -2180,6 +2275,37 @@ function onDragEnd() {
         @change="uploadIconFile"
       />
       <div class="modal-body">
+        <div v-if="editorSource" class="icon-library-source-actions">
+          <div class="inline">
+            <SourceIcon
+              :src="editorSource.icon"
+              :kind="editorSource.kind"
+              :alt="editorSource.name"
+              :size="24"
+            />
+            <strong>{{ editorSource.name }}</strong>
+          </div>
+          <span class="spacer" />
+          <button
+            class="btn secondary small"
+            type="button"
+            :disabled="iconBusy === editorSource.id"
+            @click="retrySourceIcon(editorSource)"
+          >
+            <Loader2 v-if="iconBusy === editorSource.id" :size="14" class="spin" />
+            <RefreshCw v-else :size="14" />
+            重新获取
+          </button>
+          <button
+            class="btn secondary small"
+            type="button"
+            :disabled="iconBusy === editorSource.id"
+            @click="resetSourceIcon(editorSource)"
+          >
+            <RotateCcw :size="14" />
+            恢复默认
+          </button>
+        </div>
         <div class="icon-library-tools">
           <div class="icon-library-url">
             <button class="btn secondary small icon-upload-button" type="button" :disabled="iconUploading" @click="iconUploadInput?.click()">

@@ -16,10 +16,14 @@ import {
   Loader2,
   Rss,
   Server,
+  Tag,
+  UserRound,
 } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
 import SourceIcon from '../components/SourceIcon.vue'
+import { splitAuthors } from '../utils/metadata'
+import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
 const stats = ref({})
 const latest = ref([])
@@ -34,15 +38,16 @@ const heroIndex = ref(0)
 const heroHovering = ref(false)
 const heroDirection = ref('next')
 let heroTimer = 0
-const HERO_ROTATION_MS = 10000
+const HERO_ROTATION_MS = 16000
 
 const sourceTabs = [
   { value: 'comic', label: '漫画源' },
   { value: 'book', label: '书籍源' },
-  { value: 'other', label: '其他源' },
+  { value: 'other', label: '视频源' },
 ]
 
 const heroComic = computed(() => latest.value[heroIndex.value] || null)
+const heroAuthors = computed(() => splitAuthors(heroComic.value?.author))
 const heroKey = computed(() =>
   latest.value[heroIndex.value]?.path
   || latest.value[heroIndex.value]?.comicId
@@ -73,6 +78,7 @@ watch(
 )
 
 onMounted(async () => {
+  window.addEventListener(SOURCES_CHANGED_EVENT, refreshSources)
   try {
     const [statsPayload, localPayload, downloadsPayload, sourcesPayload, upcomingPayload] = await Promise.all([
       api.stats(),
@@ -96,8 +102,18 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSources)
   stopHeroRotation()
 })
+
+async function refreshSources() {
+  try {
+    const payload = await api.sources()
+    sources.value = payload.items || []
+  } catch {
+    // 保持当前来源列表，下一次页面轮询或手动刷新会重新获取。
+  }
+}
 
 function stopHeroRotation() {
   if (heroTimer) {
@@ -223,10 +239,24 @@ function formatNextRun(value) {
                 </div>
                 <div class="overview-hero-copy">
                   <h1>{{ heroComic.title }}</h1>
-                  <strong>{{ heroComic.author || '未知作者' }}</strong>
+                  <div class="overview-hero-authors">
+                    <template v-if="heroAuthors.length">
+                      <span v-for="name in heroAuthors" :key="name" class="author-pill">
+                        <UserRound :size="12" :stroke-width="1.9" />
+                        {{ name }}
+                      </span>
+                    </template>
+                    <span v-else class="author-pill">
+                      <UserRound :size="12" :stroke-width="1.9" />
+                      未知作者
+                    </span>
+                  </div>
                   <p>{{ heroComic.description || '暂无简介' }}</p>
-                  <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
-                    <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag">{{ tag }}</span>
+                  <div v-if="heroComic.tags?.length" class="tag-list overview-hero-tags" aria-label="作品标签">
+                    <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag" class="badge tag-pill">
+                      <Tag :size="12" />
+                      {{ tag }}
+                    </span>
                   </div>
                   <ContentLink class="btn secondary small overview-hero-link" to="/local">
                     <Library :size="15" />
@@ -360,18 +390,15 @@ function formatNextRun(value) {
             <span class="overview-task-copy">
               <strong>{{ item.comicTitle || '未命名作品' }}</strong>
               <small>{{ item.chapterTitle || '章节' }}</small>
-              <span class="overview-task-progress-wrap">
-                <em>{{ progressPercent(item) }}%</em>
-                <span
-                  class="overview-task-progress"
-                  :class="`is-${taskStatus(item).className}`"
-                  role="progressbar"
-                  :aria-valuenow="progressPercent(item)"
-                  aria-valuemin="0"
-                  aria-valuemax="100"
-                >
-                  <span :style="{ width: `${progressPercent(item)}%` }" />
-                </span>
+              <span
+                class="overview-task-progress"
+                :class="`is-${taskStatus(item).className}`"
+                role="progressbar"
+                :aria-valuenow="progressPercent(item)"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <span :style="{ width: `${progressPercent(item)}%` }" />
               </span>
             </span>
           </ContentLink>
@@ -429,7 +456,9 @@ function formatNextRun(value) {
 .overview-dashboard {
   display: grid;
   width: 100%;
+  height: calc(100dvh - 120px);
   min-width: 0;
+  grid-template-rows: minmax(0, 0.46fr) minmax(0, 0.54fr);
   gap: 12px;
 }
 
@@ -437,14 +466,14 @@ function formatNextRun(value) {
   display: grid;
   grid-template-columns: minmax(0, 1.75fr) minmax(300px, 0.85fr);
   gap: 12px;
-  height: clamp(260px, 31vh, 330px);
+  min-height: 0;
 }
 
 .overview-bottom {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  height: clamp(300px, 38vh, 350px);
+  min-height: 0;
 }
 
 .overview-window {
@@ -480,7 +509,7 @@ function formatNextRun(value) {
 .overview-hero-bg-next-leave-active,
 .overview-hero-bg-prev-enter-active,
 .overview-hero-bg-prev-leave-active {
-  transition: opacity 0.72s cubic-bezier(0.22, 1, 0.36, 1), transform 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 0.92s cubic-bezier(0.22, 1, 0.36, 1), transform 1.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .overview-hero-bg-next-enter-from,
@@ -522,9 +551,9 @@ function formatNextRun(value) {
 .overview-hero-slide-prev-enter-active,
 .overview-hero-slide-prev-leave-active {
   transition:
-    opacity 0.46s ease,
-    filter 0.46s ease,
-    transform 0.58s cubic-bezier(0.22, 0.82, 0.24, 1);
+    opacity 0.66s ease,
+    filter 0.66s ease,
+    transform 0.82s cubic-bezier(0.22, 0.82, 0.24, 1);
 }
 
 .overview-hero-slide-next-enter-from,
@@ -645,33 +674,6 @@ function formatNextRun(value) {
   transform: scale(1.04);
 }
 
-.overview-hero-poster.blurred::after,
-.overview-upcoming-cover.blurred::after {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  border-radius: inherit;
-  background:
-    repeating-linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.12) 0 1px,
-      rgba(255, 255, 255, 0) 1px 4px
-    ),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(69, 61, 50, 0.16));
-  backdrop-filter: blur(2px) saturate(0.8);
-  -webkit-backdrop-filter: blur(2px) saturate(0.8);
-  content: '';
-  pointer-events: none;
-  transition: opacity 0.32s ease;
-}
-
-.overview-hero-poster.blurred:hover::after,
-.overview-hero-poster.blurred:focus-within::after,
-.overview-upcoming-cover.blurred:hover::after,
-.overview-upcoming-cover.blurred:focus-within::after {
-  opacity: 0;
-}
-
 .overview-hero-copy {
   display: grid;
   align-content: center;
@@ -687,10 +689,10 @@ function formatNextRun(value) {
   line-height: 1.15;
 }
 
-.overview-hero-copy strong {
-  color: color-mix(in srgb, var(--text) 76%, var(--text-muted));
-  font-size: 14px;
-  font-weight: 550;
+.overview-hero-authors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .overview-hero-copy p {
@@ -698,33 +700,31 @@ function formatNextRun(value) {
   max-width: 660px;
   margin: 2px 0 5px;
   overflow: hidden;
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.55;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.6;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.overview-hero-tags :deep(.tag-pill) {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-hero-tags :deep(.tag-pill svg) {
+  flex: 0 0 auto;
 }
 
 .overview-hero-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
   max-height: 48px;
+  margin-bottom: 0;
   overflow: hidden;
-}
-
-.overview-hero-tags span {
-  max-width: 150px;
-  padding: 3px 9px;
-  overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border));
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  color: color-mix(in srgb, var(--text) 76%, var(--text-muted));
-  font-size: 11px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .overview-hero-link {
@@ -811,15 +811,15 @@ function formatNextRun(value) {
   align-items: center;
   gap: 10px;
   color: var(--text);
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 720;
   line-height: 1.2;
 }
 
 .overview-window-title svg {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 23px;
+  height: 23px;
   color: var(--primary-strong);
 }
 
@@ -1062,22 +1062,6 @@ function formatNextRun(value) {
   white-space: nowrap;
 }
 
-.overview-task-progress-wrap {
-  display: grid;
-  justify-items: stretch;
-  gap: 1px;
-  min-width: 0;
-}
-
-.overview-task-progress-wrap em {
-  justify-self: end;
-  color: color-mix(in srgb, var(--primary-strong) 74%, var(--text-muted));
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 700;
-  line-height: 1;
-}
-
 .overview-task-progress {
   position: relative;
   display: block;
@@ -1215,6 +1199,11 @@ function formatNextRun(value) {
 }
 
 @media (max-width: 1180px) {
+  .overview-dashboard {
+    height: auto;
+    grid-template-rows: none;
+  }
+
   .overview-top {
     grid-template-columns: 1fr;
     height: auto;
@@ -1260,12 +1249,12 @@ function formatNextRun(value) {
 
   .overview-window-title {
     gap: 8px;
-    font-size: 24px;
+    font-size: 18px;
   }
 
   .overview-window-title svg {
-    width: 27px;
-    height: 27px;
+    width: 20px;
+    height: 20px;
   }
 
   .overview-bottom > :last-child {
@@ -1355,12 +1344,6 @@ function formatNextRun(value) {
 
 :global([data-theme='dark'] .overview-hero-copy p) {
   color: rgba(255, 255, 255, 0.78);
-}
-
-:global([data-theme='dark'] .overview-hero-tags span) {
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.88);
 }
 
 :global([data-theme='dark'] .overview-hero-poster) {

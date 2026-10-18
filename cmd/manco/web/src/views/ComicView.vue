@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
+  ChevronLeft,
+  ChevronRight,
   CircleCheck,
   Download,
   EyeOff,
@@ -27,6 +29,7 @@ import { notify } from '../stores/notices'
 import { comicPreview } from '../stores/comicPreview'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 import { splitAuthors } from '../utils/metadata'
+import { paginateTextPages } from '../utils/reader'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,8 +56,7 @@ const previewKind = ref('')
 const previewTitle = ref('')
 const previewText = ref('')
 const previewPages = ref([])
-const previewRenderLimit = ref(6)
-const previewReader = ref(null)
+const previewPageIndex = ref(0)
 // 从订阅清单的“归档集”进入时，章节下面要标出哪些章节有过下载记录。
 const archiveMode = computed(() => String(route.query.archive || '') === '1')
 
@@ -102,7 +104,14 @@ const updatedDateLabel = computed(() => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 })
 const chapters = computed(() => detail.value?.chapters || [])
-const previewRenderedPages = computed(() => previewPages.value.slice(0, previewRenderLimit.value))
+const previewTextPages = computed(() => paginateTextPages(previewText.value))
+const previewPageCount = computed(() => {
+  if (previewKind.value === 'text') return previewTextPages.value.length
+  return previewPages.value.length
+})
+const previewCurrentImage = computed(() => previewPages.value[previewPageIndex.value] || '')
+const previewCurrentText = computed(() => previewTextPages.value[previewPageIndex.value] || '')
+const previewVideoUrl = computed(() => previewPages.value[previewPageIndex.value] || '')
 const displayChapters = computed(() => {
   const keyword = appliedQuery.value.trim().toLowerCase()
   let list = chapters.value
@@ -138,12 +147,23 @@ function handlePageScroll(event) {
 }
 
 function handleReaderKeydown(event) {
-  if (event.key !== 'Escape') return
   if (previewOpen.value) {
-    closeChapterPreview()
-  } else if (chapterSelectionMode.value) {
-    clearChapterSelection()
+    if (event.key === 'Escape') {
+      closeChapterPreview()
+      return
+    }
+    const tagName = String(event.target?.tagName || '').toUpperCase()
+    if (tagName === 'VIDEO' || tagName === 'AUDIO' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(tagName)) return
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      stepPreviewPage(-1)
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      stepPreviewPage(1)
+    }
+    return
   }
+  if (event.key === 'Escape' && chapterSelectionMode.value) clearChapterSelection()
 }
 
 function defaultCron() {
@@ -334,7 +354,7 @@ async function openChapterPreview(chapter) {
   previewTitle.value = chapter.title || chapter.id
   previewText.value = ''
   previewPages.value = []
-  previewRenderLimit.value = 6
+  previewPageIndex.value = 0
   try {
     const payload = await api.chapterPreview(sourceId, comic.value.id, chapter)
     if (requestSeq !== previewRequestSeq) return
@@ -342,7 +362,11 @@ async function openChapterPreview(chapter) {
     previewTitle.value = payload.title || previewTitle.value
     if (payload.kind === 'images') {
       previewPages.value = Array.isArray(payload.pages) ? payload.pages : []
-      previewRenderLimit.value = Math.min(6, previewPages.value.length)
+    } else if (payload.kind === 'video') {
+      const pageCount = Math.max(0, Number(payload.pageCount || 0))
+      previewPages.value = Array.from({ length: pageCount }, (_, index) =>
+        api.chapterPreviewFileUrl(sourceId, comic.value.id, payload.key, index),
+      ).filter(Boolean)
     } else {
       previewText.value = previewPlainText(payload.content)
     }
@@ -361,23 +385,13 @@ function closeChapterPreview() {
   previewKind.value = ''
   previewText.value = ''
   previewPages.value = []
-  previewRenderLimit.value = 6
+  previewPageIndex.value = 0
 }
 
-function handlePreviewReaderScroll(event) {
-  const element = event.currentTarget
-  if (!element || previewRenderLimit.value >= previewPages.value.length) return
-  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 480) {
-    previewRenderLimit.value = Math.min(previewPages.value.length, previewRenderLimit.value + 6)
-  }
-}
-
-function ensurePreviewStreamFilled() {
-  const element = previewReader.value
-  if (!element || previewRenderLimit.value >= previewPages.value.length) return
-  if (element.scrollHeight <= element.clientHeight + 120) {
-    previewRenderLimit.value = Math.min(previewPages.value.length, previewRenderLimit.value + 6)
-  }
+function stepPreviewPage(delta) {
+  const count = previewPageCount.value
+  if (count <= 1) return
+  previewPageIndex.value = Math.min(count - 1, Math.max(0, previewPageIndex.value + delta))
 }
 
 function applyChapterSearch() {
@@ -663,10 +677,15 @@ async function downloadSelected() {
       <div class="modal-head">
         <div>
           <h2>{{ previewTitle }}</h2>
-          <p v-if="previewKind === 'images' && previewPages.length" class="muted small">
-            共 {{ previewPages.length }} 张 · 条漫预览
+          <p v-if="previewKind === 'images' && previewPageCount" class="muted small">
+            共 {{ previewPageCount }} 页 · 翻页预览
           </p>
-          <p v-else-if="previewKind === 'text'" class="muted small">章节正文预览</p>
+          <p v-else-if="previewKind === 'text' && previewPageCount" class="muted small">
+            共 {{ previewPageCount }} 页 · 翻页阅读
+          </p>
+          <p v-else-if="previewKind === 'video' && previewPageCount" class="muted small">
+            共 {{ previewPageCount }} 个媒体文件 · 浏览器播放器
+          </p>
         </div>
         <button class="btn ghost icon" type="button" aria-label="关闭预览" @click="closeChapterPreview">
           <X :size="18" />
@@ -679,27 +698,57 @@ async function downloadSelected() {
       <div v-else-if="previewError" class="card empty">
         <p>{{ previewError }}</p>
       </div>
-      <div
-        v-else-if="previewKind === 'images' && previewPages.length"
-        ref="previewReader"
-        class="reader-view preview-reader-view"
-        @scroll.passive="handlePreviewReaderScroll"
-      >
-        <img
-          v-for="(page, index) in previewRenderedPages"
-          :key="page"
-          :src="page"
-          :alt="`第 ${index + 1} 张`"
-          loading="lazy"
-          decoding="async"
-          @load="ensurePreviewStreamFilled"
+      <div v-else-if="previewKind === 'video' && previewVideoUrl" class="preview-video-shell">
+        <video
+          :key="previewVideoUrl"
+          class="browser-video-player"
+          :src="previewVideoUrl"
+          controls
+          playsinline
+          preload="metadata"
         />
-        <div v-if="previewRenderLimit < previewPages.length" class="preview-stream-hint">
-          <Loader2 :size="18" class="spin" />
-          <span>继续向下滚动加载（{{ previewRenderLimit }}/{{ previewPages.length }}）</span>
-        </div>
+        <a class="btn secondary small" :href="previewVideoUrl" target="_blank" rel="noreferrer">
+          新窗口播放
+        </a>
       </div>
-      <pre v-else class="reader-text">{{ previewText || '（空章节）' }}</pre>
+      <div v-else-if="previewKind === 'images' && previewCurrentImage" class="reader-page-stage">
+        <img
+          :key="previewCurrentImage"
+          :src="previewCurrentImage"
+          :alt="`第 ${previewPageIndex + 1} 页`"
+          loading="eager"
+          decoding="async"
+        />
+      </div>
+      <article v-else-if="previewKind === 'text' && previewCurrentText" class="reader-text reader-page-text">
+        {{ previewCurrentText }}
+      </article>
+      <div v-else class="empty">
+        <span>（空章节）</span>
+      </div>
+      <div v-if="previewPageCount > 1" class="reader-pager">
+        <button
+          class="btn secondary small"
+          type="button"
+          :disabled="previewPageIndex <= 0"
+          aria-label="上一页"
+          @click="stepPreviewPage(-1)"
+        >
+          <ChevronLeft :size="17" />
+          上一页
+        </button>
+        <span>{{ previewPageIndex + 1 }} / {{ previewPageCount }}</span>
+        <button
+          class="btn secondary small"
+          type="button"
+          :disabled="previewPageIndex >= previewPageCount - 1"
+          aria-label="下一页"
+          @click="stepPreviewPage(1)"
+        >
+          下一页
+          <ChevronRight :size="17" />
+        </button>
+      </div>
     </div>
   </div>
 

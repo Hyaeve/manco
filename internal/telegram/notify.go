@@ -47,7 +47,7 @@ func (s *Service) notifyPhotoAll(ctx context.Context, photo, text string) {
 				continue
 			}
 		}
-		s.sendMessage(ctx, chat, text, nil)
+		s.sendPersistentMessage(ctx, chat, text, nil)
 	}
 }
 
@@ -99,7 +99,7 @@ func (s *Service) SubscriptionDownloadCompleted(ctx context.Context, notice Subs
 				continue
 			}
 		}
-		s.sendMessage(ctx, chat, caption, nil)
+		s.sendPersistentMessage(ctx, chat, caption, nil)
 	}
 }
 

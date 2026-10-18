@@ -1,5 +1,5 @@
 <script setup>
-import { BookMarked, BookOpen, Cat, FolderOpen, Rss } from 'lucide-vue-next'
+import { BookMarked, BookOpen, Cat, FileArchive, FolderOpen, Rss } from 'lucide-vue-next'
 
 defineProps({
   variant: { type: String, default: 'local' },
@@ -18,7 +18,7 @@ defineProps({
         <i />
       </span>
       <strong>{{ windowTitle }}</strong>
-      <component :is="variant === 'local' ? FolderOpen : Rss" :size="17" />
+      <component :is="variant === 'local' ? FolderOpen : variant === 'tasks' ? FileArchive : Rss" :size="17" />
     </header>
 
     <div class="collection-empty-scene" aria-hidden="true">
@@ -36,6 +36,28 @@ defineProps({
             <BookOpen :size="16" />
           </span>
         </div>
+      </template>
+      <template v-else-if="variant === 'tasks'">
+        <div class="empty-task-cat">
+          <Cat :size="50" :stroke-width="1.6" />
+        </div>
+        <span class="empty-grass left">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span class="empty-cobble-path">
+          <i />
+          <i />
+          <i />
+          <i />
+          <i />
+        </span>
+        <span class="empty-grass right">
+          <i />
+          <i />
+          <i />
+        </span>
       </template>
       <template v-else>
         <div class="empty-cat empty-cat-mono">
@@ -250,6 +272,92 @@ defineProps({
   box-shadow: 0 9px 16px rgba(76, 57, 36, 0.12);
 }
 
+.empty-task-cat {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: 102px;
+  height: 102px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+  border-radius: 50% 50% 42% 42%;
+  color: #f5f1e8;
+  background: linear-gradient(90deg, #343330 0 50%, #e8e1d5 50%);
+  box-shadow: 0 14px 25px rgba(56, 44, 30, 0.16);
+}
+
+.empty-task-cat::after {
+  position: absolute;
+  right: 13px;
+  bottom: 12px;
+  width: 22px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.32);
+  content: '';
+}
+
+.empty-grass {
+  position: absolute;
+  bottom: 34px;
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+}
+
+.empty-grass.left {
+  left: 12%;
+}
+
+.empty-grass.right {
+  right: 12%;
+}
+
+.empty-grass i {
+  display: block;
+  width: 4px;
+  height: 24px;
+  border-radius: 999px 999px 0 0;
+  background: color-mix(in srgb, #6e9b62 70%, var(--text-muted));
+  transform: rotate(-18deg);
+  transform-origin: bottom;
+}
+
+.empty-grass i:nth-child(2) {
+  height: 34px;
+  transform: rotate(5deg);
+}
+
+.empty-grass i:nth-child(3) {
+  height: 20px;
+  transform: rotate(20deg);
+}
+
+.empty-cobble-path {
+  position: absolute;
+  right: 16%;
+  bottom: 27px;
+  left: 16%;
+  height: 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #b8ad97 34%, var(--border));
+}
+
+.empty-cobble-path i {
+  position: absolute;
+  top: 2px;
+  width: 9px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, #857b6d 48%, var(--surface));
+}
+
+.empty-cobble-path i:nth-child(1) { left: 7%; }
+.empty-cobble-path i:nth-child(2) { left: 27%; top: 7px; }
+.empty-cobble-path i:nth-child(3) { left: 49%; }
+.empty-cobble-path i:nth-child(4) { left: 70%; top: 7px; }
+.empty-cobble-path i:nth-child(5) { left: 88%; }
+
 .collection-empty-copy {
   display: grid;
   justify-items: center;
@@ -288,6 +396,15 @@ defineProps({
 [data-theme='dark'] .empty-cat-tabby {
   color: #f7e7ce;
   background: repeating-linear-gradient(90deg, #72583b 0 6px, #4f3b28 6px 10px);
+}
+
+[data-theme='dark'] .empty-task-cat {
+  color: #29231e;
+  background: linear-gradient(90deg, #d8d0c4 0 50%, #34302b 50%);
+}
+
+[data-theme='dark'] .empty-cobble-path {
+  background: color-mix(in srgb, #6e6457 42%, var(--border));
 }
 
 [data-theme='dark'] .comic-spine-cream {

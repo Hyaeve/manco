@@ -32,6 +32,7 @@ import {
   resetDiscoverPanels,
   saveDiscoverNav,
 } from '../stores/discover'
+import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v3'
 const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
@@ -190,6 +191,7 @@ const hasNextPage = computed(() => {
 onUnmounted(() => {
   window.removeEventListener('resize', updateStripBounds)
   window.removeEventListener('keydown', handleDiscoverKeydown)
+  window.removeEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
   window.clearTimeout(refreshRevealTimer)
   for (const state of requestStates.values()) state.controller.abort()
   requestStates.clear()
@@ -233,11 +235,19 @@ async function loadSources() {
 onMounted(() => {
   window.addEventListener('resize', updateStripBounds)
   window.addEventListener('keydown', handleDiscoverKeydown)
+  window.addEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
   loadSources().then(() => {
     nextTick(updateStripBounds)
     nextTick(measureGridColumns)
   })
 })
+
+function handleSourcesChanged() {
+  void loadSources().then(() => {
+    nextTick(updateStripBounds)
+    nextTick(measureGridColumns)
+  })
+}
 
 function handleDiscoverKeydown(event) {
   if (event.key === 'Escape' && discoverSelecting.value) clearDiscoverSelection()
@@ -521,7 +531,7 @@ function filterOptions(group) {
 }
 
 function sourceKindLabel(kind) {
-  return { comic: '漫画源', book: '书籍源', other: '其他源' }[kind] || '来源'
+  return { comic: '漫画源', book: '书籍源', other: '视频源' }[kind] || '来源'
 }
 
 function discoveryKey(item) {
@@ -679,7 +689,7 @@ function latestLabel(item) {
           </button>
           <button type="button" :class="{ active: activeKind === 'other' }" @click="switchKind('other')">
             <Film :size="18" />
-            其他源 <span class="segmented-count">{{ kindCount('other') }}</span>
+            视频源 <span class="segmented-count">{{ kindCount('other') }}</span>
           </button>
         </div>
       </div>

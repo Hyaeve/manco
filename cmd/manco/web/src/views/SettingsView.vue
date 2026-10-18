@@ -314,8 +314,8 @@ async function checkUpdate() {
               保存
             </button>
           </div>
-          <div class="settings-form-grid" @keydown.enter.prevent="saveProxy">
-            <label class="field settings-field-span-2">
+          <div class="settings-form-stack" @keydown.enter.prevent="saveProxy">
+            <label class="field">
               <span>代理地址</span>
               <input v-model="form.proxy" class="input" placeholder="http://127.0.0.1:7890" />
             </label>
@@ -427,7 +427,7 @@ async function checkUpdate() {
             </button>
           </div>
           <p class="muted small settings-card-help">内存条数与落盘保存天数同时生效。</p>
-          <div class="settings-form-grid" @keydown.enter.prevent="saveLogs">
+          <div class="settings-form-stack" @keydown.enter.prevent="saveLogs">
             <label class="field">
               <span>保留日志条数</span>
               <input v-model.number="form.logMaxEntries" class="input" type="number" min="100" max="200000" step="100" />
@@ -477,6 +477,33 @@ async function checkUpdate() {
         </article>
 
         <article id="settings-about" class="card card-pad settings-panel settings-about-card">
+          <svg class="settings-about-illustration" viewBox="0 0 240 170" aria-hidden="true">
+            <g class="about-book-stack">
+              <rect x="118" y="120" width="94" height="18" rx="6" />
+              <path d="M128 121h84M128 137h84" />
+              <rect x="106" y="102" width="108" height="18" rx="6" />
+              <path d="M117 103h97M117 119h97" />
+              <rect x="126" y="84" width="88" height="18" rx="6" />
+              <path d="M137 85h77M137 101h77" />
+              <path class="about-bookmark" d="M198 84v-18l8 5 8-5v18" />
+            </g>
+            <g class="about-cat">
+              <path class="about-cat-ear" d="M46 48 42 24l21 13M99 48l8-24-22 13" />
+              <ellipse class="about-cat-body" cx="73" cy="105" rx="35" ry="46" />
+              <circle class="about-cat-head" cx="74" cy="54" r="31" />
+              <path class="about-cat-patch" d="M48 54c5-17 18-26 34-25 7 11 9 20 4 30-13 7-27 6-38-5Z" />
+              <path class="about-cat-eye" d="M59 53h9M82 53h9" />
+              <path class="about-cat-nose" d="m74 60 4 4-8 0Z" />
+              <path class="about-cat-mouth" d="M70 68c3 3 6 3 9 0M56 64l-17-4M58 70l-16 5M91 64l17-4M89 70l16 5" />
+              <path class="about-cat-tail" d="M101 132c26 2 34-18 20-31-9-9-1-20 9-13" />
+              <path class="about-cat-paw" d="M58 142h18M82 142h18" />
+            </g>
+            <g class="about-sparkles">
+              <path d="m27 84 3 8 8 3-8 3-3 8-3-8-8-3 8-3Z" />
+              <path d="m207 35 2 6 6 2-6 2-2 6-2-6-6-2 6-2Z" />
+              <circle cx="178" cy="58" r="3" />
+            </g>
+          </svg>
           <div class="settings-card-title">
             <div class="inline">
               <CheckCircle2 :size="18" />
@@ -484,7 +511,7 @@ async function checkUpdate() {
             </div>
           </div>
           <p class="muted small settings-card-help">
-            漫画、书籍与其他来源的订阅下载管理工具。
+            漫画、书籍和视频源的订阅下载管理工具。
           </p>
           <div class="settings-about-meta">
             <span>当前版本</span>

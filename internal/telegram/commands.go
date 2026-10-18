@@ -43,8 +43,8 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 		s.replyDownloading(ctx, chat)
 	case "/view", "查看榜单", "榜单", "view":
 		s.replyBrowse(ctx, chatID, argument)
-	case "/sources", "内容源", "sources":
-		s.replySources(ctx, chat)
+	case "/sources", "内容源", "查看内容源", "sources":
+		s.replySources(ctx, chat, argument)
 	case "/sh", "搜索", "sh":
 		s.replySearch(ctx, chatID, argument, "")
 	default:
@@ -85,6 +85,7 @@ func parseSearchText(text string) (query, scope string, ok bool) {
 	}{
 		{value: "搜索漫画", scope: "漫画"},
 		{value: "搜索书籍", scope: "书籍"},
+		{value: "搜索视频", scope: "视频"},
 		{value: "搜索其他", scope: "其他"},
 		{value: "搜索资源", scope: ""},
 		{value: "搜索", scope: ""},
@@ -140,15 +141,16 @@ func helpText() string {
 		"/check [作品名或下载父目录] 检查全部、目录或单项",
 		"/downloading 查看正在下载与暂停状态",
 		"/view [内容源] 查看内容源榜单",
-		"/sources 查看已添加内容源",
+		"/sources [漫画源|书籍源|视频源] 查看全部或指定类型内容源",
 		"/sh 关键词 全部来源分类型搜索",
 		"查看订阅 [下载父目录]",
 		"查看榜单 包子",
 		"搜索 关键词 全局搜索",
 		"漫画搜索 关键词",
 		"书籍搜索 关键词",
-		"其他搜索 关键词",
+		"视频搜索 关键词",
 		"包子搜索 关键词",
+		"同名源使用完整名称+序号，例如 AA2搜索 关键词",
 		"检查 [作品名或下载父目录]",
 		"补全 作品名",
 		"刮削 作品名",
@@ -160,7 +162,7 @@ func helpText() string {
 	}, "\n")
 }
 
-func (s *Service) replySources(ctx context.Context, chat string) {
+func (s *Service) replySources(ctx context.Context, chat, filter string) {
 	items, err := s.app.BotSources(ctx)
 	if err != nil {
 		s.sendMessage(ctx, chat, "读取内容源失败："+err.Error(), nil)
@@ -170,11 +172,49 @@ func (s *Service) replySources(ctx context.Context, chat string) {
 		s.sendMessage(ctx, chat, "还没有添加内容源。", nil)
 		return
 	}
-	lines := []string{"<b>内容源</b>"}
+	kind := sourceKindFilter(filter)
+	if strings.TrimSpace(filter) != "" && kind == "" {
+		s.sendMessage(ctx, chat, "未知内容源类型，请使用漫画源、书籍源或视频源。", nil)
+		return
+	}
+	filtered := make([]BotSource, 0, len(items))
 	for _, item := range items {
+		if kind != "" && normalizedSourceKind(item.Kind) != kind {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if len(filtered) == 0 {
+		s.sendMessage(ctx, chat, fmt.Sprintf("还没有添加%s。", kindLabel(kind)), nil)
+		return
+	}
+	title := "内容源"
+	if kind != "" {
+		title = kindLabel(kind)
+	}
+	lines := []string{"<b>" + title + "</b>"}
+	for _, item := range filtered {
 		lines = append(lines, fmt.Sprintf("· %s（%s）", item.Name, kindLabel(item.Kind)))
 	}
 	s.sendMessage(ctx, chat, strings.Join(lines, "\n"), nil)
+}
+
+func sourceKindFilter(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.TrimSuffix(value, "内容源")
+	value = strings.TrimSuffix(value, "源")
+	switch value {
+	case "", "全部", "all":
+		return ""
+	case "漫画", "comic", "manga":
+		return "comic"
+	case "书籍", "小说", "book", "books":
+		return "book"
+	case "视频", "其他", "other", "video", "videos":
+		return "other"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) replySubscriptions(ctx context.Context, chat, directory string) {
@@ -327,6 +367,8 @@ func (s *Service) replyCheck(ctx context.Context, chat, query string) {
 	})
 	if err != nil {
 		s.logger.Printf("telegram: send check progress: %v", err)
+	} else {
+		s.trackTransientMessageForChat(chat, messageID)
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()
@@ -642,7 +684,7 @@ func (s *Service) replyGlobalSearch(ctx context.Context, chatID int64, chat, que
 	}{
 		{Kind: "comic", Label: "漫画源"},
 		{Kind: "book", Label: "书籍源"},
-		{Kind: "other", Label: "其他源"},
+		{Kind: "other", Label: "视频源"},
 	} {
 		entries := rankSearchEntries(query, byKind[item.Kind])
 		if len(entries) > maxSearchResultsPerKind {
@@ -777,7 +819,7 @@ func searchKindScope(scope string) string {
 		return "comic"
 	case "书籍", "书籍源", "小说", "book", "books":
 		return "book"
-	case "其他", "其他源", "other":
+	case "视频", "视频源", "其他", "其他源", "video", "videos", "other":
 		return "other"
 	default:
 		return ""
@@ -814,6 +856,7 @@ func (s *Service) sendResultList(ctx context.Context, chat, text string, entries
 		})
 		cancel()
 		if err == nil && id != 0 {
+			s.trackTransientMessageForChat(chat, id)
 			return id, true, nil
 		}
 		s.logger.Printf("telegram: send result cover: %v", err)
@@ -824,6 +867,9 @@ func (s *Service) sendResultList(ctx context.Context, chat, text string, entries
 		"parse_mode":   "HTML",
 		"reply_markup": keyboard,
 	})
+	if err == nil && id != 0 {
+		s.trackTransientMessageForChat(chat, id)
+	}
 	return id, false, err
 }
 
@@ -862,7 +908,7 @@ func (s *Service) replyBrowse(ctx context.Context, chatID int64, sourceQuery str
 	source, ok := matchViewSource(sources, sourceQuery)
 	if !ok {
 		s.sendMessage(ctx, chat, fmt.Sprintf(
-			"没有找到内容源「%s」。中文源请输入前两个字或全名，英文源至少输入前六个字母，不区分大小写。",
+			"没有找到内容源「%s」。中文源至少输入前两个字，英文源至少输入前四个字母（短名称请输入全名），不区分大小写；同名源可用完整名称加序号，例如 AA2。",
 			sourceQuery,
 		), nil)
 		return
@@ -900,29 +946,15 @@ func matchViewSource(sources []BotSource, value string) (BotSource, bool) {
 	if value == "" {
 		return BotSource{}, false
 	}
-	for _, source := range sources {
-		if strings.ToLower(strings.TrimSpace(source.Name)) == value {
-			return source, true
-		}
+	if source, ok := matchSourceByExactOrOrdinal(sources, value); ok {
+		return source, true
 	}
 	for _, source := range sources {
 		name := strings.ToLower(strings.TrimSpace(source.Name))
 		if name == "" {
 			continue
 		}
-		if asciiSourceName(name) {
-			prefix := 6
-			runes := []rune(name)
-			if len(runes) < prefix {
-				prefix = len(runes)
-			}
-			if len([]rune(value)) >= prefix && strings.HasPrefix(name, value) {
-				return source, true
-			}
-			continue
-		}
-		runes := []rune(name)
-		if len(runes) >= 2 && value == string(runes[:2]) {
+		if sourceQueryEligible(name, value) && strings.HasPrefix(name, value) {
 			return source, true
 		}
 	}
@@ -1058,6 +1090,7 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 	if !s.allowed(chatID) {
 		return
 	}
+	s.refreshTransientChat(chatID)
 	data := strings.TrimSpace(query.Data)
 	switch {
 	case strings.HasPrefix(data, "open:"):
@@ -1266,6 +1299,7 @@ func (s *Service) sendResultDetail(ctx context.Context, chat, caption, cover str
 		})
 		cancel()
 		if err == nil && id != 0 {
+			s.trackTransientMessageForChat(chat, id)
 			return id, true
 		}
 		s.logger.Printf("telegram: send detail photo: %v", err)
@@ -1279,6 +1313,9 @@ func (s *Service) sendResultDetail(ctx context.Context, chat, caption, cover str
 	if err != nil {
 		s.logger.Printf("telegram: send detail text: %v", err)
 		return 0, false
+	}
+	if id != 0 {
+		s.trackTransientMessageForChat(chat, id)
 	}
 	return id, false
 }
@@ -1372,12 +1409,13 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 		cover = strings.TrimSpace(entry.Cover)
 	}
 	if cover != "" {
-		if _, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+		if id, err := s.callMethod(ctx, "sendPhoto", map[string]any{
 			"chat_id":    chat,
 			"photo":      cover,
 			"caption":    caption,
 			"parse_mode": "HTML",
 		}); err == nil {
+			s.trackTransientMessageForChat(chat, id)
 			return
 		}
 	}
@@ -1573,6 +1611,12 @@ func matchSource(sources []BotSource, value string) (BotSource, bool) {
 	if value == "" {
 		return BotSource{}, false
 	}
+	if source, ok := matchSourceByExactOrOrdinal(sources, value); ok {
+		return source, true
+	}
+	if base, _, ok := splitSourceOrdinal(value); ok && hasSourceName(sources, base) {
+		return BotSource{}, false
+	}
 	candidates := append([]BotSource(nil), sources...)
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return sourceMatchScore(candidates[i], value) > sourceMatchScore(candidates[j], value)
@@ -1583,25 +1627,92 @@ func matchSource(sources []BotSource, value string) (BotSource, bool) {
 	return BotSource{}, false
 }
 
+func matchSourceByExactOrOrdinal(sources []BotSource, value string) (BotSource, bool) {
+	for _, item := range sources {
+		name := strings.ToLower(strings.TrimSpace(item.Name))
+		id := strings.ToLower(strings.TrimSpace(item.ID))
+		if name == value || id == value {
+			return item, true
+		}
+	}
+	base, ordinal, ok := splitSourceOrdinal(value)
+	if !ok {
+		return BotSource{}, false
+	}
+	matches := make([]BotSource, 0, 2)
+	for _, item := range sources {
+		if strings.ToLower(strings.TrimSpace(item.Name)) == base {
+			matches = append(matches, item)
+		}
+	}
+	if ordinal > 0 && ordinal <= len(matches) {
+		return matches[ordinal-1], true
+	}
+	return BotSource{}, false
+}
+
+func hasSourceName(sources []BotSource, value string) bool {
+	for _, item := range sources {
+		if strings.ToLower(strings.TrimSpace(item.Name)) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func splitSourceOrdinal(value string) (string, int, bool) {
+	runes := []rune(strings.TrimSpace(value))
+	end := len(runes)
+	for end > 0 && runes[end-1] >= '0' && runes[end-1] <= '9' {
+		end--
+	}
+	if end == len(runes) || end == 0 {
+		return "", 0, false
+	}
+	ordinal, err := strconv.Atoi(string(runes[end:]))
+	if err != nil || ordinal <= 0 {
+		return "", 0, false
+	}
+	return strings.TrimSpace(string(runes[:end])), ordinal, true
+}
+
 func sourceMatchScore(source BotSource, value string) int {
 	name := strings.ToLower(source.Name)
 	id := strings.ToLower(source.ID)
 	switch {
 	case name == value || id == value:
 		return 100
-	case strings.Contains(name, value):
+	case sourceQueryEligible(name, value) && strings.HasPrefix(name, value):
+		return 90
+	case sourceQueryEligible(name, value) && strings.Contains(name, value):
 		return 80
 	case strings.Contains(value, name):
 		return 70
-	case strings.Contains(id, value):
+	case len([]rune(value)) >= 4 && strings.Contains(id, value):
 		return 60
 	default:
 		return 0
 	}
 }
 
-// shortSourceName keeps the full name for ASCII sources and the first two
-// characters for localized names, matching the requested display style.
+func sourceQueryEligible(name, value string) bool {
+	nameRunes := []rune(name)
+	valueRunes := []rune(value)
+	if len(valueRunes) == 0 {
+		return false
+	}
+	if asciiSourceName(name) {
+		if len(nameRunes) < 4 {
+			return value == name
+		}
+		return len(valueRunes) >= 4
+	}
+	return len(valueRunes) >= 2
+}
+
+// shortSourceName keeps at most four ASCII letters and the first two
+// characters for localized names. Consecutive uppercase segments are softened
+// so names such as GoDA are displayed as GoDa.
 func shortSourceName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -1616,10 +1727,19 @@ func shortSourceName(name string) string {
 	}
 	if ascii {
 		runes := []rune(name)
-		if len(runes) > 4 {
-			return string(runes[:4])
+		if len(runes) < 4 {
+			return name
 		}
-		return name
+		if len(runes) > 4 {
+			runes = runes[:4]
+		}
+		original := append([]rune(nil), runes...)
+		for index := 1; index < len(runes); index++ {
+			if unicode.IsUpper(original[index]) && unicode.IsUpper(original[index-1]) {
+				runes[index] = unicode.ToLower(runes[index])
+			}
+		}
+		return string(runes)
 	}
 	runes := []rune(name)
 	if len(runes) <= 2 {
@@ -1683,7 +1803,7 @@ func kindLabel(kind string) string {
 	case "book":
 		return "书籍"
 	case "other":
-		return "其他"
+		return "视频"
 	default:
 		return "漫画"
 	}

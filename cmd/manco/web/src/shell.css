@@ -472,35 +472,67 @@ body,
   width: min(1160px, 100%);
 }
 
-.reader-view {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0;
+.reader-page-stage {
+  display: grid;
+  width: 100%;
   max-height: calc(100dvh - 180px);
+  place-items: center;
   padding: 0;
   overflow: auto;
   background: #111318;
 }
 
-.reader-view img {
+.reader-page-stage > img {
   display: block;
-  width: 100%;
+  width: auto;
   max-width: 100%;
+  max-height: calc(100dvh - 190px);
   height: auto;
+  object-fit: contain;
   background: #fff;
 }
 
-.preview-stream-hint {
-  display: flex;
+.reader-page-stage.epub-reader {
+  display: block;
+}
+
+.preview-video-shell {
+  display: grid;
   width: 100%;
-  min-height: 64px;
+  justify-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: #0d0f13;
+}
+
+.browser-video-player {
+  display: block;
+  width: 100%;
+  max-height: calc(100dvh - 220px);
+  border-radius: 6px;
+  background: #000;
+}
+
+.browser-document-frame {
+  display: block;
+  width: 100%;
+  height: min(78dvh, 980px);
+  border: 0;
+  background: #f7f4ec;
+}
+
+.reader-pager {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  color: rgba(255, 255, 255, 0.72);
-  background: #111318;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .reader-text {
@@ -513,6 +545,13 @@ body,
   background: #111318;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.reader-page-text {
+  min-height: 320px;
+  font-family: "Noto Serif SC", "Songti SC", serif;
+  font-size: 17px;
+  line-height: 1.9;
 }
 
 .epub-reader {

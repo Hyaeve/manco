@@ -21,6 +21,8 @@ import (
 	"github.com/hyaeve/manco/internal/model"
 )
 
+const transientMessageTTL = 10 * time.Minute
+
 // App is the subset of the server the bot needs. Keeping it narrow avoids a
 // dependency cycle between the HTTP API and the bot.
 type App interface {
@@ -128,12 +130,19 @@ type Service struct {
 	client *http.Client
 	logger *log.Logger
 
-	mu       sync.RWMutex
-	cfg      Config
-	cancel   context.CancelFunc
-	offset   int64
-	started  bool
-	sessions map[int64]*session
+	mu           sync.RWMutex
+	cfg          Config
+	cancel       context.CancelFunc
+	offset       int64
+	started      bool
+	sessions     map[int64]*session
+	transient    map[int64]map[int64]*transientMessage
+	transientTTL time.Duration
+}
+
+type transientMessage struct {
+	chat  string
+	timer *time.Timer
 }
 
 type session struct {
@@ -233,6 +242,7 @@ func (s *Service) deleteMessage(ctx context.Context, chat string, messageID int6
 	if messageID == 0 {
 		return
 	}
+	s.forgetTransientMessage(chat, messageID)
 	if _, err := s.callMethod(ctx, "deleteMessage", map[string]any{"chat_id": chat, "message_id": messageID}); err != nil {
 		s.logger.Printf("telegram: deleteMessage: %v", err)
 	}
@@ -254,9 +264,11 @@ func (s *Service) deleteMessageAsync(chat string, messageID int64) {
 // HTTP server and the bot can reference each other.
 func New(logger *log.Logger) *Service {
 	return &Service{
-		client:   &http.Client{Timeout: 70 * time.Second},
-		logger:   logger,
-		sessions: map[int64]*session{},
+		client:       &http.Client{Timeout: 70 * time.Second},
+		logger:       logger,
+		sessions:     map[int64]*session{},
+		transient:    map[int64]map[int64]*transientMessage{},
+		transientTTL: transientMessageTTL,
 	}
 }
 
@@ -353,12 +365,12 @@ func (s *Service) registerCommands(ctx context.Context) {
 	}
 	payload := `{"commands":[` +
 		`{"command":"start","description":"开始 / 查看帮助"},` +
-		`{"command":"subscriptions","description":"查看全部或指定父目录订阅"},` +
-		`{"command":"check","description":"检查全部、父目录或指定作品"},` +
-		`{"command":"downloading","description":"查看正在下载和暂停状态"},` +
-		`{"command":"view","description":"查看指定内容源榜单"},` +
-		`{"command":"sources","description":"查看已添加内容源"},` +
-		`{"command":"sh","description":"全部来源分类型搜索"}` +
+		`{"command":"subscriptions","description":"查看订阅计划"},` +
+		`{"command":"check","description":"检查订阅作品"},` +
+		`{"command":"downloading","description":"查看下载队列"},` +
+		`{"command":"view","description":"查看内容源"},` +
+		`{"command":"sources","description":"查看内容源列表"},` +
+		`{"command":"sh","description":"搜索作品"}` +
 		`]}`
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/setMyCommands", token)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(payload))
@@ -384,6 +396,14 @@ func (s *Service) Stop() {
 		s.cancel = nil
 	}
 	s.started = false
+	for _, messages := range s.transient {
+		for _, message := range messages {
+			if message != nil && message.timer != nil {
+				message.timer.Stop()
+			}
+		}
+	}
+	s.transient = map[int64]map[int64]*transientMessage{}
 }
 
 // NotifyAll sends a message to every configured chat. Empty text is ignored.
@@ -395,7 +415,7 @@ func (s *Service) NotifyAll(ctx context.Context, text string) {
 	chats := append([]string(nil), s.cfg.ChatIDs...)
 	s.mu.RUnlock()
 	for _, chat := range chats {
-		s.sendMessage(ctx, chat, text, nil)
+		s.sendPersistentMessage(ctx, chat, text, nil)
 	}
 }
 
@@ -491,46 +511,143 @@ func (s *Service) handleUpdate(ctx context.Context, update Update) {
 	if message == nil || message.Chat == nil {
 		return
 	}
+	chat := strconv.FormatInt(message.Chat.ID, 10)
 	if !s.allowed(message.Chat.ID) {
-		s.sendMessage(ctx, strconv.FormatInt(message.Chat.ID, 10),
-			"未授权：请在 Manco 系统设置里把该 Chat ID 加入 TG 通知允许列表。", nil)
+		s.sendPersistentMessage(ctx, chat, "未授权：请在 Manco 系统设置里把该 Chat ID 加入 TG 通知允许列表。", nil)
 		return
 	}
+	s.trackTransientMessage(message.Chat.ID, chat, message.MessageID)
 	s.handleText(ctx, message.Chat.ID, strings.TrimSpace(message.Text))
 }
 
-func (s *Service) sendMessage(ctx context.Context, chatID, text string, keyboard any) {
-	s.mu.RLock()
-	token := s.cfg.Token
-	s.mu.RUnlock()
-	if token == "" || strings.TrimSpace(text) == "" {
-		return
+func (s *Service) sendMessage(ctx context.Context, chat string, text string, keyboard any) int64 {
+	messageID := s.sendPersistentMessage(ctx, chat, text, keyboard)
+	if messageID == 0 {
+		return 0
+	}
+	s.trackTransientMessageForChat(chat, messageID)
+	return messageID
+}
+
+func (s *Service) trackTransientMessageForChat(chat string, messageID int64) {
+	chatID, _ := strconv.ParseInt(chat, 10, 64)
+	s.trackTransientMessage(chatID, chat, messageID)
+}
+
+func (s *Service) sendPersistentMessage(ctx context.Context, chat string, text string, keyboard any) int64 {
+	if strings.TrimSpace(text) == "" {
+		return 0
 	}
 	payload := map[string]any{
-		"chat_id":    chatID,
+		"chat_id":    chat,
 		"text":       text,
 		"parse_mode": "HTML",
 	}
 	if keyboard != nil {
 		payload["reply_markup"] = keyboard
 	}
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(encoded)))
-	if err != nil {
-		return
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := s.client.Do(request)
+	messageID, err := s.callMethod(ctx, "sendMessage", payload)
 	if err != nil {
 		s.logger.Printf("telegram: send: %v", err)
+		return 0
+	}
+	return messageID
+}
+
+func (s *Service) trackTransientMessage(chatID int64, chat string, messageID int64) {
+	if chatID == 0 || messageID == 0 {
 		return
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+	s.mu.Lock()
+	if s.transient == nil {
+		s.transient = map[int64]map[int64]*transientMessage{}
+	}
+	messages := s.transient[chatID]
+	if messages == nil {
+		messages = map[int64]*transientMessage{}
+		s.transient[chatID] = messages
+	}
+	nowMessages := make([]int64, 0, len(messages)+1)
+	for id := range messages {
+		nowMessages = append(nowMessages, id)
+	}
+	if _, ok := messages[messageID]; !ok {
+		nowMessages = append(nowMessages, messageID)
+	}
+	if existing := messages[messageID]; existing != nil && existing.timer != nil {
+		existing.timer.Stop()
+	}
+	messages[messageID] = &transientMessage{chat: chat}
+	ttl := s.transientTTL
+	if ttl <= 0 {
+		ttl = transientMessageTTL
+	}
+	for _, id := range nowMessages {
+		entry := messages[id]
+		if entry == nil {
+			continue
+		}
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		entry.chat = chat
+		entry.timer = time.AfterFunc(ttl, func() {
+			s.expireTransientMessage(chatID, id)
+		})
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) refreshTransientChat(chatID int64) {
+	s.mu.RLock()
+	messages := make(map[int64]*transientMessage, len(s.transient[chatID]))
+	for id, entry := range s.transient[chatID] {
+		messages[id] = entry
+	}
+	s.mu.RUnlock()
+	for id, entry := range messages {
+		if entry != nil {
+			s.trackTransientMessage(chatID, entry.chat, id)
+		}
+	}
+}
+
+func (s *Service) forgetTransientMessage(chat string, messageID int64) {
+	chatID, _ := strconv.ParseInt(chat, 10, 64)
+	if chatID == 0 || messageID == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages := s.transient[chatID]
+	if entry := messages[messageID]; entry != nil && entry.timer != nil {
+		entry.timer.Stop()
+	}
+	delete(messages, messageID)
+	if len(messages) == 0 {
+		delete(s.transient, chatID)
+	}
+}
+
+func (s *Service) expireTransientMessage(chatID, messageID int64) {
+	s.mu.Lock()
+	messages := s.transient[chatID]
+	entry := messages[messageID]
+	if entry == nil {
+		s.mu.Unlock()
+		return
+	}
+	chat := entry.chat
+	delete(messages, messageID)
+	if len(messages) == 0 {
+		delete(s.transient, chatID)
+	}
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := s.callMethod(ctx, "deleteMessage", map[string]any{"chat_id": chat, "message_id": messageID}); err != nil {
+		s.logger.Printf("telegram: expire transient message: %v", err)
+	}
 }
 
 func (s *Service) answerCallback(ctx context.Context, callbackID string) {

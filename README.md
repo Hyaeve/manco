@@ -3,7 +3,7 @@
 自托管的漫画 / 书籍订阅下载器。Go 后端 + Vue 3 前端，单镜像部署，容器端口 `15600`。
 
 - 从内容源搜索、浏览、订阅作品，发现新章节后自动下载
-- **漫画一话一个 `.cbz`，书籍统一生成或保留 `.epub`**；下载时漫画可直接合并为一个 CBZ，书籍可合并为一个 EPUB
+- **漫画一话一个 `.cbz`；书籍优先打包为 `.cbz`，源仅提供原生 `.epub` / `.pdf` 时保留原格式**
 - 支持多内容源、拓展仓库、代理、本地库、运行日志与全局繁转简
 - 配置与数据分离：`/app/config` 存模块化配置，`/app/data` 存数据库、缓存与密钥
 
@@ -56,12 +56,12 @@ GHCR 镜像为 `linux/amd64`。若拉取提示 `denied`，把 GitHub 包 `manco`
 
 ## 内容源
 
-内置来源：哔咔漫画、禁漫天堂、包子漫画、Z-Library、笔趣阁。「资源仓库」分为漫画源 / 书籍源 / 其他源 / 拓展仓库。
+内置来源：哔咔漫画、禁漫天堂、包子漫画、Z-Library、笔趣阁。「资源仓库」分为漫画源 / 书籍源 / 视频源 / 拓展仓库。
 
 - 哔咔需要账号密码登录
 - 禁漫天堂、包子漫画免登录可浏览，遇到校验时填写站点域名与 Cookie
-- Z-Library 使用邮箱密码登录并下载原生 EPUB；插件书籍按 EPUB 结构打包正文与插图
-- 笔趣阁免登录，按章节抓取小说正文并打包为 EPUB
+- Z-Library 使用邮箱密码登录，并按源提供的 EPUB、PDF 格式下载
+- 笔趣阁与插件书籍把正文和插图优先打包为 CBZ，CBZ 内使用按章节排序的 XHTML 页面
 - 拓展仓库支持 Kototoro / Mihon / JAR / Aniyomi 等兼容仓库；Kototoro Parsers 的 JAR/DEX 插件由内置 JVM 运行时执行，APK 类型仅登记清单
 - 网络受限时在「系统设置 → 代理」配置 HTTP/HTTPS 代理
 
@@ -93,7 +93,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.6.9 && git push origin v0.6.9   # 构建并发布 :v0.6.9
+git tag v0.6.10 && git push origin v0.6.10   # 构建并发布 :v0.6.10
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 

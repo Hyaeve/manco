@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -41,6 +42,82 @@ func TestSplitCommand(t *testing.T) {
 		if command != item.command || arg != item.arg {
 			t.Fatalf("splitCommand(%q) = %q, %q; want %q, %q", item.input, command, arg, item.command, item.arg)
 		}
+	}
+}
+
+func TestSourceKindFilter(t *testing.T) {
+	cases := map[string]string{
+		"":      "",
+		"漫画源":   "comic",
+		"书籍源":   "book",
+		"视频源":   "other",
+		"其他源":   "other",
+		"novel": "",
+		"小说":    "book",
+		"video": "other",
+	}
+	for input, want := range cases {
+		if got := sourceKindFilter(input); got != want {
+			t.Fatalf("sourceKindFilter(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestTransientMessageExpiryResetsOnActivity(t *testing.T) {
+	deleted := make(chan int64, 1)
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.transientTTL = 100 * time.Millisecond
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/deleteMessage") {
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err == nil {
+				deleted <- int64(payload["message_id"].(float64))
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{}}`)),
+		}, nil
+	})}
+
+	service.trackTransientMessage(1, "1", 42)
+	time.Sleep(60 * time.Millisecond)
+	service.refreshTransientChat(1)
+	select {
+	case id := <-deleted:
+		t.Fatalf("message %d expired before the reset window", id)
+	case <-time.After(60 * time.Millisecond):
+	}
+	select {
+	case id := <-deleted:
+		if id != 42 {
+			t.Fatalf("expired message id = %d, want 42", id)
+		}
+	case <-time.After(80 * time.Millisecond):
+		t.Fatal("transient message was not deleted after its inactivity window")
+	}
+}
+
+func TestPersistentNotificationIsNotTrackedForExpiry(t *testing.T) {
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":77}}`)),
+		}, nil
+	})}
+	if id := service.sendPersistentMessage(context.Background(), "1", "通知", nil); id != 77 {
+		t.Fatalf("persistent message id = %d, want 77", id)
+	}
+	service.mu.RLock()
+	tracked := len(service.transient[1])
+	service.mu.RUnlock()
+	if tracked != 0 {
+		t.Fatalf("persistent notification tracked %d transient messages", tracked)
 	}
 }
 
@@ -151,7 +228,10 @@ func TestParseSearchText(t *testing.T) {
 		{input: "搜索 凡人修仙传", query: "凡人修仙传", ok: true},
 		{input: "搜索漫画 凡人修仙传", query: "凡人修仙传", sourceName: "漫画", ok: true},
 		{input: "漫画搜索 凡人修仙传", query: "凡人修仙传", sourceName: "漫画", ok: true},
+		{input: "搜索视频 凡人修仙传", query: "凡人修仙传", sourceName: "视频", ok: true},
+		{input: "视频搜索 凡人修仙传", query: "凡人修仙传", sourceName: "视频", ok: true},
 		{input: "包子搜索 凡人修仙传", query: "凡人修仙传", sourceName: "包子", ok: true},
+		{input: "AA2搜索 凡人修仙传", query: "凡人修仙传", sourceName: "AA2", ok: true},
 		{input: "搜索资源 一拳超人", query: "一拳超人", ok: true},
 		{input: "检查 凡人修仙传", ok: false},
 	}
@@ -169,6 +249,7 @@ func TestSearchKindScope(t *testing.T) {
 		"漫画源": "comic",
 		"书籍":  "book",
 		"小说源": "book",
+		"视频源": "other",
 		"其他源": "other",
 		"包子":  "",
 	}
@@ -221,6 +302,7 @@ func TestShortSourceName(t *testing.T) {
 		"包子漫画":      "包子",
 		"禁漫天堂":      "禁漫",
 		"CopyManga": "Copy",
+		"GoDA":      "GoDa",
 		"JM":        "JM",
 	}
 	for input, want := range cases {
@@ -381,12 +463,22 @@ func TestMatchSource(t *testing.T) {
 		{ID: "baozimh", Name: "包子漫画"},
 		{ID: "jmcomic", Name: "禁漫天堂"},
 		{ID: "plugin-copy", Name: "CopyManga"},
+		{ID: "plugin-goda", Name: "GoDA"},
 	}
 	if source, ok := matchSource(sources, "包子"); !ok || source.ID != "baozimh" {
 		t.Fatalf("matchSource 包子 = %+v, %v", source, ok)
 	}
 	if source, ok := matchSource(sources, "copymanga"); !ok || source.ID != "plugin-copy" {
 		t.Fatalf("matchSource copymanga = %+v, %v", source, ok)
+	}
+	if source, ok := matchSource(sources, "copy"); !ok || source.ID != "plugin-copy" {
+		t.Fatalf("matchSource copy = %+v, %v", source, ok)
+	}
+	if _, ok := matchSource(sources, "cop"); ok {
+		t.Fatal("three-letter English prefix must not match")
+	}
+	if source, ok := matchSource(sources, "goda"); !ok || source.ID != "plugin-goda" {
+		t.Fatalf("case-insensitive GoDA match = %+v, %v", source, ok)
 	}
 	if _, ok := matchSource(sources, "不存在"); ok {
 		t.Fatal("matchSource 不存在 should fail")
@@ -407,14 +499,36 @@ func TestMatchViewSourceRules(t *testing.T) {
 	if _, ok := matchViewSource(sources, "包"); ok {
 		t.Fatal("single Chinese character must not match")
 	}
-	if source, ok := matchViewSource(sources, "copyma"); !ok || source.ID != "copy" {
-		t.Fatalf("six-letter English prefix = %+v, %v", source, ok)
+	if source, ok := matchViewSource(sources, "copy"); !ok || source.ID != "copy" {
+		t.Fatalf("four-letter English prefix = %+v, %v", source, ok)
 	}
-	if _, ok := matchViewSource(sources, "copy"); ok {
-		t.Fatal("five-letter English prefix must not match")
+	if _, ok := matchViewSource(sources, "cop"); ok {
+		t.Fatal("three-letter English prefix must not match")
 	}
 	if source, ok := matchViewSource(sources, "COP YMANGA"); ok || source.ID != "" {
 		t.Fatalf("invalid spaced query matched: %+v", source)
+	}
+}
+
+func TestDuplicateSourceOrdinalSelection(t *testing.T) {
+	sources := []BotSource{
+		{ID: "aa-first", Name: "AA"},
+		{ID: "aa-second", Name: "AA"},
+		{ID: "other", Name: "OtherSource"},
+	}
+	for name, matcher := range map[string]func([]BotSource, string) (BotSource, bool){
+		"search": matchSource,
+		"view":   matchViewSource,
+	} {
+		if source, ok := matcher(sources, "AA"); !ok || source.ID != "aa-first" {
+			t.Fatalf("%s duplicate exact name = %+v, %v; want first source", name, source, ok)
+		}
+		if source, ok := matcher(sources, "AA2"); !ok || source.ID != "aa-second" {
+			t.Fatalf("%s duplicate ordinal = %+v, %v; want second source", name, source, ok)
+		}
+		if _, ok := matcher(sources, "AA3"); ok {
+			t.Fatalf("%s duplicate ordinal beyond range unexpectedly matched", name)
+		}
 	}
 }
 

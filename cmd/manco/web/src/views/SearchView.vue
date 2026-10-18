@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { BookOpen, ImageOff, Loader2, Search, X } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
+import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,7 +64,16 @@ function cover(item) {
 onMounted(() => {
   loadHistory()
   runSearch()
+  window.addEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
 })
+
+onUnmounted(() => {
+  window.removeEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
+})
+
+function handleSourcesChanged() {
+  if (hasQuery.value) void runSearch()
+}
 
 watch(
   () => route.query.q,
