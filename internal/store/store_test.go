@@ -149,6 +149,28 @@ func TestListQueuedJobsDoesNotResetRunningJobs(t *testing.T) {
 	}
 }
 
+func TestListQueuedJobsPageReturnsBoundedRows(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	for _, chapterID := range []string{"1", "2", "3", "4", "5"} {
+		createJob(t, repository, chapterID)
+	}
+	first, err := repository.ListQueuedJobsPage(ctx, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := repository.ListQueuedJobsPage(ctx, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || len(second) != 2 {
+		t.Fatalf("page sizes = %d, %d; want 2, 2", len(first), len(second))
+	}
+	if first[0].ID == second[0].ID || first[1].ID == second[1].ID {
+		t.Fatalf("pages overlap: first=%v second=%v", first, second)
+	}
+}
+
 func TestNextQueuedJobPrefersManualPriority(t *testing.T) {
 	ctx := context.Background()
 	repository := openTestStore(t)

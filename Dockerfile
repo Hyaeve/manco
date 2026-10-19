@@ -97,6 +97,7 @@ ENV TZ=Asia/Shanghai \
     MANCO_ADDR=:15600 \
     MANCO_DATA_DIR=/app/data \
     MANCO_CONFIG_DIR=/app/config \
+    GOGC=75 \
     GOMEMLIMIT=768MiB \
     MANCO_KOTOTORO_HOST_OPTS="-Xms32m -Xmx384m -XX:MaxMetaspaceSize=192m -XX:ReservedCodeCacheSize=64m -XX:ActiveProcessorCount=2 -XX:+UseSerialGC" \
     MANCO_MIHON_HOST_OPTS="-Xms48m -Xmx512m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=96m -XX:ActiveProcessorCount=2 -XX:+UseSerialGC" \

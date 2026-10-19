@@ -1,4 +1,10 @@
 /* Final UI overrides for the resource warehouse, shell, notices and subscription cards. */
+:root {
+  --manco-cover-blur: 6px;
+  --manco-cover-blur-scale: 1.03;
+  --manco-cover-hover-scale: 1.08;
+}
+
 .repository-toolbar {
   margin-bottom: 16px;
 }
@@ -2118,8 +2124,8 @@
 }
 
 .subscription-cover.blurred img {
-  filter: blur(7px);
-  transform: scale(1.08);
+  filter: blur(var(--manco-cover-blur, 6px)) saturate(0.94);
+  transform: scale(var(--manco-cover-blur-scale, 1.03));
 }
 
 .subscription-card .subscription-source {
@@ -5122,20 +5128,20 @@ svg.source-editor-icon {
 /* 模糊封面默认一直模糊，只有鼠标移到封面上时才临时解除；移开立即恢复。
    放在文件最后是为了压过前面「卡片悬浮时提亮」的规则（那条会把模糊一起顶掉）。 */
 .subscription-card .subscription-cover.blurred img {
-  filter: blur(7px);
-  transform: scale(1.06);
+  filter: blur(var(--manco-cover-blur, 6px)) saturate(0.94);
+  transform: scale(var(--manco-cover-blur-scale, 1.03));
 }
 
 .subscription-card .subscription-cover.blurred:hover img,
 .subscription-card .subscription-cover.blurred:focus-within img {
   filter: none;
-  transform: scale(1.12);
+  transform: scale(var(--manco-cover-hover-scale, 1.08));
 }
 
 /* 模糊封面悬浮卡片时同样要有放大动作（之前静态模糊规则把它压掉了）。 */
 .subscription-card:hover .subscription-cover.blurred img,
 .subscription-card:focus-within .subscription-cover.blurred img {
-  transform: scale(1.12);
+  transform: scale(var(--manco-cover-hover-scale, 1.08));
 }
 
 /* 模糊封面叠一层细磨砂纹理，避免只剩单纯的模糊滤镜。 */
@@ -5358,6 +5364,7 @@ svg.source-editor-icon {
   position: relative;
   overflow: hidden;
   min-height: 280px;
+  isolation: isolate;
 }
 
 .settings-about-card > :not(.settings-about-illustration) {
@@ -5367,73 +5374,109 @@ svg.source-editor-icon {
 
 .settings-about-illustration {
   position: absolute;
-  right: -10px;
-  bottom: -12px;
-  width: min(280px, 72%);
-  height: auto;
-  opacity: 0.85;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.27;
+  filter: saturate(0.78);
+  -webkit-mask-image: linear-gradient(102deg, transparent 0%, rgba(0, 0, 0, 0.08) 22%, rgba(0, 0, 0, 0.62) 52%, #000 100%);
+  mask-image: linear-gradient(102deg, transparent 0%, rgba(0, 0, 0, 0.08) 22%, rgba(0, 0, 0, 0.62) 52%, #000 100%);
   pointer-events: none;
 }
 
-.settings-about-illustration .about-book-stack rect {
-  fill: color-mix(in srgb, var(--primary) 14%, var(--surface));
-  stroke: color-mix(in srgb, var(--primary) 52%, var(--border));
-  stroke-width: 2;
+.settings-about-illustration .about-pattern-books rect {
+  fill: color-mix(in srgb, #f1c46f 22%, var(--surface));
+  stroke: color-mix(in srgb, #b87829 52%, var(--border));
+  stroke-width: 1.8;
 }
 
-.settings-about-illustration .about-book-stack path {
+.settings-about-illustration .about-pattern-books path {
   fill: none;
-  stroke: color-mix(in srgb, var(--text) 34%, transparent);
+  stroke: color-mix(in srgb, var(--text) 38%, transparent);
   stroke-linecap: round;
-  stroke-width: 1.4;
+  stroke-width: 1.2;
 }
 
 .settings-about-illustration .about-bookmark {
   stroke: color-mix(in srgb, var(--primary-strong) 76%, var(--text)) !important;
-  stroke-width: 2.2 !important;
+  stroke-width: 2 !important;
 }
 
-.settings-about-illustration .about-cat-body,
-.settings-about-illustration .about-cat-head,
-.settings-about-illustration .about-cat-ear {
-  fill: color-mix(in srgb, var(--text) 88%, #25211c);
-  stroke: color-mix(in srgb, var(--text) 72%, var(--border));
-  stroke-width: 2;
-}
-
-.settings-about-illustration .about-cat-patch {
-  fill: color-mix(in srgb, var(--surface) 88%, #fff);
-  opacity: 0.92;
-}
-
-.settings-about-illustration .about-cat-eye,
-.settings-about-illustration .about-cat-nose,
-.settings-about-illustration .about-cat-mouth,
-.settings-about-illustration .about-cat-tail,
-.settings-about-illustration .about-cat-paw {
+.settings-about-illustration .about-shelf-line,
+.settings-about-illustration .about-cat-tail {
   fill: none;
-  stroke: color-mix(in srgb, var(--surface) 70%, #fef7ea);
+  stroke: color-mix(in srgb, var(--text) 46%, transparent);
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.2;
 }
 
-.settings-about-illustration .about-cat-tail {
-  stroke: color-mix(in srgb, var(--text) 80%, var(--border));
+.settings-about-illustration .about-pattern-cat-caramel .about-cat-body,
+.settings-about-illustration .about-pattern-cat-caramel .about-cat-head,
+.settings-about-illustration .about-pattern-cat-caramel .about-cat-ear {
+  fill: color-mix(in srgb, #e9ab5c 34%, transparent);
+  stroke: color-mix(in srgb, #b56d25 62%, var(--border));
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+}
+
+.settings-about-illustration .about-pattern-cat-mono .about-cat-body,
+.settings-about-illustration .about-pattern-cat-mono .about-cat-head,
+.settings-about-illustration .about-pattern-cat-mono .about-cat-ear {
+  fill: color-mix(in srgb, var(--text) 30%, transparent);
+  stroke: color-mix(in srgb, var(--text) 52%, var(--border));
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.settings-about-illustration .about-cat-patch {
+  fill: color-mix(in srgb, var(--surface) 74%, transparent);
+}
+
+.settings-about-illustration .about-cat-face,
+.settings-about-illustration .about-cat-stripe,
+.settings-about-illustration .about-pattern-doodles > path:not(.about-bookmark) {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 58%, transparent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.settings-about-illustration .about-pattern-cat-caramel .about-cat-tail {
+  stroke: color-mix(in srgb, #b56d25 58%, var(--border));
   stroke-width: 7;
 }
 
-.settings-about-illustration .about-sparkles {
-  fill: color-mix(in srgb, var(--primary) 65%, transparent);
-  stroke: color-mix(in srgb, var(--primary-strong) 70%, transparent);
-  stroke-width: 1.3;
+.settings-about-illustration .about-pattern-cat-mono .about-cat-tail {
+  stroke: color-mix(in srgb, var(--text) 44%, transparent);
+  stroke-width: 6;
 }
 
-[data-theme='dark'] .settings-about-illustration .about-cat-eye,
-[data-theme='dark'] .settings-about-illustration .about-cat-nose,
-[data-theme='dark'] .settings-about-illustration .about-cat-mouth,
-[data-theme='dark'] .settings-about-illustration .about-cat-paw {
-  stroke: #2c241d;
+.settings-about-illustration .about-paw-prints {
+  fill: color-mix(in srgb, var(--primary-strong) 38%, transparent);
+}
+
+[data-theme='dark'] .settings-about-illustration {
+  opacity: 0.2;
+  filter: saturate(0.72);
+}
+
+[data-theme='dark'] .settings-about-illustration .about-pattern-books rect {
+  fill: color-mix(in srgb, #d6a44e 16%, transparent);
+}
+
+[data-theme='dark'] .settings-about-illustration .about-pattern-cat-mono .about-cat-body,
+[data-theme='dark'] .settings-about-illustration .about-pattern-cat-mono .about-cat-head,
+[data-theme='dark'] .settings-about-illustration .about-pattern-cat-mono .about-cat-ear {
+  fill: color-mix(in srgb, #ece7de 21%, transparent);
+}
+
+[data-theme='dark'] .settings-about-illustration .about-cat-face,
+[data-theme='dark'] .settings-about-illustration .about-cat-stripe,
+[data-theme='dark'] .settings-about-illustration .about-pattern-doodles > path {
+  stroke: color-mix(in srgb, #fff3df 46%, transparent);
 }
 
 .subscription-card.disabled {

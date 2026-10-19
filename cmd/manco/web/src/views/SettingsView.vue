@@ -477,31 +477,58 @@ async function checkUpdate() {
         </article>
 
         <article id="settings-about" class="card card-pad settings-panel settings-about-card">
-          <svg class="settings-about-illustration" viewBox="0 0 240 170" aria-hidden="true">
-            <g class="about-book-stack">
-              <rect x="118" y="120" width="94" height="18" rx="6" />
-              <path d="M128 121h84M128 137h84" />
-              <rect x="106" y="102" width="108" height="18" rx="6" />
-              <path d="M117 103h97M117 119h97" />
-              <rect x="126" y="84" width="88" height="18" rx="6" />
-              <path d="M137 85h77M137 101h77" />
-              <path class="about-bookmark" d="M198 84v-18l8 5 8-5v18" />
+          <svg
+            class="settings-about-illustration"
+            viewBox="0 0 420 280"
+            preserveAspectRatio="xMidYMid slice"
+            aria-hidden="true"
+          >
+            <g class="about-pattern-books">
+              <path class="about-shelf-line" d="M40 236h340M54 257h286" />
+              <rect x="54" y="207" width="88" height="21" rx="5" transform="rotate(-3 54 207)" />
+              <rect x="65" y="184" width="104" height="20" rx="5" transform="rotate(2 65 184)" />
+              <rect x="47" y="161" width="78" height="19" rx="5" transform="rotate(-1 47 161)" />
+              <rect x="231" y="214" width="107" height="22" rx="5" transform="rotate(2 231 214)" />
+              <rect x="247" y="191" width="91" height="19" rx="5" transform="rotate(-2 247 191)" />
+              <path d="M69 214h61M78 191h77M61 168h51M246 221h77M259 198h66" />
+              <path class="about-bookmark" d="M284 191v-25l10 6 10-6v25" />
             </g>
-            <g class="about-cat">
-              <path class="about-cat-ear" d="M46 48 42 24l21 13M99 48l8-24-22 13" />
-              <ellipse class="about-cat-body" cx="73" cy="105" rx="35" ry="46" />
-              <circle class="about-cat-head" cx="74" cy="54" r="31" />
-              <path class="about-cat-patch" d="M48 54c5-17 18-26 34-25 7 11 9 20 4 30-13 7-27 6-38-5Z" />
-              <path class="about-cat-eye" d="M59 53h9M82 53h9" />
-              <path class="about-cat-nose" d="m74 60 4 4-8 0Z" />
-              <path class="about-cat-mouth" d="M70 68c3 3 6 3 9 0M56 64l-17-4M58 70l-16 5M91 64l17-4M89 70l16 5" />
-              <path class="about-cat-tail" d="M101 132c26 2 34-18 20-31-9-9-1-20 9-13" />
-              <path class="about-cat-paw" d="M58 142h18M82 142h18" />
+
+            <g class="about-pattern-cat about-pattern-cat-caramel">
+              <path class="about-cat-tail" d="M367 222c30 4 42-20 25-35-13-12 0-28 12-18" />
+              <path class="about-cat-body" d="M301 211c4-43 17-68 44-72 30-4 48 24 54 72Z" />
+              <path class="about-cat-ear" d="M315 120 305 82l31 22M380 120l15-35-34 21" />
+              <circle class="about-cat-head" cx="354" cy="133" r="40" />
+              <path class="about-cat-patch" d="M328 128c6-23 23-36 46-33 8 15 9 29 2 42-18 9-35 7-48-9Z" />
+              <path class="about-cat-face" d="M338 132h10M365 132h10M350 143l6 5-10 0ZM344 153c5 4 10 4 15 0M334 145l-17-4M339 152l-16 5M376 145l16-4M372 152l15 5" />
+              <path class="about-cat-stripe" d="M345 106c5-6 12-8 18-7M342 114c6-3 11-3 16-1" />
             </g>
-            <g class="about-sparkles">
-              <path d="m27 84 3 8 8 3-8 3-3 8-3-8-8-3 8-3Z" />
-              <path d="m207 35 2 6 6 2-6 2-2 6-2-6-6-2 6-2Z" />
-              <circle cx="178" cy="58" r="3" />
+
+            <g class="about-pattern-cat about-pattern-cat-mono">
+              <path class="about-cat-tail" d="M97 199c-27 1-35-20-20-32 10-8 4-21-8-14" />
+              <path class="about-cat-body" d="M102 205c-3-31-13-50-32-52-22-2-34 18-38 52Z" />
+              <path class="about-cat-ear" d="m41 139-4-29 22 17M87 139l10-27-24 16" />
+              <circle class="about-cat-head" cx="63" cy="145" r="28" />
+              <path class="about-cat-patch" d="M45 140c5-15 18-23 35-20 5 10 4 20-2 28-13 5-25 3-33-8Z" />
+              <path class="about-cat-face" d="M52 144h8M71 144h8M61 152l4 4-8 0ZM56 160c4 3 8 3 12 0" />
+            </g>
+
+            <g class="about-pattern-doodles">
+              <path d="M154 53h58l14 17-14 17h-38l-13 10 3-11h-10Z" />
+              <path d="M171 70h28M171 79h18" />
+              <path d="m397 58 3 10 10 3-10 3-3 10-3-10-10-3 10-3Z" />
+              <path d="m32 103 2 7 7 2-7 2-2 7-2-7-7-2 7-2Z" />
+              <path d="M146 250c14-10 28-10 42 0M205 253c10-7 20-7 30 0" />
+              <g class="about-paw-prints">
+                <ellipse cx="203" cy="118" rx="8" ry="10" />
+                <circle cx="194" cy="104" r="3.5" />
+                <circle cx="202" cy="100" r="3.5" />
+                <circle cx="211" cy="103" r="3.5" />
+                <ellipse cx="226" cy="145" rx="7" ry="9" />
+                <circle cx="218" cy="133" r="3" />
+                <circle cx="226" cy="130" r="3" />
+                <circle cx="234" cy="133" r="3" />
+              </g>
             </g>
           </svg>
           <div class="settings-card-title">

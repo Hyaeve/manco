@@ -68,13 +68,31 @@ type Engine struct {
 	activeTotal              int
 	activeBySource           map[string]int
 	retryNotifier            func(context.Context, []model.DownloadJob)
+	heavyImageSem            chan struct{}
+	queueCursor              int
 
-	mu      sync.Mutex
-	metaMu  sync.Mutex
-	active  map[int64]context.CancelFunc
-	kick    chan struct{}
-	started bool
+	mu       sync.Mutex
+	metaMu   sync.Mutex
+	detailMu sync.Mutex
+	active   map[int64]context.CancelFunc
+	kick     chan struct{}
+	started  bool
+	details  map[string]*detailCacheEntry
 }
+
+type detailCacheEntry struct {
+	detail  model.Comic
+	err     error
+	expires time.Time
+	done    chan struct{}
+}
+
+const (
+	detailCacheTTL      = 5 * time.Minute
+	queuePageSize       = 64
+	queuePagesPerNotify = 8
+	maxHeavyImageLoads  = 2
+)
 
 // SetConcurrency applies a settings update. New chapters and page requests
 // use the new limits immediately; already running requests finish first.
@@ -152,6 +170,7 @@ func (e *Engine) SetDownloadPolicy(batchSize, intervalMinutes int, convertToSimp
 type Jobs interface {
 	CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error)
 	ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
+	ListQueuedJobsPage(ctx context.Context, offset, limit int) ([]model.DownloadJob, error)
 	DownloadJob(ctx context.Context, id int64) (model.DownloadJob, error)
 	UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error
 	FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error
@@ -196,6 +215,8 @@ func NewEngine(registry *sources.Registry, store Jobs, downloadDir string, maxCh
 		logger:                logger,
 		active:                map[int64]context.CancelFunc{},
 		activeBySource:        map[string]int{},
+		heavyImageSem:         make(chan struct{}, maxHeavyImageLoads),
+		details:               map[string]*detailCacheEntry{},
 		kick:                  make(chan struct{}, 1),
 	}
 }
@@ -384,10 +405,37 @@ func (e *Engine) loop(ctx context.Context) {
 			}
 		}
 
-		jobs, err := e.store.ListQueuedJobs(ctx)
+		if !e.dispatchQueuedJobs(ctx) {
+			return
+		}
+	}
+}
+
+func (e *Engine) dispatchQueuedJobs(ctx context.Context) bool {
+	for page := 0; page < queuePagesPerNotify; page++ {
+		e.mu.Lock()
+		offset := e.queueCursor
+		e.queueCursor += queuePageSize
+		e.mu.Unlock()
+
+		jobs, err := e.store.ListQueuedJobsPage(ctx, offset, queuePageSize)
 		if err != nil {
-			e.logger.Printf("downloader: list queue: %v", err)
+			e.logger.Printf("downloader: list queue page: %v", err)
+			return true
+		}
+		if len(jobs) == 0 {
+			e.mu.Lock()
+			e.queueCursor = 0
+			e.mu.Unlock()
+			if offset == 0 {
+				return true
+			}
 			continue
+		}
+		if len(jobs) < queuePageSize {
+			e.mu.Lock()
+			e.queueCursor = 0
+			e.mu.Unlock()
 		}
 		for _, job := range jobs {
 			job := job
@@ -396,7 +444,7 @@ func (e *Engine) loop(ctx context.Context) {
 			}
 			if ctx.Err() != nil {
 				e.release(job)
-				return
+				return false
 			}
 			go func() {
 				defer func() {
@@ -406,7 +454,14 @@ func (e *Engine) loop(ctx context.Context) {
 				e.runJob(ctx, job)
 			}()
 		}
+		e.mu.Lock()
+		full := e.activeTotal >= e.maxChapterConcurrency
+		e.mu.Unlock()
+		if full {
+			return true
+		}
 	}
+	return true
 }
 
 func (e *Engine) claim(job model.DownloadJob) bool {
@@ -734,25 +789,9 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 				return
 			}
 			defer func() { <-semaphore }()
-			data, materialized, fetchErr := fetchPageImage(pageCtx, client, account, item, job.ComicID, chapter, page)
+			_, fetchErr := downloadPageToFile(e, pageCtx, client, account, item, job.ComicID, chapter, page, cachePath)
 			if fetchErr != nil {
 				results <- fetched{index: index, err: fetchErr}
-				return
-			}
-			processed := data
-			if page.DescrambleParts > 0 && !materialized {
-				processed, fetchErr = Descramble(data, page.DescrambleParts)
-				if fetchErr != nil {
-					results <- fetched{index: index, err: fmt.Errorf("解扰失败: %w", fetchErr)}
-					return
-				}
-			}
-			if len(processed) == 0 {
-				results <- fetched{index: index, err: errors.New("页面为空")}
-				return
-			}
-			if writeErr := writeFileAtomic(cachePath, processed); writeErr != nil {
-				results <- fetched{index: index, err: writeErr}
 				return
 			}
 			results <- fetched{index: index}
@@ -794,21 +833,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		entries = append(entries, pageEntry{name: name, path: path})
 	}
 
-	metadata := model.Comic{
-		SourceID: job.SourceID,
-		ID:       job.ComicID,
-		Title:    job.ComicTitle,
-		Cover:    job.ComicCover,
-	}
-	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
-		metadata = detail
-		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
-		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
-		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
-		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
-	} else {
-		e.logger.Printf("downloader: detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
-	}
+	metadata := e.downloadComicMetadata(ctx, item, account, job)
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
 	if job.ConvertToSimplified {
@@ -862,6 +887,86 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	return nil
 }
 
+func (e *Engine) downloadComicMetadata(ctx context.Context, item source.Source, account source.Account, job model.DownloadJob) model.Comic {
+	metadata := model.Comic{
+		SourceID:    job.SourceID,
+		ID:          job.ComicID,
+		Title:       job.ComicTitle,
+		Cover:       job.ComicCover,
+		Author:      job.ComicAuthor,
+		Description: job.ComicDescription,
+		Tags:        append([]string(nil), job.ComicTags...),
+	}
+	detail, err := e.cachedSourceDetail(ctx, item, account, job.ComicID)
+	if err != nil {
+		e.logger.Printf("downloader: detail %s/%s: %v", job.SourceID, job.ComicID, err)
+		return metadata
+	}
+	detail.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
+	detail.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
+	detail.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
+	detail.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
+	detail.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
+	detail.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
+	if len(detail.Tags) == 0 {
+		detail.Tags = append([]string(nil), metadata.Tags...)
+	}
+	return detail
+}
+
+func (e *Engine) cachedSourceDetail(ctx context.Context, item source.Source, account source.Account, comicID string) (model.Comic, error) {
+	key := item.Info().ID + "\x00" + comicID
+	now := time.Now()
+	e.detailMu.Lock()
+	if len(e.details) > 256 {
+		for cacheKey, cached := range e.details {
+			if cached.done == nil && now.After(cached.expires) {
+				delete(e.details, cacheKey)
+			}
+		}
+	}
+	if cached := e.details[key]; cached != nil {
+		if cached.done != nil {
+			done := cached.done
+			e.detailMu.Unlock()
+			select {
+			case <-done:
+				return cloneComic(cached.detail), cached.err
+			case <-ctx.Done():
+				return model.Comic{}, ctx.Err()
+			}
+		}
+		if now.Before(cached.expires) {
+			detail, err := cloneComic(cached.detail), cached.err
+			e.detailMu.Unlock()
+			return detail, err
+		}
+	}
+	entry := &detailCacheEntry{done: make(chan struct{})}
+	e.details[key] = entry
+	e.detailMu.Unlock()
+
+	detail, err := item.Detail(ctx, account, comicID)
+
+	e.detailMu.Lock()
+	entry.detail = cloneComic(detail)
+	entry.err = err
+	if err != nil {
+		entry.expires = time.Now().Add(30 * time.Second)
+	} else {
+		entry.expires = time.Now().Add(detailCacheTTL)
+	}
+	close(entry.done)
+	entry.done = nil
+	e.detailMu.Unlock()
+	return cloneComic(entry.detail), err
+}
+
+func cloneComic(comic model.Comic) model.Comic {
+	comic.Tags = append([]string(nil), comic.Tags...)
+	return comic
+}
+
 // downloadMergedComic packages the selected chapters into one CBZ. Page names
 // are prefixed by chapter number so readers and archive tools show the exact
 // chapter-then-page order requested by the user.
@@ -911,21 +1016,9 @@ func (e *Engine) downloadMergedComic(ctx context.Context, item source.Source, ac
 		for pageIndex, page := range plan.pages {
 			cachePath := mergedStagingPagePath(tempDir, chapterIndex, pageIndex)
 			if info, statErr := os.Stat(cachePath); statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-				data, materialized, fetchErr := fetchPageImage(ctx, client, account, item, job.ComicID, plan.chapter, page)
+				_, fetchErr := downloadPageToFile(e, ctx, client, account, item, job.ComicID, plan.chapter, page, cachePath)
 				if fetchErr != nil {
 					return fmt.Errorf("章节 %s 第 %d 页下载失败: %w", plan.chapter.Title, pageIndex+1, fetchErr)
-				}
-				if page.DescrambleParts > 0 && !materialized {
-					data, fetchErr = Descramble(data, page.DescrambleParts)
-					if fetchErr != nil {
-						return fmt.Errorf("章节 %s 第 %d 页解扰失败: %w", plan.chapter.Title, pageIndex+1, fetchErr)
-					}
-				}
-				if len(data) == 0 {
-					return fmt.Errorf("章节 %s 第 %d 页为空", plan.chapter.Title, pageIndex+1)
-				}
-				if err := writeFileAtomic(cachePath, data); err != nil {
-					return err
 				}
 				completed++
 				if err := e.store.UpdateDownloadProgress(ctx, job.ID, completed); err != nil {
@@ -943,27 +1036,7 @@ func (e *Engine) downloadMergedComic(ctx context.Context, item source.Source, ac
 		}
 	}
 
-	metadata := model.Comic{
-		SourceID:    job.SourceID,
-		ID:          job.ComicID,
-		Title:       job.ComicTitle,
-		Cover:       job.ComicCover,
-		Author:      job.ComicAuthor,
-		Description: job.ComicDescription,
-		Tags:        append([]string(nil), job.ComicTags...),
-	}
-	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
-		metadata = detail
-		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
-		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
-		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
-		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
-		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
-		metadata.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
-		if len(metadata.Tags) == 0 {
-			metadata.Tags = append([]string(nil), job.ComicTags...)
-		}
-	}
+	metadata := e.downloadComicMetadata(ctx, item, account, job)
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
 	if job.ConvertToSimplified {
@@ -1041,27 +1114,7 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 	if client == nil {
 		client = source.NewHTTPClient()
 	}
-	metadata := model.Comic{
-		SourceID:    job.SourceID,
-		ID:          job.ComicID,
-		Title:       job.ComicTitle,
-		Cover:       job.ComicCover,
-		Author:      job.ComicAuthor,
-		Description: job.ComicDescription,
-		Tags:        append([]string(nil), job.ComicTags...),
-	}
-	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
-		metadata = detail
-		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
-		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
-		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
-		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
-		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
-		metadata.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
-		if len(metadata.Tags) == 0 {
-			metadata.Tags = append([]string(nil), job.ComicTags...)
-		}
-	}
+	metadata := e.downloadComicMetadata(ctx, item, account, job)
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
 	if job.ConvertToSimplified {
@@ -1096,24 +1149,22 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 			if strings.TrimSpace(page.URL) == "" {
 				continue
 			}
-			data, materialized, pageErr := fetchPageImage(ctx, client, account, item, job.ComicID, chapter, page)
+			name := fmt.Sprintf("%03d-%04d.bin", chapterIndex+1, pageIndex+1)
+			path := filepath.Join(tempDir, name)
+			_, pageErr := downloadPageToFile(e, ctx, client, account, item, job.ComicID, chapter, page, path)
 			if pageErr != nil {
 				return fmt.Errorf("章节 %s 第 %d 张插图下载失败: %w", chapter.Title, pageIndex+1, pageErr)
 			}
-			if page.DescrambleParts > 0 && !materialized {
-				data, pageErr = Descramble(data, page.DescrambleParts)
-				if pageErr != nil {
-					return fmt.Errorf("章节 %s 第 %d 张插图解扰失败: %w", chapter.Title, pageIndex+1, pageErr)
-				}
+			extension, extensionErr := imageExtensionFromFile(path, page.URL)
+			if extensionErr != nil {
+				return fmt.Errorf("章节 %s 第 %d 张插图缓存无效: %w", chapter.Title, pageIndex+1, extensionErr)
 			}
-			if len(data) == 0 {
-				return fmt.Errorf("章节 %s 第 %d 张插图为空", chapter.Title, pageIndex+1)
-			}
-			name := fmt.Sprintf("%03d-%04d%s", chapterIndex+1, pageIndex+1, imageExtension(data, page.URL))
-			path := filepath.Join(tempDir, name)
-			if err := writeFileAtomic(path, data); err != nil {
+			renamed := strings.TrimSuffix(path, ".bin") + extension
+			if err := renameFileReplacing(path, renamed); err != nil {
 				return err
 			}
+			path = renamed
+			name = filepath.Base(renamed)
 			epubName := "images/" + name
 			epubImages = append(epubImages, pageEntry{name: epubName, path: path})
 			imageNames[page.URL] = epubName
@@ -1365,16 +1416,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	}
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
-	metadata := model.Comic{SourceID: job.SourceID, ID: job.ComicID, Title: comicTitle, Cover: job.ComicCover}
-	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
-		metadata = detail
-		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
-		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
-		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
-		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
-	} else {
-		e.logger.Printf("downloader: book detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
-	}
+	metadata := e.downloadComicMetadata(ctx, item, account, job)
 	if job.ConvertToSimplified {
 		if isText {
 			text = convertToSimplifiedText(text)
@@ -1474,18 +1516,7 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 	}
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
-	metadata := model.Comic{SourceID: job.SourceID, ID: job.ComicID, Title: comicTitle, Cover: job.ComicCover}
-	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
-		metadata = detail
-		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
-		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
-		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
-		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
-		metadata.Description = source.FirstNonEmpty(detail.Description, metadata.Description)
-		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
-	} else {
-		e.logger.Printf("downloader: other source detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
-	}
+	metadata := e.downloadComicMetadata(ctx, item, account, job)
 	if job.ConvertToSimplified {
 		comicTitle = convertToSimplifiedText(comicTitle)
 		chapterTitle = convertToSimplifiedText(chapterTitle)
@@ -1659,17 +1690,7 @@ func (e *Engine) downloadBookArchive(
 
 	comicTitle := job.ComicTitle
 	chapterTitle := job.ChapterTitle
-	metadata := model.Comic{SourceID: job.SourceID, ID: job.ComicID, Title: comicTitle, Cover: job.ComicCover}
-	if detail, detailErr := item.Detail(ctx, account, job.ComicID); detailErr == nil {
-		metadata = detail
-		metadata.SourceID = source.FirstNonEmpty(detail.SourceID, metadata.SourceID)
-		metadata.ID = source.FirstNonEmpty(detail.ID, metadata.ID)
-		metadata.Title = source.FirstNonEmpty(detail.Title, metadata.Title)
-		metadata.Author = source.FirstNonEmpty(detail.Author, metadata.Author)
-		metadata.Cover = source.FirstNonEmpty(detail.Cover, metadata.Cover)
-	} else {
-		e.logger.Printf("downloader: book archive detail %s/%s: %v", job.SourceID, job.ComicID, detailErr)
-	}
+	metadata := e.downloadComicMetadata(ctx, item, account, job)
 	html := content.HTML
 	if job.ConvertToSimplified {
 		html = convertToSimplifiedText(html)
@@ -1713,24 +1734,21 @@ func (e *Engine) downloadBookArchive(
 		if strings.TrimSpace(page.URL) == "" {
 			continue
 		}
-		data, materialized, fetchErr := fetchPageImage(ctx, client, account, item, job.ComicID, chapter, page)
+		path := filepath.Join(tempDir, fmt.Sprintf("%08d_%04d%04d.bin", 0, 1, index+1))
+		_, fetchErr := downloadPageToFile(e, ctx, client, account, item, job.ComicID, chapter, page, path)
 		if fetchErr != nil {
 			return fmt.Errorf("第 %d 张插图下载失败: %w", index+1, fetchErr)
 		}
-		if page.DescrambleParts > 0 && !materialized {
-			data, fetchErr = Descramble(data, page.DescrambleParts)
-			if fetchErr != nil {
-				return fmt.Errorf("第 %d 张插图解扰失败: %w", index+1, fetchErr)
-			}
+		extension, extensionErr := imageExtensionFromFile(path, page.URL)
+		if extensionErr != nil {
+			return fmt.Errorf("第 %d 张插图缓存无效: %w", index+1, extensionErr)
 		}
-		if len(data) == 0 {
-			return fmt.Errorf("第 %d 张插图为空", index+1)
-		}
-		name := chapterArchivePageName(index+1, imageExtension(data, page.URL))
-		path := filepath.Join(tempDir, name)
-		if err := writeFileAtomic(path, data); err != nil {
+		name := chapterArchivePageName(index+1, extension)
+		renamed := filepath.Join(tempDir, name)
+		if err := renameFileReplacing(path, renamed); err != nil {
 			return err
 		}
+		path = renamed
 		epubName := "images/" + name
 		epubImages = append(epubImages, pageEntry{name: epubName, path: path})
 		imageNames[page.URL] = epubName
@@ -2899,6 +2917,163 @@ func fetchPageImage(ctx context.Context, client *http.Client, account source.Acc
 	}
 	data, err := fetchImage(ctx, client, account, page)
 	return data, false, err
+}
+
+const maxPageFileBytes = 64 << 20
+
+// downloadPageToFile keeps normal image downloads off the Go heap. Plugin
+// artifacts and plain HTTP responses are streamed to the staging file; only
+// sources that need in-memory descrambling fall back to a byte slice.
+func downloadPageToFile(engine *Engine, ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page, targetPath string) (bool, error) {
+	_, imageSource := item.(source.ImageSource)
+	if fileSource, ok := item.(source.PageFileSource); ok && (imageSource || page.DescrambleParts <= 1) {
+		reader, _, _, err := fileSource.PageFile(ctx, account, comicID, chapter, page)
+		if err == nil {
+			copyErr := writeReaderAtomic(targetPath, reader)
+			_ = reader.Close()
+			if copyErr == nil {
+				return true, nil
+			}
+			err = copyErr
+		}
+		if !imageSource {
+			return false, err
+		}
+	}
+	if !imageSource && page.DescrambleParts <= 1 {
+		return false, writeHTTPImageAtomic(ctx, client, account, page, targetPath)
+	}
+
+	data, materialized, err := fetchPageImage(ctx, client, account, item, comicID, chapter, page)
+	if err != nil {
+		return materialized, err
+	}
+	if page.DescrambleParts > 0 && !materialized {
+		data, err = descramblePage(ctx, engine, data, page.DescrambleParts)
+		if err != nil {
+			return materialized, fmt.Errorf("解扰失败: %w", err)
+		}
+	}
+	if len(data) == 0 {
+		return materialized, errors.New("页面为空")
+	}
+	return materialized, writeFileAtomic(targetPath, data)
+}
+
+func descramblePage(ctx context.Context, engine *Engine, data []byte, parts int) ([]byte, error) {
+	select {
+	case engine.heavyImageSem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-engine.heavyImageSem }()
+	return Descramble(data, parts)
+}
+
+func writeHTTPImageAtomic(ctx context.Context, client *http.Client, account source.Account, page model.Page, targetPath string) error {
+	candidates := append([]string{page.URL}, page.Alternatives...)
+	userAgents := make([]string, 0, 2)
+	if ua := strings.TrimSpace(account.UserAgent); ua != "" {
+		userAgents = append(userAgents, ua)
+	}
+	if len(userAgents) == 0 || userAgents[0] != source.DefaultUserAgent {
+		userAgents = append(userAgents, source.DefaultUserAgent)
+	}
+	var lastErr error
+	for _, address := range candidates {
+		if strings.TrimSpace(address) == "" {
+			continue
+		}
+		for _, userAgent := range userAgents {
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			request.Header.Set("User-Agent", userAgent)
+			request.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+			request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.6")
+			if page.Referer != "" {
+				request.Header.Set("Referer", page.Referer)
+			}
+			for key, value := range page.Headers {
+				request.Header.Set(key, value)
+			}
+			for key, value := range source.HeaderCookie(account.Cookie) {
+				request.Header.Set(key, value)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if response.StatusCode < 200 || response.StatusCode >= 300 {
+				lastErr = fmt.Errorf("HTTP %d", response.StatusCode)
+				_ = response.Body.Close()
+				continue
+			}
+			if response.ContentLength > maxPageFileBytes {
+				lastErr = fmt.Errorf("图片超过 %d MiB 限制", maxPageFileBytes>>20)
+				_ = response.Body.Close()
+				continue
+			}
+			copyErr := writeReaderAtomic(targetPath, response.Body)
+			_ = response.Body.Close()
+			if copyErr == nil {
+				return nil
+			}
+			lastErr = copyErr
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("没有可用的图片地址")
+	}
+	return lastErr
+}
+
+func writeReaderAtomic(path string, reader io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	temp := path + ".part"
+	file, err := os.Create(temp)
+	if err != nil {
+		return err
+	}
+	written, copyErr := io.Copy(file, io.LimitReader(reader, maxPageFileBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil {
+		_ = os.Remove(temp)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(temp)
+		return closeErr
+	}
+	if written == 0 {
+		_ = os.Remove(temp)
+		return errors.New("页面为空")
+	}
+	if written > maxPageFileBytes {
+		_ = os.Remove(temp)
+		return fmt.Errorf("图片超过 %d MiB 限制", maxPageFileBytes>>20)
+	}
+	return renameFileReplacing(temp, path)
+}
+
+func renameFileReplacing(source, target string) error {
+	if err := os.Rename(source, target); err == nil {
+		return nil
+	}
+	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(source)
+		return err
+	}
+	if err := os.Rename(source, target); err != nil {
+		_ = os.Remove(source)
+		return err
+	}
+	return nil
 }
 
 // PreviewPageImage materializes one source page for the authenticated reader

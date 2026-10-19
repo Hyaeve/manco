@@ -1383,6 +1383,35 @@ func (s *Store) ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
 	return jobs, rows.Err()
 }
 
+// ListQueuedJobsPage returns one bounded page of queued work. The downloader
+// advances through pages instead of materializing the entire queue on every
+// scheduler kick, which keeps memory flat for very large backlogs.
+func (s *Store) ListQueuedJobsPage(ctx context.Context, offset, limit int) ([]model.DownloadJob, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 1 {
+		limit = 64
+	}
+	rows, err := s.reader().QueryContext(ctx, jobSelect+`
+		WHERE status = 'queued'
+		ORDER BY queue_priority DESC, id ASC
+		LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	jobs := make([]model.DownloadJob, 0, limit)
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
 func (s *Store) ListRunningJobs(ctx context.Context) ([]model.DownloadJob, error) {
 	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE status = 'running' ORDER BY id ASC`)
 	if err != nil {

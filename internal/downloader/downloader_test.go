@@ -42,6 +42,29 @@ func TestImageExtension(t *testing.T) {
 	}
 }
 
+func TestWriteHTTPImageAtomicStreamsResponseToFile(t *testing.T) {
+	payload := bytes.Repeat([]byte("image-data-"), 1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+	target := filepath.Join(t.TempDir(), "page.bin")
+	if err := writeHTTPImageAtomic(context.Background(), server.Client(), source.Account{}, model.Page{URL: server.URL}, target); err != nil {
+		t.Fatalf("writeHTTPImageAtomic: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("streamed file length = %d, want %d", len(got), len(payload))
+	}
+	if _, err := os.Stat(target + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("temporary file still exists: %v", err)
+	}
+}
+
 func TestWriteZip(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "001.jpg")

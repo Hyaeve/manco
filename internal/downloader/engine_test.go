@@ -58,6 +58,28 @@ func (m *memoryJobs) ListQueuedJobs(_ context.Context) ([]model.DownloadJob, err
 	return queued, nil
 }
 
+func (m *memoryJobs) ListQueuedJobsPage(_ context.Context, offset, limit int) ([]model.DownloadJob, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	queued := make([]model.DownloadJob, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		if job.Status == "queued" {
+			queued = append(queued, job)
+		}
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 1 || offset >= len(queued) {
+		return nil, nil
+	}
+	end := offset + limit
+	if end > len(queued) {
+		end = len(queued)
+	}
+	return append([]model.DownloadJob(nil), queued[offset:end]...), nil
+}
+
 func (m *memoryJobs) DownloadJob(_ context.Context, id int64) (model.DownloadJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1766,6 +1788,59 @@ func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("retry notification was not emitted")
+	}
+}
+
+type detailCountingSource struct {
+	*staticSource
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *detailCountingSource) Detail(ctx context.Context, account source.Account, comicID string) (model.Comic, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	time.Sleep(30 * time.Millisecond)
+	return s.staticSource.Detail(ctx, account, comicID)
+}
+
+func (s *detailCountingSource) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func TestCachedSourceDetailCoalescesConcurrentChapterDownloads(t *testing.T) {
+	item := &detailCountingSource{staticSource: &staticSource{detail: model.Comic{
+		SourceID:    "stub",
+		ID:          "1",
+		Title:       "缓存作品",
+		Author:      "测试作者",
+		Description: "测试简介",
+		Tags:        []string{"测试"},
+	}}}
+	engine := NewEngine(sources.NewRegistry(nil, nil, nil), &memoryJobs{}, t.TempDir(), 4, 2, log.New(io.Discard, "", 0))
+	job := model.DownloadJob{
+		SourceID:     "stub",
+		ComicID:      "1",
+		ComicTitle:   "缓存作品",
+		ChapterTitle: "第1话",
+	}
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			metadata := engine.downloadComicMetadata(context.Background(), item, source.Account{}, job)
+			if metadata.Description != "测试简介" || len(metadata.Tags) != 1 {
+				t.Errorf("cached metadata = %#v", metadata)
+			}
+		}()
+	}
+	wait.Wait()
+	if calls := item.callCount(); calls != 1 {
+		t.Fatalf("detail calls = %d, want one shared lookup", calls)
 	}
 }
 

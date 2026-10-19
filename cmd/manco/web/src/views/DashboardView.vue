@@ -635,18 +635,20 @@ function formatNextRun(value) {
   inset: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: 138px minmax(0, 1fr);
+  grid-template-columns: clamp(138px, 13vw, 168px) minmax(0, 1fr);
   gap: 20px;
   height: 100%;
   min-height: 0;
   align-items: center;
-  padding: 18px 26px;
+  padding: 18px 26px 22px;
   will-change: opacity, filter, transform;
 }
 
 .overview-hero-poster {
   position: relative;
-  width: 138px;
+  align-self: end;
+  justify-self: start;
+  width: clamp(138px, 13vw, 168px);
   aspect-ratio: 2 / 3;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.82);
@@ -664,14 +666,38 @@ function formatNextRun(value) {
 }
 
 .overview-hero-poster.blurred img {
-  filter: blur(9px);
-  transform: scale(1.1);
+  filter: blur(var(--manco-cover-blur, 6px)) saturate(0.94);
+  transform: scale(var(--manco-cover-blur-scale, 1.03));
 }
 
 .overview-hero-poster.blurred:hover img,
 .overview-hero-poster.blurred:focus-within img {
   filter: blur(0);
-  transform: scale(1.04);
+  transform: scale(var(--manco-cover-hover-scale, 1.08));
+}
+
+.overview-hero-poster.blurred::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.1) 0 1px,
+      rgba(255, 255, 255, 0) 1px 4px
+    ),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(87, 76, 60, 0.12));
+  backdrop-filter: blur(1.5px) saturate(0.84);
+  -webkit-backdrop-filter: blur(1.5px) saturate(0.84);
+  content: '';
+  pointer-events: none;
+  transition: opacity 0.32s ease;
+}
+
+.overview-hero-poster.blurred:hover::after,
+.overview-hero-poster.blurred:focus-within::after {
+  opacity: 0;
 }
 
 .overview-hero-copy {
@@ -1177,14 +1203,14 @@ function formatNextRun(value) {
 }
 
 .overview-upcoming-cover.blurred img {
-  filter: blur(9px);
-  transform: scale(1.1);
+  filter: blur(var(--manco-cover-blur, 6px)) saturate(0.94);
+  transform: scale(var(--manco-cover-blur-scale, 1.03));
 }
 
 .overview-upcoming-cover.blurred:hover img,
 .overview-upcoming-card:focus-visible .overview-upcoming-cover.blurred img {
   filter: blur(0);
-  transform: scale(1.04);
+  transform: scale(var(--manco-cover-hover-scale, 1.08));
 }
 
 .overview-upcoming-cron {
@@ -1265,10 +1291,11 @@ function formatNextRun(value) {
   .overview-hero-content {
     grid-template-columns: 92px minmax(0, 1fr);
     gap: 14px;
-    padding: 20px 16px 48px;
+    padding: 20px 16px 22px;
   }
 
   .overview-hero-poster {
+    align-self: end;
     width: 92px;
   }
 
@@ -1304,7 +1331,7 @@ function formatNextRun(value) {
 
   .overview-hero-dots {
     right: 14px;
-    bottom: 13px;
+    bottom: 18px;
   }
 
   .overview-source-grid {
