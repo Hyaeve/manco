@@ -146,6 +146,7 @@ func (s *Server) BotSubscriptionVisual(ctx context.Context, sourceID, comicID st
 		CoverURL:  item.Cover,
 		CoverFile: s.localCoverFileForSubscription(item),
 		CoverBlur: item.CoverBlur,
+		InPlan:    item.ArchivedAt == nil && !item.Temporary,
 	}, nil
 }
 
@@ -236,21 +237,53 @@ func (s *Server) BotSubscriptions(ctx context.Context) ([]telegram.BotSubscripti
 	}
 	result := make([]telegram.BotSubscription, 0, len(items))
 	for _, item := range items {
-		name := item.SourceID
-		if adapter, err := s.registry.Get(item.SourceID); err == nil {
-			name = adapter.Info().Name
-		}
-		result = append(result, telegram.BotSubscription{
-			ID:          item.ID,
-			Source:      name,
-			Title:       item.Title,
-			Enabled:     item.Enabled,
-			CronExpr:    item.CronExpr,
-			DownloadDir: item.DownloadDir,
-			ParentDir:   downloadParentDirName(item.DownloadDir),
-		})
+		result = append(result, s.botSubscriptionBase(item))
 	}
 	return result, nil
+}
+
+// BotSubscriptionDetail enriches one subscription only when an interactive
+// delete card is opened, keeping list and check commands lightweight.
+func (s *Server) BotSubscriptionDetail(ctx context.Context, subscriptionID int64) (telegram.BotSubscription, error) {
+	item, err := s.store.Subscription(ctx, subscriptionID)
+	if err != nil {
+		return telegram.BotSubscription{}, err
+	}
+	result := s.botSubscriptionBase(item)
+	visual := s.subscriptionWithCovers(ctx, item)
+	author, description := s.subscriptionLocalMetadata(visual)
+	kind := ""
+	if adapter, err := s.registry.Get(visual.SourceID); err == nil {
+		kind = source.KindOf(adapter.Info())
+	}
+	if strings.TrimSpace(description) == "" && kind != "" && s.discover != nil {
+		if cached, ok := s.discover.Get(visual.SourceID, kind, visual.ComicID); ok {
+			description = cached.Comic.Description
+		}
+	}
+	result.Title = visual.Title
+	result.Author = source.FirstNonEmpty(visual.Author, author)
+	result.Description = description
+	result.CoverURL = visual.Cover
+	result.CoverFile = s.localCoverFileForSubscription(visual)
+	result.CoverBlur = visual.CoverBlur
+	return result, nil
+}
+
+func (s *Server) botSubscriptionBase(item model.Subscription) telegram.BotSubscription {
+	name := item.SourceID
+	if adapter, err := s.registry.Get(item.SourceID); err == nil {
+		name = adapter.Info().Name
+	}
+	return telegram.BotSubscription{
+		ID:          item.ID,
+		Source:      name,
+		Title:       item.Title,
+		Enabled:     item.Enabled,
+		CronExpr:    item.CronExpr,
+		DownloadDir: item.DownloadDir,
+		ParentDir:   downloadParentDirName(item.DownloadDir),
+	}
 }
 
 func (s *Server) BotDownloading(ctx context.Context) (telegram.BotDownloadingSnapshot, error) {

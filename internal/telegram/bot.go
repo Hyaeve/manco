@@ -33,6 +33,7 @@ type App interface {
 	BotSubscriptionVisual(ctx context.Context, sourceID, comicID string) (BotSubscriptionVisual, error)
 	BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, int, error)
 	BotSubscriptions(ctx context.Context) ([]BotSubscription, error)
+	BotSubscriptionDetail(ctx context.Context, subscriptionID int64) (BotSubscription, error)
 	BotDownloading(ctx context.Context) (BotDownloadingSnapshot, error)
 	BotCheck(ctx context.Context, subscriptionID int64) (BotCheckResult, error)
 	BotArchive(ctx context.Context, subscriptionID int64) error
@@ -57,6 +58,11 @@ type BotSubscription struct {
 	ID          int64
 	Source      string
 	Title       string
+	Author      string
+	Description string
+	CoverURL    string
+	CoverFile   string
+	CoverBlur   bool
 	Enabled     bool
 	CronExpr    string
 	DownloadDir string
@@ -92,6 +98,7 @@ type BotSubscriptionVisual struct {
 	CoverURL  string
 	CoverFile string
 	CoverBlur bool
+	InPlan    bool
 }
 
 // BotCheckResult summarises one subscription check.
@@ -174,12 +181,13 @@ type session struct {
 	// 搜索结果的 message_id：订阅成功后要把那条消息删掉。
 	resultsMessageID int64
 	// 作品详情的 message_id：返回时删掉它，再重新发一份搜索结果。
-	detailMessageID int64
-	detailPhoto     bool
-	detailIndex     int
-	browse          *browseSession
-	globalSearch    *globalSearchPager
-	search          *sourceSearchPager
+	detailMessageID    int64
+	detailPhoto        bool
+	detailIndex        int
+	browse             *browseSession
+	globalSearch       *globalSearchPager
+	search             *sourceSearchPager
+	subscriptionDelete *subscriptionDeletePager
 }
 
 type browseSession struct {
@@ -207,6 +215,12 @@ type sourceSearchPager struct {
 	SourcePage int
 	HasMore    bool
 	Pool       []resultEntry
+}
+
+type subscriptionDeletePager struct {
+	Query string
+	Items []BotSubscription
+	Index int
 }
 
 type globalSearchPage struct {

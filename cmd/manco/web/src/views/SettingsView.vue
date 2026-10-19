@@ -223,7 +223,12 @@ async function saveArchive() {
     const days = Math.max(0, Number(form.staleDays) || 0)
     form.staleDays = days
     await api.saveSettings({ staleDays: { '*': days } })
-    notify(days === 0 ? '全局订阅归档已停用' : `全局订阅归档已设置为 ${days} 天`, 'success')
+    notify(
+      days === 0
+        ? '未完结作品的自动归档已停用，已完结作品仍按 15 天规则归档'
+        : `未完结作品将在连续 ${days} 天无新章节后自动归档`,
+      'success',
+    )
   } catch (err) {
     notify(err.message, 'error')
   } finally {
@@ -450,7 +455,9 @@ async function checkUpdate() {
               自动保存
             </span>
           </div>
-          <p class="muted small settings-card-help">超期未更新后关闭订阅，关闭满 15 天后自动归档。</p>
+          <p class="muted small settings-card-help">
+            已完结作品连续 15 天无新章节自动归档；其他作品超过下方天数无新章节自动归档，填 0 仅停用未完结作品的自动归档。归档前 3 天会在当天 12:00 发送预警。
+          </p>
           <div class="archive-number-row settings-pause-row">
             <span>超过</span>
             <input
@@ -462,7 +469,7 @@ async function checkUpdate() {
               step="1"
               @input="scheduleArchiveSave"
             />
-            <span>天未更新</span>
+            <span>天未检测到新章节</span>
           </div>
           <div id="settings-convert" class="settings-feature-group">
             <div class="inline settings-feature-heading">

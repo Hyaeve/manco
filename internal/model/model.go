@@ -54,10 +54,12 @@ type Subscription struct {
 	DisabledAt          *time.Time `json:"disabledAt,omitempty"`
 	// Temporary 表示这条订阅是「点了一次下载」临时生成的卡片：任务跑完就
 	// 自动移除卡片，已下载的文件保留。
-	Temporary     bool       `json:"temporary,omitempty"`
-	CompletedAt   *time.Time `json:"completedAt,omitempty"`
-	ArchivedAt    *time.Time `json:"archivedAt,omitempty"`
-	ArchiveReason string     `json:"archiveReason,omitempty"`
+	Temporary          bool       `json:"temporary,omitempty"`
+	CompletedAt        *time.Time `json:"completedAt,omitempty"`
+	ArchivedAt         *time.Time `json:"archivedAt,omitempty"`
+	ArchiveReason      string     `json:"archiveReason,omitempty"`
+	ArchiveWarningAt   *time.Time `json:"archiveWarningAt,omitempty"`
+	ArchiveWarningDays int        `json:"archiveWarningDays,omitempty"`
 }
 
 type DownloadJob struct {

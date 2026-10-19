@@ -6132,6 +6132,10 @@ svg.source-editor-icon {
   min-width: 0;
 }
 
+.source-name-readonly {
+  cursor: default;
+}
+
 .source-proxy-inline {
   justify-self: start;
   min-height: 38px;
@@ -6146,7 +6150,7 @@ svg.source-editor-icon {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 12px;
   min-width: 0;
 }
 

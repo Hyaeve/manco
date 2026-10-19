@@ -37,6 +37,8 @@ func TestSplitCommand(t *testing.T) {
 		{"/view 包子", "/view", "包子"},
 		{"搜索", "搜索", ""},
 		{"查看订阅 国漫", "查看订阅", "国漫"},
+		{"删除订阅 夏日深处", "删除订阅", "夏日深处"},
+		{"删除 夏日深处", "删除", "夏日深处"},
 		{"查看榜单 拷贝", "查看榜单", "拷贝"},
 	}
 	for _, item := range cases {
@@ -370,6 +372,254 @@ func TestParseSubscriptionAction(t *testing.T) {
 		if action != item.action || title != item.title || ok != item.ok {
 			t.Fatalf("parseSubscriptionAction(%q) = %q, %q, %v; want %q, %q, %v", item.input, action, title, ok, item.action, item.title, item.ok)
 		}
+	}
+}
+
+func TestSubscriptionDeleteMatchesByPrefixAndMinimumLength(t *testing.T) {
+	items := []BotSubscription{
+		{ID: 1, Title: "夏日深处", Source: "包子漫画"},
+		{ID: 2, Title: "夏日深处 1-86话", Source: "禁漫天堂"},
+		{ID: 3, Title: "海贼王", Source: "哔咔漫画"},
+		{ID: 4, Title: "One Punch Man", Source: "CopyManga"},
+		{ID: 5, Title: "One", Source: "OtherSource"},
+	}
+	for query, wantIDs := range map[string][]int64{
+		"夏日深处":      {1, 2},
+		"夏日":        nil,
+		"夏日深":       nil,
+		"海贼王":       {3},
+		"海贼":        nil,
+		"one punch": {4},
+		"one":       {5},
+		"":          {1, 2, 3, 4, 5},
+	} {
+		matches := subscriptionDeleteMatches(items, query)
+		gotIDs := make([]int64, 0, len(matches))
+		for _, item := range matches {
+			gotIDs = append(gotIDs, item.ID)
+		}
+		if fmt.Sprint(gotIDs) != fmt.Sprint(wantIDs) {
+			t.Fatalf("subscriptionDeleteMatches(%q) ids = %v, want %v", query, gotIDs, wantIDs)
+		}
+	}
+}
+
+func TestRenderSubscriptionDeleteDetailAndKeyboard(t *testing.T) {
+	item := BotSubscription{
+		Title:       "夏日深处 1-86话",
+		Source:      "包子漫画",
+		Author:      "测试作者",
+		Description: "《夏日深处》全集,作品讲述了海边小镇的夏日故事。",
+	}
+	text := renderSubscriptionDeleteDetail(item, 0, 2)
+	for _, want := range []string{
+		"<b>夏日深处 1-86话</b>（包子）",
+		"作者：测试作者",
+		"匹配结果：第 1/2 个",
+		"简介：作品讲述了海边小镇的夏日故事。",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("delete detail missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "《夏日深处》全集") {
+		t.Fatalf("delete detail retained source summary prefix:\n%s", text)
+	}
+	keyboard := subscriptionDeleteCardKeyboard("s1", 2).(map[string]any)
+	rows := keyboard["inline_keyboard"].([][]map[string]string)
+	if len(rows) != 2 {
+		t.Fatalf("delete keyboard rows = %d, want 2", len(rows))
+	}
+	if rows[0][0]["text"] != "取消" || rows[0][1]["text"] != "删除订阅" {
+		t.Fatalf("delete action row = %+v", rows[0])
+	}
+	if rows[1][0]["text"] != "上一个" || rows[1][1]["text"] != "下一个" {
+		t.Fatalf("delete navigation row = %+v", rows[1])
+	}
+	if rows[1][0]["callback_data"] != "subdel:prev:s1" || rows[1][1]["callback_data"] != "subdel:next:s1" {
+		t.Fatalf("delete navigation callbacks = %+v", rows[1])
+	}
+}
+
+type deleteSubscriptionTestApp struct {
+	App
+	items   []BotSubscription
+	details map[int64]BotSubscription
+	deleted []int64
+}
+
+func (a *deleteSubscriptionTestApp) BotSubscriptions(context.Context) ([]BotSubscription, error) {
+	return append([]BotSubscription(nil), a.items...), nil
+}
+
+func (a *deleteSubscriptionTestApp) BotSubscriptionDetail(_ context.Context, id int64) (BotSubscription, error) {
+	if item, ok := a.details[id]; ok {
+		return item, nil
+	}
+	for _, item := range a.items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return BotSubscription{}, errors.New("订阅不存在")
+}
+
+func (a *deleteSubscriptionTestApp) BotDelete(_ context.Context, id int64) error {
+	a.deleted = append(a.deleted, id)
+	return nil
+}
+
+func TestReplyDeleteSubscriptionsShowsDetailsAndDeletes(t *testing.T) {
+	app := &deleteSubscriptionTestApp{
+		items: []BotSubscription{
+			{ID: 101, Title: "夏日深处", Source: "包子漫画"},
+			{ID: 102, Title: "夏日深处外传", Source: "禁漫天堂"},
+		},
+		details: map[int64]BotSubscription{
+			101: {
+				ID:          101,
+				Title:       "夏日深处",
+				Source:      "包子漫画",
+				Author:      "测试作者",
+				Description: "作品讲述了夏日小镇的故事。",
+			},
+		},
+	}
+	var payload map[string]any
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.SetApp(app)
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/sendMessage") {
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode telegram payload: %v", err)
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":88}}`)),
+		}, nil
+	})}
+
+	service.replyDeleteSubscriptions(context.Background(), 1, "夏日深处")
+	text, _ := payload["text"].(string)
+	for _, want := range []string{"<b>夏日深处</b>（包子）", "作者：测试作者", "简介：作品讲述了夏日小镇的故事。"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("delete confirmation missing %q:\n%s", want, text)
+		}
+	}
+	keyboard, ok := payload["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("reply_markup = %#v", payload["reply_markup"])
+	}
+	rows := keyboard["inline_keyboard"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("delete keyboard rows = %d, want 2", len(rows))
+	}
+
+	var sessionID string
+	service.mu.RLock()
+	for id, current := range service.sessions {
+		if current.ChatID == 1 && current.subscriptionDelete != nil {
+			sessionID = id
+			break
+		}
+	}
+	service.mu.RUnlock()
+	if sessionID == "" {
+		t.Fatal("delete subscription session not created")
+	}
+	service.handleSubscriptionDeleteCallback(
+		context.Background(),
+		1,
+		"1",
+		88,
+		"subdel:delete:"+sessionID,
+	)
+	if fmt.Sprint(app.deleted) != "[101]" {
+		t.Fatalf("deleted subscriptions = %v, want [101]", app.deleted)
+	}
+	if service.session(1, sessionID) != nil {
+		t.Fatal("delete subscription session was not removed")
+	}
+}
+
+func TestReplyDeleteSubscriptionsRejectsShortNamePrefix(t *testing.T) {
+	app := &deleteSubscriptionTestApp{
+		items: []BotSubscription{
+			{ID: 101, Title: "夏日深处", Source: "包子漫画"},
+		},
+	}
+	var text string
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.SetApp(app)
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err == nil {
+			text, _ = payload["text"].(string)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":89}}`)),
+		}, nil
+	})}
+	service.replyDeleteSubscriptions(context.Background(), 1, "夏日深")
+	if text != "没有相关作品的订阅计划。" {
+		t.Fatalf("short query response = %q", text)
+	}
+}
+
+type existingPlanTestApp struct {
+	App
+	visual        BotSubscriptionVisual
+	subscribeCall int
+}
+
+func (a *existingPlanTestApp) BotSubscriptionVisual(context.Context, string, string) (BotSubscriptionVisual, error) {
+	return a.visual, nil
+}
+
+func (a *existingPlanTestApp) BotSubscribe(context.Context, string, string) (model.Subscription, int, error) {
+	a.subscribeCall++
+	return model.Subscription{}, 0, nil
+}
+
+func TestReplySubscribeRejectsExistingPlan(t *testing.T) {
+	app := &existingPlanTestApp{
+		visual: BotSubscriptionVisual{
+			Title:  "夏日深处",
+			InPlan: true,
+		},
+	}
+	var text string
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.SetApp(app)
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err == nil {
+			text, _ = payload["text"].(string)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":90}}`)),
+		}, nil
+	})}
+	sessionID := service.allocateSession(1, &session{
+		results: []resultEntry{
+			{SourceID: "bao", ComicID: "42", Title: "夏日深处"},
+		},
+	})
+	service.replySubscribe(context.Background(), 1, "1", sessionID, 0, 0)
+	if text != "<b>《夏日深处》</b>已在订阅计划中。" {
+		t.Fatalf("existing subscription response = %q", text)
+	}
+	if app.subscribeCall != 0 {
+		t.Fatalf("BotSubscribe called %d times for existing subscription", app.subscribeCall)
 	}
 }
 

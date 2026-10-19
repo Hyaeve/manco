@@ -38,6 +38,8 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 		s.sendMessage(ctx, chat, helpText(), nil)
 	case "/subscriptions", "订阅", "查看订阅", "subscriptions":
 		s.replySubscriptions(ctx, chat, argument)
+	case "/delete", "删除订阅", "delete":
+		s.replyDeleteSubscriptions(ctx, chatID, argument)
 	case "/check", "检查全部", "检查", "check":
 		go s.replyCheck(ctx, chat, argument)
 	case "/downloading", "下载中", "正在下载", "downloading":
@@ -58,6 +60,10 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 			return
 		}
 		if action, title, ok := parseSubscriptionAction(text); ok {
+			if action == "delete" {
+				s.replyDeleteSubscriptions(ctx, chatID, title)
+				return
+			}
 			s.replySubscriptionAction(ctx, chat, action, title)
 			return
 		}
@@ -155,12 +161,14 @@ func helpText() string {
 		"<b>Manco 指令</b>",
 		"/start 开始",
 		"/subscriptions [下载父目录] 查看全部订阅或指定父目录",
+		"删除订阅 [作品名] 打开订阅删除确认",
 		"/check [作品名或下载父目录] 检查全部、目录或单项",
 		"/downloading 查看正在下载与暂停状态",
 		"/view [内容源] 查看榜单",
 		"/sources [漫画源|书籍源|视频源] 查看全部或指定类型内容源",
 		"/sh 关键词 全部来源分类型搜索",
 		"查看订阅 [下载父目录]",
+		"删除订阅 作品名（名称至少输入前四个字）",
 		"查看包子榜单 / 查看包子漫画榜单",
 		"搜索 关键词 全局搜索",
 		"漫画搜索 关键词",
@@ -175,7 +183,7 @@ func helpText() string {
 		"禁用 作品名",
 		"全量 作品名",
 		"归档 作品名",
-		"删除 作品名",
+		"删除 作品名（打开删除确认）",
 	}, "\n")
 }
 
@@ -475,6 +483,170 @@ func checkTargetDirectory(items []BotSubscription, query string) string {
 		return parent
 	}
 	return query
+}
+
+func normalizeSubscriptionSearch(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(value), ""))
+}
+
+func subscriptionDeleteTitleMatches(title, query string) bool {
+	title = normalizeSubscriptionSearch(title)
+	query = normalizeSubscriptionSearch(query)
+	if query == "" {
+		return false
+	}
+	titleRunes := []rune(title)
+	queryRunes := []rune(query)
+	required := 4
+	if len(titleRunes) < required {
+		required = len(titleRunes)
+	}
+	if required == 0 || len(queryRunes) < required {
+		return false
+	}
+	return strings.HasPrefix(title, query)
+}
+
+func subscriptionDeleteMatches(items []BotSubscription, query string) []BotSubscription {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return append([]BotSubscription(nil), items...)
+	}
+	matches := make([]BotSubscription, 0, len(items))
+	for _, item := range items {
+		if subscriptionDeleteTitleMatches(item.Title, query) {
+			matches = append(matches, item)
+		}
+	}
+	return matches
+}
+
+func renderSubscriptionDeleteDetail(item BotSubscription, index, total int) string {
+	lines := []string{
+		fmt.Sprintf(
+			"<b>%s</b>（%s）",
+			html.EscapeString(item.Title),
+			html.EscapeString(shortSourceName(fallback(item.Source, "未知"))),
+		),
+		"作者：" + html.EscapeString(fallback(item.Author, "未知作者")),
+	}
+	if total > 1 {
+		lines = append(lines, fmt.Sprintf("匹配结果：第 %d/%d 个", index+1, total))
+	}
+	summary := cleanComicSummary(item.Title, item.Description)
+	lines = append(lines, "", "简介："+html.EscapeString(fallback(truncate(summary, 240), "暂无简介")))
+	return strings.Join(lines, "\n")
+}
+
+func subscriptionDeleteCardKeyboard(sessionID string, total int) any {
+	rows := [][]map[string]string{
+		{
+			{"text": "取消", "callback_data": fmt.Sprintf("subdel:cancel:%s", sessionID)},
+			{"text": "删除订阅", "callback_data": fmt.Sprintf("subdel:delete:%s", sessionID)},
+		},
+	}
+	if total > 1 {
+		rows = append(rows, []map[string]string{
+			{"text": "上一个", "callback_data": fmt.Sprintf("subdel:prev:%s", sessionID)},
+			{"text": "下一个", "callback_data": fmt.Sprintf("subdel:next:%s", sessionID)},
+		})
+	}
+	return map[string]any{"inline_keyboard": rows}
+}
+
+func (s *Service) replyDeleteSubscriptions(ctx context.Context, chatID int64, query string) {
+	chat := strconv.FormatInt(chatID, 10)
+	items, err := s.app.BotSubscriptions(ctx)
+	if err != nil {
+		s.sendMessage(ctx, chat, "读取订阅清单失败："+err.Error(), nil)
+		return
+	}
+	matches := subscriptionDeleteMatches(items, query)
+	if len(matches) == 0 {
+		s.sendMessage(ctx, chat, "没有相关作品的订阅计划。", nil)
+		return
+	}
+	sessionID := s.allocateSession(chatID, &session{
+		subscriptionDelete: &subscriptionDeletePager{
+			Query: strings.TrimSpace(query),
+			Items: matches,
+			Index: 0,
+		},
+	})
+	if s.sendSubscriptionDeleteCard(ctx, chat, sessionID, 0) == 0 {
+		s.deleteSession(chatID, sessionID)
+		s.sendMessage(ctx, chat, "删除确认消息发送失败，请稍后重试。", nil)
+	}
+}
+
+func (s *Service) sendSubscriptionDeleteCard(ctx context.Context, chat, sessionID string, index int) int64 {
+	s.mu.RLock()
+	current := s.sessions[sessionID]
+	if current == nil || current.subscriptionDelete == nil {
+		s.mu.RUnlock()
+		return 0
+	}
+	chatID := current.ChatID
+	pager := *current.subscriptionDelete
+	pager.Items = append([]BotSubscription(nil), current.subscriptionDelete.Items...)
+	s.mu.RUnlock()
+	if len(pager.Items) == 0 {
+		return 0
+	}
+	index = (index%len(pager.Items) + len(pager.Items)) % len(pager.Items)
+	item := pager.Items[index]
+	if detailed, err := s.app.BotSubscriptionDetail(ctx, item.ID); err == nil {
+		item = detailed
+	} else {
+		s.logger.Printf("telegram: subscription delete detail %d: %v", item.ID, err)
+	}
+	caption := renderSubscriptionDeleteDetail(item, index, len(pager.Items))
+	keyboard := subscriptionDeleteCardKeyboard(sessionID, len(pager.Items))
+	if path := strings.TrimSpace(item.CoverFile); path != "" {
+		photoCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		id, err := s.sendPhotoFileWithKeyboard(photoCtx, chat, path, caption, item.CoverBlur, keyboard)
+		cancel()
+		if err == nil && id != 0 {
+			s.trackTransientMessageForChat(chat, id)
+			s.mutateSession(chatID, sessionID, func(value *session) {
+				if value.subscriptionDelete != nil {
+					value.subscriptionDelete.Index = index
+				}
+			})
+			return id
+		}
+		s.logger.Printf("telegram: send subscription delete cover file: %v", err)
+	}
+	if cover := telegramPhotoURL(item.CoverURL); cover != "" {
+		payload := map[string]any{
+			"chat_id":      chat,
+			"photo":        cover,
+			"caption":      caption,
+			"parse_mode":   "HTML",
+			"reply_markup": keyboard,
+		}
+		if item.CoverBlur {
+			payload["has_spoiler"] = true
+		}
+		if id, err := s.callMethod(ctx, "sendPhoto", payload); err == nil && id != 0 {
+			s.trackTransientMessageForChat(chat, id)
+			s.mutateSession(chatID, sessionID, func(value *session) {
+				if value.subscriptionDelete != nil {
+					value.subscriptionDelete.Index = index
+				}
+			})
+			return id
+		}
+	}
+	id := s.sendMessage(ctx, chat, caption, keyboard)
+	if id != 0 {
+		s.mutateSession(chatID, sessionID, func(value *session) {
+			if value.subscriptionDelete != nil {
+				value.subscriptionDelete.Index = index
+			}
+		})
+	}
+	return id
 }
 
 func (s *Service) replySubscriptionAction(ctx context.Context, chat, action, title string) {
@@ -1207,6 +1379,8 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 			current.resultsMessageID = 0
 		})
 		s.replyResultDetail(ctx, chatID, chat, sessionID, index)
+	case strings.HasPrefix(data, "subdel:"):
+		s.handleSubscriptionDeleteCallback(ctx, chatID, chat, query.Message.MessageID, data)
 	case strings.HasPrefix(data, "subscribe:"):
 		sessionID, index, ok := parseIndexCallback(data, "subscribe:")
 		if !ok || s.session(chatID, sessionID) == nil {
@@ -1291,6 +1465,66 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 			current.detailPhoto = false
 			current.detailIndex = 0
 		})
+	}
+}
+
+func (s *Service) handleSubscriptionDeleteCallback(
+	ctx context.Context,
+	chatID int64,
+	chat string,
+	messageID int64,
+	data string,
+) {
+	parts := strings.Split(data, ":")
+	if len(parts) != 3 || strings.TrimSpace(parts[2]) == "" {
+		return
+	}
+	action := strings.TrimSpace(parts[1])
+	sessionID := strings.TrimSpace(parts[2])
+	s.mu.RLock()
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID || current.subscriptionDelete == nil {
+		s.mu.RUnlock()
+		s.sendMessage(ctx, chat, "删除订阅会话已过期，请重新发起。", nil)
+		return
+	}
+	pager := *current.subscriptionDelete
+	pager.Items = append([]BotSubscription(nil), current.subscriptionDelete.Items...)
+	s.mu.RUnlock()
+	if len(pager.Items) == 0 {
+		s.deleteSession(chatID, sessionID)
+		s.sendMessage(ctx, chat, "没有相关作品的订阅计划。", nil)
+		return
+	}
+	switch action {
+	case "cancel":
+		s.deleteMessage(ctx, chat, messageID)
+		s.deleteSession(chatID, sessionID)
+	case "prev", "next":
+		index := pager.Index
+		if action == "prev" {
+			index--
+		} else {
+			index++
+		}
+		s.deleteMessageAsync(chat, messageID)
+		if s.sendSubscriptionDeleteCard(ctx, chat, sessionID, index) == 0 {
+			s.sendMessage(ctx, chat, "切换删除确认作品失败，请重新发起。", nil)
+		}
+	case "delete":
+		index := pager.Index
+		if index < 0 || index >= len(pager.Items) {
+			s.sendMessage(ctx, chat, "删除订阅会话已过期，请重新发起。", nil)
+			return
+		}
+		item := pager.Items[index]
+		if err := s.app.BotDelete(ctx, item.ID); err != nil {
+			s.sendMessage(ctx, chat, "删除失败："+err.Error(), nil)
+			return
+		}
+		s.deleteMessage(ctx, chat, messageID)
+		s.deleteSession(chatID, sessionID)
+		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅已删除。", html.EscapeString(item.Title)), nil)
 	}
 }
 
@@ -1514,6 +1748,16 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat, sessio
 		return
 	}
 	entry := results[index]
+	if existing, err := s.app.BotSubscriptionVisual(ctx, entry.SourceID, entry.ComicID); err == nil && existing.InPlan {
+		title := fallback(existing.Title, entry.Title)
+		s.sendMessage(
+			ctx,
+			chat,
+			fmt.Sprintf("<b>《%s》</b>已在订阅计划中。", html.EscapeString(title)),
+			nil,
+		)
+		return
+	}
 	subscription, queued, err := s.app.BotSubscribe(ctx, entry.SourceID, entry.ComicID)
 	if err != nil {
 		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》订阅失败：%s", entry.Title, err.Error()), nil)

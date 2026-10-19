@@ -2039,27 +2039,35 @@ function onDragEnd() {
       </div>
       <div class="modal-body">
         <section class="source-editor-section">
-            <div v-if="isPluginSource(editorSource)" class="source-name-proxy-row">
-              <label class="field source-name-field">
-                <span>内容源名称</span>
-                <input v-model="forms[editorSource.id].name" class="input" placeholder="自定义显示名称" />
-              </label>
-              <div class="source-network-switches">
-                <label class="switch-row source-proxy-inline">
-                  <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
-                  <span>应用代理</span>
-                </label>
-                <label class="switch-row source-proxy-inline">
-                  <input v-model="forms[editorSource.id].coverBlur" type="checkbox" />
-                  <span>封面模糊</span>
-                </label>
-              </div>
-            </div>
-            <label v-else-if="!editorSource.builtin" class="field">
+          <div class="source-name-proxy-row">
+            <label class="field source-name-field">
               <span>内容源名称</span>
-              <input v-model="forms[editorSource.id].name" class="input" placeholder="自定义显示名称" />
+              <input
+                v-if="!editorSource.builtin"
+                v-model="forms[editorSource.id].name"
+                class="input"
+                placeholder="自定义显示名称"
+              />
+              <input
+                v-else
+                class="input source-name-readonly"
+                :value="editorSource.name"
+                readonly
+                aria-readonly="true"
+              />
             </label>
-            <h3>{{ isPluginSource(editorSource) ? '解析器账号与设置' : '网站与凭据' }}</h3>
+            <div class="source-network-switches">
+              <label class="switch-row source-proxy-inline">
+                <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
+                <span>应用代理</span>
+              </label>
+              <label class="switch-row source-proxy-inline">
+                <input v-model="forms[editorSource.id].coverBlur" type="checkbox" />
+                <span>封面模糊</span>
+              </label>
+            </div>
+          </div>
+          <h3>{{ isPluginSource(editorSource) ? '解析器账号与设置' : '网站与凭据' }}</h3>
           <template v-if="isPluginSource(editorSource)">
             <div v-if="pluginAuthLoading || pluginPrefLoading" class="inline muted small">
               <Loader2 :size="15" class="spin" />
@@ -2219,19 +2227,6 @@ function onDragEnd() {
           <p class="muted small">留空或填 0 表示不启用批量暂停。</p>
         </section>
 
-        <section v-if="!isPluginSource(editorSource)" class="source-editor-section">
-          <h3>网络与封面</h3>
-          <label class="switch-row">
-            <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
-            <span>应用代理</span>
-          </label>
-          <p class="muted small">关闭后该内容源将直连，不经过系统设置中的全局代理。</p>
-          <label class="switch-row">
-            <input v-model="forms[editorSource.id].coverBlur" type="checkbox" />
-            <span>封面模糊</span>
-          </label>
-          <p class="muted small">开启后，该来源的新订阅默认勾选封面模糊，Telegram 搜索结果也会遮盖封面；具体订阅仍可单独关闭。</p>
-        </section>
       </div>
       <div class="modal-foot source-editor-foot">
         <button

@@ -74,6 +74,234 @@ func TestDownloadJobActivityAggregatesPerWork(t *testing.T) {
 	}
 }
 
+func TestMaintainSubscriptionsUsesStatusAndNewChapterAge(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.Local)
+
+	create := func(comicID, status string) model.Subscription {
+		t.Helper()
+		item, err := repository.UpsertSubscription(ctx, model.Subscription{
+			SourceID:    "bao",
+			ComicID:     comicID,
+			Title:       "测试" + comicID,
+			ComicStatus: status,
+			Enabled:     true,
+		})
+		if err != nil {
+			t.Fatalf("create subscription %s: %v", comicID, err)
+		}
+		return item
+	}
+	setAgeAt := func(id int64, status string, base time.Time, days int) {
+		t.Helper()
+		if _, err := repository.db.ExecContext(ctx, `
+			UPDATE subscriptions SET comic_status = ?, chapter_count = 42,
+				last_new_chapter_at = ?, created_at = ?
+			WHERE id = ?`,
+			status, base.Add(-time.Duration(days)*24*time.Hour).UTC(), base.Add(-time.Duration(days)*24*time.Hour).UTC(), id); err != nil {
+			t.Fatalf("set subscription age %d: %v", id, err)
+		}
+	}
+	setAge := func(id int64, status string, days int) {
+		t.Helper()
+		setAgeAt(id, status, now, days)
+	}
+
+	completedWarning := create("1", "已完结")
+	beforeNoon := now.Add(-time.Hour)
+	setAgeAt(completedWarning.ID, "已完结", beforeNoon, 12)
+	result, err := repository.MaintainSubscriptions(ctx, map[string]int{"*": 30}, beforeNoon)
+	if err != nil {
+		t.Fatalf("maintenance before noon: %v", err)
+	}
+	if len(result.Warnings) != 0 || len(result.Archived) != 0 {
+		t.Fatalf("before-noon maintenance produced events: %+v", result)
+	}
+
+	setAge(completedWarning.ID, "已完结", 12)
+	result, err = repository.MaintainSubscriptions(ctx, map[string]int{"*": 30}, now)
+	if err != nil {
+		t.Fatalf("maintenance at noon: %v", err)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Subscription.ID != completedWarning.ID {
+		t.Fatalf("completed warning events = %+v", result.Warnings)
+	}
+
+	completedArchive := create("2", "Completed")
+	setAge(completedArchive.ID, "Completed", 15)
+	ongoingWarning := create("3", "连载中")
+	setAge(ongoingWarning.ID, "连载中", 27)
+	ongoingArchive := create("4", "Ongoing")
+	setAge(ongoingArchive.ID, "Ongoing", 30)
+	titleOnly := create("5", "连载中")
+	setAge(titleOnly.ID, "连载中", 15)
+	if _, err := repository.db.ExecContext(ctx, `UPDATE subscriptions SET last_chapter_title = '终章' WHERE id = ?`, titleOnly.ID); err != nil {
+		t.Fatalf("set chapter title: %v", err)
+	}
+
+	result, err = repository.MaintainSubscriptions(ctx, map[string]int{"*": 30}, now)
+	if err != nil {
+		t.Fatalf("maintenance: %v", err)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Subscription.ID != ongoingWarning.ID {
+		t.Fatalf("ongoing warning events = %+v", result.Warnings)
+	}
+	if result.Warnings[0].DaysRemaining != 3 {
+		t.Fatalf("ongoing days remaining = %d, want 3", result.Warnings[0].DaysRemaining)
+	}
+	if len(result.Archived) != 2 {
+		t.Fatalf("archived events = %+v, want two", result.Archived)
+	}
+	archivedIDs := map[int64]bool{}
+	for _, event := range result.Archived {
+		archivedIDs[event.Subscription.ID] = true
+	}
+	if !archivedIDs[completedArchive.ID] || !archivedIDs[ongoingArchive.ID] || archivedIDs[titleOnly.ID] {
+		t.Fatalf("archived ids = %v", archivedIDs)
+	}
+
+	again, err := repository.MaintainSubscriptions(ctx, map[string]int{"*": 30}, now)
+	if err != nil {
+		t.Fatalf("second maintenance: %v", err)
+	}
+	if len(again.Warnings) != 0 || len(again.Archived) != 0 {
+		t.Fatalf("maintenance repeated events: %+v", again)
+	}
+
+	archived, err := repository.Subscription(ctx, completedArchive.ID)
+	if err != nil {
+		t.Fatalf("reload archived subscription: %v", err)
+	}
+	if archived.Enabled || archived.ArchivedAt == nil || archived.ArchiveReason != "completed" {
+		t.Fatalf("completed archive state = %+v", archived)
+	}
+	tracked, err := repository.Subscription(ctx, titleOnly.ID)
+	if err != nil {
+		t.Fatalf("reload title-only subscription: %v", err)
+	}
+	if tracked.ArchivedAt != nil || !tracked.Enabled {
+		t.Fatalf("terminal chapter title affected archive state: %+v", tracked)
+	}
+}
+
+func TestSubscriptionArchiveWarningLifecycle(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	subscription, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID:     "bao",
+		ComicID:      "warning",
+		Title:        "预警测试",
+		Enabled:      true,
+		CronExpr:     "0 12 * * *",
+		AutoDownload: true,
+	})
+	if err != nil {
+		t.Fatalf("create subscription: %v", err)
+	}
+	if _, err := repository.db.ExecContext(ctx, `
+		UPDATE subscriptions SET archive_warning_at = CURRENT_TIMESTAMP, archive_warning_days = 12
+		WHERE id = ?`, subscription.ID); err != nil {
+		t.Fatalf("seed warning: %v", err)
+	}
+	if err := repository.UpdateSubscriptionConfig(
+		ctx,
+		subscription.ID,
+		true,
+		true,
+		subscription.CronExpr,
+		subscription.DownloadDir,
+		subscription.SeriesDir,
+		true,
+		false,
+		false,
+	); err != nil {
+		t.Fatalf("update enabled subscription config: %v", err)
+	}
+	current, err := repository.Subscription(ctx, subscription.ID)
+	if err != nil {
+		t.Fatalf("reload after config update: %v", err)
+	}
+	if current.ArchiveWarningAt == nil || current.ArchiveWarningDays != 12 {
+		t.Fatalf("editing enabled subscription cleared warning: %+v", current)
+	}
+	if err := repository.UpdateSubscriptionCheck(ctx, subscription.ID, "chapter-2", "第2话", 2, "连载中", false, false); err != nil {
+		t.Fatalf("update without new chapter: %v", err)
+	}
+	current, err = repository.Subscription(ctx, subscription.ID)
+	if err != nil {
+		t.Fatalf("reload after normal check: %v", err)
+	}
+	if current.ArchiveWarningAt == nil || current.ArchiveWarningDays != 12 {
+		t.Fatalf("normal check cleared warning: %+v", current)
+	}
+	if err := repository.UpdateSubscriptionCheck(ctx, subscription.ID, "chapter-3", "第3话", 3, "连载中", false, true); err != nil {
+		t.Fatalf("update with new chapter: %v", err)
+	}
+	current, err = repository.Subscription(ctx, subscription.ID)
+	if err != nil {
+		t.Fatalf("reload after new chapter: %v", err)
+	}
+	if current.ArchiveWarningAt != nil || current.ArchiveWarningDays != 0 {
+		t.Fatalf("new chapter did not clear warning: %+v", current)
+	}
+	if err := repository.UpdateSubscription(ctx, subscription.ID, false, true, subscription.CronExpr); err != nil {
+		t.Fatalf("disable subscription: %v", err)
+	}
+	if err := repository.UpdateSubscription(ctx, subscription.ID, true, true, subscription.CronExpr); err != nil {
+		t.Fatalf("reenable subscription: %v", err)
+	}
+	reenabled, err := repository.Subscription(ctx, subscription.ID)
+	if err != nil {
+		t.Fatalf("reload reenabled subscription: %v", err)
+	}
+	if reenabled.LastNewChapterAt == nil || reenabled.ArchiveWarningAt != nil || reenabled.ArchiveWarningDays != 0 {
+		t.Fatalf("reenabled subscription did not reset inactivity cycle: %+v", reenabled)
+	}
+}
+
+func TestMaintainSubscriptionsKeepsCompletedRuleWhenOngoingRuleDisabled(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.Local)
+	createAged := func(comicID, status string, days int) model.Subscription {
+		t.Helper()
+		item, err := repository.UpsertSubscription(ctx, model.Subscription{
+			SourceID:    "bao",
+			ComicID:     comicID,
+			Title:       "测试" + comicID,
+			ComicStatus: status,
+			Enabled:     true,
+		})
+		if err != nil {
+			t.Fatalf("create subscription: %v", err)
+		}
+		anchor := now.Add(-time.Duration(days) * 24 * time.Hour).UTC()
+		if _, err := repository.db.ExecContext(ctx, `
+			UPDATE subscriptions SET comic_status = ?, last_new_chapter_at = ?, created_at = ?
+			WHERE id = ?`, status, anchor, anchor, item.ID); err != nil {
+			t.Fatalf("age subscription: %v", err)
+		}
+		return item
+	}
+	completed := createAged("completed", "已完结", 15)
+	ongoing := createAged("ongoing", "连载中", 30)
+	result, err := repository.MaintainSubscriptions(ctx, map[string]int{"*": 0}, now)
+	if err != nil {
+		t.Fatalf("maintenance: %v", err)
+	}
+	if len(result.Archived) != 1 || result.Archived[0].Subscription.ID != completed.ID {
+		t.Fatalf("archived events = %+v", result.Archived)
+	}
+	stillActive, err := repository.Subscription(ctx, ongoing.ID)
+	if err != nil {
+		t.Fatalf("reload ongoing: %v", err)
+	}
+	if stillActive.ArchivedAt != nil || !stillActive.Enabled {
+		t.Fatalf("disabled ongoing archive rule still archived subscription: %+v", stillActive)
+	}
+}
+
 func createJobForComic(t *testing.T, repository *Store, comicID, chapterID string) model.DownloadJob {
 	t.Helper()
 	job, err := repository.CreateDownloadJob(context.Background(), model.DownloadJob{

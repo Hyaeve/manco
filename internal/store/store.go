@@ -11,6 +11,7 @@ import (
 
 	"github.com/hyaeve/manco/internal/cronutil"
 	"github.com/hyaeve/manco/internal/model"
+	"github.com/hyaeve/manco/internal/subscriptionstate"
 	_ "modernc.org/sqlite"
 )
 
@@ -119,6 +120,8 @@ func (s *Store) migrate(ctx context.Context) error {
 			completed_at DATETIME,
 			archived_at DATETIME,
 			archive_reason TEXT NOT NULL DEFAULT '',
+			archive_warning_at DATETIME,
+			archive_warning_days INTEGER NOT NULL DEFAULT 0,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(source_id, comic_id)
@@ -220,6 +223,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		{"completed_at", `DATETIME`},
 		{"archived_at", `DATETIME`},
 		{"archive_reason", `TEXT NOT NULL DEFAULT ''`},
+		{"archive_warning_at", `DATETIME`},
+		{"archive_warning_days", `INTEGER NOT NULL DEFAULT 0`},
 	} {
 		if err := s.ensureColumn(ctx, "subscriptions", column.name, column.declaration); err != nil {
 			return err
@@ -873,7 +878,7 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 	return subscriptions, rows.Err()
 }
 
-const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary FROM subscriptions`
+const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary, archive_warning_at, archive_warning_days FROM subscriptions`
 
 type SubscriptionFilter struct {
 	SourceIDs        []string
@@ -1063,8 +1068,8 @@ func (s *Store) ListAllSubscriptions(ctx context.Context) ([]model.Subscription,
 // mounted /app/config directory, including polling baseline and archive state.
 func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, archive_warning_at, archive_warning_days)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
 			title = excluded.title,
 			cover = excluded.cover,
@@ -1088,8 +1093,10 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 			completed_at = excluded.completed_at,
 			archived_at = excluded.archived_at,
 			archive_reason = excluded.archive_reason,
+			archive_warning_at = excluded.archive_warning_at,
+			archive_warning_days = excluded.archive_warning_days,
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ChapterCount, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason)
+		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ChapterCount, sub.ComicStatus, sub.LastNewChapterAt, sub.LastCheckedAt, sub.DisabledAt, sub.CompletedAt, sub.ArchivedAt, sub.ArchiveReason, sub.ArchiveWarningAt, sub.ArchiveWarningDays)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -1098,7 +1105,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
-	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ChapterCount, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary)
+	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ChapterCount, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary, &sub.ArchiveWarningAt, &sub.ArchiveWarningDays)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Subscription{}, ErrNotFound
 	}
@@ -1113,8 +1120,10 @@ func (s *Store) UpdateSubscription(ctx context.Context, id int64, enabled, autoD
 			disabled_at = CASE WHEN ? = 1 THEN NULL ELSE disabled_at END,
 			archived_at = CASE WHEN ? = 1 THEN NULL ELSE archived_at END,
 			archive_reason = CASE WHEN ? = 1 THEN '' ELSE archive_reason END,
+			archive_warning_at = CASE WHEN ? = 1 AND enabled = 0 THEN NULL ELSE archive_warning_at END,
+			archive_warning_days = CASE WHEN ? = 1 AND enabled = 0 THEN 0 ELSE archive_warning_days END,
 			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		enabled, autoDownload, cronExpr, enabled, cronExpr, enabled, enabled, enabled, enabled, id)
+		enabled, autoDownload, cronExpr, enabled, cronExpr, enabled, enabled, enabled, enabled, enabled, enabled, id)
 	return err
 }
 
@@ -1126,8 +1135,10 @@ func (s *Store) UpdateSubscriptionConfig(ctx context.Context, id int64, enabled,
 			disabled_at = CASE WHEN ? = 1 THEN NULL ELSE disabled_at END,
 			archived_at = CASE WHEN ? = 1 THEN NULL ELSE archived_at END,
 			archive_reason = CASE WHEN ? = 1 THEN '' ELSE archive_reason END,
+			archive_warning_at = CASE WHEN ? = 1 AND enabled = 0 THEN NULL ELSE archive_warning_at END,
+			archive_warning_days = CASE WHEN ? = 1 AND enabled = 0 THEN 0 ELSE archive_warning_days END,
 			updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		enabled, autoDownload, cronExpr, downloadDir, seriesDir, convertToSimplified, chapterMarker, coverBlur, enabled, cronExpr, enabled, enabled, enabled, enabled, id)
+		enabled, autoDownload, cronExpr, downloadDir, seriesDir, convertToSimplified, chapterMarker, coverBlur, enabled, cronExpr, enabled, enabled, enabled, enabled, enabled, enabled, id)
 	return err
 }
 
@@ -1143,7 +1154,8 @@ func (s *Store) ArchiveSubscription(ctx context.Context, id int64, reason string
 func (s *Store) RestoreSubscription(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE subscriptions SET archived_at = NULL, archive_reason = '', enabled = 1, disabled_at = NULL,
-			last_checked_at = NULL, updated_at = CURRENT_TIMESTAMP
+			last_checked_at = NULL, last_new_chapter_at = CURRENT_TIMESTAMP,
+			archive_warning_at = NULL, archive_warning_days = 0, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?`, id)
 	return err
 }
@@ -1161,48 +1173,168 @@ func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID
 			comic_status = ?,
 			completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE NULL END,
 			last_new_chapter_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE last_new_chapter_at END,
+			archive_warning_at = CASE WHEN ? = 1 THEN NULL ELSE archive_warning_at END,
+			archive_warning_days = CASE WHEN ? = 1 THEN 0 ELSE archive_warning_days END,
 			last_checked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`, chapterID, chapterTitle, chapterOrder, comicStatus, completed, newChapter, id)
+		WHERE id = ?`, chapterID, chapterTitle, chapterOrder, comicStatus, completed, newChapter, newChapter, newChapter, id)
 	return err
 }
 
-// MaintainSubscriptions closes stale subscriptions and archives them after
-// the configured grace period. Only subscriptions closed automatically are
-// archived by the stale rule; manual pauses remain visible for the user.
-func (s *Store) MaintainSubscriptions(ctx context.Context, staleDays map[string]int, now time.Time) error {
-	now = now.UTC()
-	completedCutoff := now.Add(-15 * 24 * time.Hour)
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE subscriptions SET archived_at = ?, archive_reason = 'completed', enabled = 0, updated_at = CURRENT_TIMESTAMP
-		WHERE archived_at IS NULL AND completed_at IS NOT NULL AND completed_at <= ?`, now, completedCutoff); err != nil {
-		return err
+type SubscriptionMaintenanceEvent struct {
+	Subscription   model.Subscription
+	Completed      bool
+	ThresholdDays  int
+	DaysWithoutNew int
+	DaysRemaining  int
+}
+
+type SubscriptionMaintenanceResult struct {
+	Warnings []SubscriptionMaintenanceEvent
+	Archived []SubscriptionMaintenanceEvent
+}
+
+// MaintainSubscriptions archives enabled subscriptions after 15 days without a
+// new chapter for completed works, or the configured stale period (30 days by
+// default) for ongoing works. Warnings are emitted once at noon on day 12/27.
+func (s *Store) MaintainSubscriptions(
+	ctx context.Context,
+	staleDays map[string]int,
+	now time.Time,
+) (SubscriptionMaintenanceResult, error) {
+	result := SubscriptionMaintenanceResult{}
+	warningWindowOpen := now.Hour() >= 12
+	nowUTC := now.UTC()
+	rows, err := s.reader().QueryContext(ctx, subscriptionSelect+`
+		WHERE archived_at IS NULL AND enabled = 1 AND temporary = 0
+		ORDER BY id ASC`)
+	if err != nil {
+		return result, err
 	}
-	for sourceID, days := range staleDays {
-		if days <= 0 {
+	var subscriptions []model.Subscription
+	for rows.Next() {
+		subscription, scanErr := scanSubscription(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return result, scanErr
+		}
+		subscriptions = append(subscriptions, subscription)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return result, err
+	}
+	_ = rows.Close()
+
+	for _, subscription := range subscriptions {
+		anchor := subscription.CreatedAt
+		if subscription.LastNewChapterAt != nil {
+			anchor = *subscription.LastNewChapterAt
+		}
+		if anchor.IsZero() {
 			continue
 		}
-		cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
-		if _, err := s.db.ExecContext(ctx, `
-			UPDATE subscriptions SET enabled = 0, disabled_at = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE archived_at IS NULL AND enabled = 1 AND source_id = ?
-			  AND COALESCE(last_new_chapter_at, created_at) <= ?`, now, sourceID, cutoff); err != nil {
-			return err
+		anchor = anchor.UTC()
+		elapsed := nowUTC.Sub(anchor)
+		if elapsed < 0 {
+			elapsed = 0
 		}
-	}
-	disabledCutoff := now.Add(-15 * 24 * time.Hour)
-	if days := staleDays["*"]; days > 0 {
-		cutoff := now.Add(-time.Duration(days) * 24 * time.Hour)
-		if _, err := s.db.ExecContext(ctx, `
-			UPDATE subscriptions SET enabled = 0, disabled_at = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE archived_at IS NULL AND enabled = 1
-			  AND COALESCE(last_new_chapter_at, created_at) <= ?`, now, cutoff); err != nil {
-			return err
+		daysWithoutNew := int(elapsed / (24 * time.Hour))
+		completed := subscriptionstate.IsCompleted(subscription.ComicStatus)
+		thresholdDays := subscriptionArchiveThreshold(subscription.SourceID, staleDays, completed)
+		if thresholdDays <= 0 {
+			continue
 		}
+		event := SubscriptionMaintenanceEvent{
+			Subscription:   subscription,
+			Completed:      completed,
+			ThresholdDays:  thresholdDays,
+			DaysWithoutNew: daysWithoutNew,
+		}
+		if elapsed >= time.Duration(thresholdDays)*24*time.Hour {
+			reason := "stale"
+			if completed {
+				reason = "completed"
+			}
+			cutoff := nowUTC.Add(-time.Duration(thresholdDays) * 24 * time.Hour)
+			update, err := s.db.ExecContext(ctx, `
+				UPDATE subscriptions SET archived_at = ?, archive_reason = ?, enabled = 0, disabled_at = ?,
+					updated_at = CURRENT_TIMESTAMP
+				WHERE id = ? AND archived_at IS NULL AND enabled = 1 AND temporary = 0
+				  AND COALESCE(last_new_chapter_at, created_at) <= ?`,
+				nowUTC, reason, nowUTC, subscription.ID, cutoff)
+			if err != nil {
+				return result, err
+			}
+			affected, _ := update.RowsAffected()
+			if affected == 0 {
+				continue
+			}
+			event.DaysRemaining = 0
+			result.Archived = append(result.Archived, event)
+			continue
+		}
+		warningDay := subscriptionArchiveWarningDay(completed, thresholdDays)
+		if !warningWindowOpen || daysWithoutNew < warningDay || subscription.ArchiveWarningDays == warningDay {
+			continue
+		}
+		remaining := thresholdDays - daysWithoutNew
+		if remaining < 1 {
+			remaining = 1
+		}
+		cutoff := nowUTC.Add(-time.Duration(warningDay) * 24 * time.Hour)
+		update, err := s.db.ExecContext(ctx, `
+			UPDATE subscriptions SET archive_warning_at = ?, archive_warning_days = ?,
+				updated_at = CURRENT_TIMESTAMP
+			WHERE id = ? AND archived_at IS NULL AND enabled = 1 AND temporary = 0
+			  AND COALESCE(last_new_chapter_at, created_at) <= ?
+			  AND (archive_warning_at IS NULL OR archive_warning_days <> ?)`,
+			nowUTC, warningDay, subscription.ID, cutoff, warningDay)
+		if err != nil {
+			return result, err
+		}
+		affected, _ := update.RowsAffected()
+		if affected == 0 {
+			continue
+		}
+		event.DaysRemaining = remaining
+		result.Warnings = append(result.Warnings, event)
 	}
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE subscriptions SET archived_at = ?, archive_reason = 'stale', updated_at = CURRENT_TIMESTAMP
-		WHERE archived_at IS NULL AND disabled_at IS NOT NULL AND disabled_at <= ?`, now, disabledCutoff)
-	return err
+	return result, nil
+}
+
+func subscriptionArchiveThreshold(sourceID string, staleDays map[string]int, completed bool) int {
+	if completed {
+		return 15
+	}
+	if days, ok := staleDays[sourceID]; ok {
+		if days <= 0 {
+			return 0
+		}
+		return days
+	}
+	if days, ok := staleDays["*"]; ok {
+		if days <= 0 {
+			return 0
+		}
+		return days
+	}
+	return 30
+}
+
+func subscriptionArchiveWarningDay(completed bool, thresholdDays int) int {
+	if completed {
+		return 12
+	}
+	if thresholdDays == 30 {
+		return 27
+	}
+	if thresholdDays > 3 {
+		return thresholdDays - 3
+	}
+	if thresholdDays > 1 {
+		return thresholdDays - 1
+	}
+	return 1
 }
 func (s *Store) DeleteSubscription(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM subscriptions WHERE id = ?`, id)

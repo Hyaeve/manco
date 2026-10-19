@@ -29,6 +29,20 @@ type SubscriptionDownloadCompletedNotice struct {
 	NextCheckLabel string
 }
 
+type SubscriptionArchiveNotice struct {
+	Title          string
+	Source         string
+	Author         string
+	CoverURL       string
+	CoverFile      string
+	CoverBlur      bool
+	ChapterCount   int
+	DaysWithoutNew int
+	DaysRemaining  int
+	ThresholdDays  int
+	Completed      bool
+}
+
 type DownloadRetryNotice struct {
 	Title     string
 	Source    string
@@ -127,6 +141,105 @@ func (s *Service) SubscriptionDownloadCompleted(ctx context.Context, notice Subs
 		}
 		s.sendPersistentMessage(ctx, chat, caption, nil)
 	}
+}
+
+func (s *Service) SubscriptionArchiveWarning(ctx context.Context, notice SubscriptionArchiveNotice) {
+	if !s.Enabled() {
+		return
+	}
+	caption := renderSubscriptionArchiveWarning(notice)
+	s.sendSubscriptionArchivePhoto(ctx, caption, notice)
+}
+
+func (s *Service) SubscriptionArchived(ctx context.Context, notice SubscriptionArchiveNotice) {
+	if !s.Enabled() {
+		return
+	}
+	caption := renderSubscriptionArchived(notice)
+	s.sendSubscriptionArchivePhoto(ctx, caption, notice)
+}
+
+func (s *Service) sendSubscriptionArchivePhoto(ctx context.Context, caption string, notice SubscriptionArchiveNotice) {
+	s.mu.RLock()
+	chats := append([]string(nil), s.cfg.ChatIDs...)
+	s.mu.RUnlock()
+	for _, chat := range chats {
+		if path := strings.TrimSpace(notice.CoverFile); path != "" {
+			if err := s.sendPhotoFile(ctx, chat, path, caption, notice.CoverBlur); err == nil {
+				continue
+			}
+		}
+		if photo := telegramPhotoURL(notice.CoverURL); photo != "" {
+			payload := map[string]any{
+				"chat_id":    chat,
+				"photo":      photo,
+				"caption":    caption,
+				"parse_mode": "HTML",
+			}
+			if notice.CoverBlur {
+				payload["has_spoiler"] = true
+			}
+			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
+				continue
+			}
+		}
+		s.sendPersistentMessage(ctx, chat, caption, nil)
+	}
+}
+
+func renderSubscriptionArchiveWarning(notice SubscriptionArchiveNotice) string {
+	title := fallback(strings.TrimSpace(notice.Title), "未命名作品")
+	status := "未检测到完结状态"
+	if notice.Completed {
+		status = "已完结"
+	}
+	remaining := notice.DaysRemaining
+	if remaining < 1 {
+		remaining = 1
+	}
+	lines := []string{
+		"<b>订阅归档预警</b>",
+		notificationWorkTitle(title, notice.Source),
+		"内容源：" + html.EscapeString(fallback(strings.TrimSpace(notice.Source), "未知")),
+		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
+		"章节总数：" + chapterCountNoticeLabel(notice.ChapterCount),
+		"作品状态：" + html.EscapeString(status),
+		fmt.Sprintf("已连续 %d 天未检测到新章节。", notice.DaysWithoutNew),
+		fmt.Sprintf("预计 %d 天后自动归档。", remaining),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderSubscriptionArchived(notice SubscriptionArchiveNotice) string {
+	title := fallback(strings.TrimSpace(notice.Title), "未命名作品")
+	threshold := notice.ThresholdDays
+	if threshold <= 0 {
+		threshold = 30
+		if notice.Completed {
+			threshold = 15
+		}
+	}
+	reason := fmt.Sprintf("未检测到完结状态，连续 %d 天未检测到新章节。", threshold)
+	if notice.Completed {
+		reason = fmt.Sprintf("作品状态为完结，连续 %d 天未检测到新章节。", threshold)
+	}
+	lines := []string{
+		"<b>订阅已归档</b>",
+		notificationWorkTitle(title, notice.Source),
+		"内容源：" + html.EscapeString(fallback(strings.TrimSpace(notice.Source), "未知")),
+		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
+		"章节总数：" + chapterCountNoticeLabel(notice.ChapterCount),
+		"归档原因：" + html.EscapeString(reason),
+		"已自动移入归档集。",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func chapterCountNoticeLabel(count int) string {
+	if count <= 0 {
+		return "未知"
+	}
+	return fmt.Sprintf("%d 章", count)
 }
 
 // DownloadRetryScheduled sends one work-level notification after failed
@@ -359,65 +472,87 @@ func notificationWorkTitle(title, sourceName string) string {
 }
 
 func (s *Service) sendPhotoFile(ctx context.Context, chat, path, caption string, coverBlur bool) error {
+	_, err := s.sendPhotoFileWithKeyboard(ctx, chat, path, caption, coverBlur, nil)
+	return err
+}
+
+func (s *Service) sendPhotoFileWithKeyboard(
+	ctx context.Context,
+	chat, path, caption string,
+	coverBlur bool,
+	keyboard any,
+) (int64, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer file.Close()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	if err := writer.WriteField("chat_id", chat); err != nil {
-		return err
+		return 0, err
 	}
 	if err := writer.WriteField("caption", caption); err != nil {
-		return err
+		return 0, err
 	}
 	if err := writer.WriteField("parse_mode", "HTML"); err != nil {
-		return err
+		return 0, err
 	}
 	if coverBlur {
 		if err := writer.WriteField("has_spoiler", "true"); err != nil {
-			return err
+			return 0, err
+		}
+	}
+	if keyboard != nil {
+		rawKeyboard, err := json.Marshal(keyboard)
+		if err != nil {
+			return 0, err
+		}
+		if err := writer.WriteField("reply_markup", string(rawKeyboard)); err != nil {
+			return 0, err
 		}
 	}
 	part, err := writer.CreateFormFile("photo", filepath.Base(path))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if _, err := io.Copy(part, file); err != nil {
-		return err
+		return 0, err
 	}
 	if err := writer.Close(); err != nil {
-		return err
+		return 0, err
 	}
 	s.mu.RLock()
 	token := s.cfg.Token
 	s.mu.RUnlock()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", token), &body)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	response, err := s.client.Do(request)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var envelope struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return err
+		return 0, err
 	}
 	if !envelope.OK {
-		return fmt.Errorf("telegram sendPhoto: %s", strings.TrimSpace(envelope.Description))
+		return 0, fmt.Errorf("telegram sendPhoto: %s", strings.TrimSpace(envelope.Description))
 	}
-	return nil
+	return envelope.Result.MessageID, nil
 }
 
 // DownloadSummary pushes an aggregated download result for one work.

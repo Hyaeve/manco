@@ -13,6 +13,7 @@ import (
 	"github.com/hyaeve/manco/internal/cronutil"
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/sources"
+	"github.com/hyaeve/manco/internal/subscriptionstate"
 )
 
 type Downloads interface {
@@ -172,7 +173,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 		comicStatus = strings.TrimSpace(detail.Status)
 	}
 	if len(chapters) == 0 {
-		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
+		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(comicStatus), false)
 	}
 	newest := chapters[len(chapters)-1]
 	// 每次成功拉到章节列表都刷新总章节数，供订阅卡片的「共 N 话」使用。
@@ -181,7 +182,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 	}
 	if subscription.LastChapterID == "" {
 		// First observation only records a baseline.
-		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), false)
+		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(comicStatus), false)
 	}
 	queuedTitles := make([]string, 0, 4)
 	for _, chapter := range chapters {
@@ -223,9 +224,9 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 		}
 	}
 	if isNewer(newest, subscription) {
-		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(chapters, comicStatus), true)
+		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(comicStatus), true)
 	}
-	return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(chapters, comicStatus), false)
+	return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(comicStatus), false)
 }
 
 func subscriptionSeriesDir(subscription model.Subscription) string {
@@ -244,27 +245,9 @@ func isNewer(chapter model.Chapter, subscription model.Subscription) bool {
 	return chapter.Order == subscription.LastChapterOrder && chapter.ID > subscription.LastChapterID
 }
 
-// completedStatus reports whether the source status or newest chapter title
-// marks the comic as finished, so the subscription can be archived later.
-func completedStatus(chapters []model.Chapter, comicStatus string) bool {
-	if completedText(comicStatus) {
-		return true
-	}
-	if len(chapters) == 0 {
-		return false
-	}
-	title := strings.ToLower(chapters[len(chapters)-1].Title)
-	return completedText(title)
-}
-
-func completedText(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	for _, marker := range []string{"完结", "已完结", "全本", "终章", "[完]", "（完）", "(完)"} {
-		if strings.Contains(value, marker) {
-			return true
-		}
-	}
-	return false
+// completedStatus only trusts the source-provided serialization status.
+func completedStatus(comicStatus string) bool {
+	return subscriptionstate.IsCompleted(comicStatus)
 }
 
 // ErrNoChapters reports that a subscribed comic has no chapters to queue.
@@ -307,7 +290,7 @@ func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscrip
 	if err != nil {
 		return model.DownloadJob{}, err
 	}
-	if err := s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(chapters, subscription.ComicStatus), true); err != nil {
+	if err := s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(subscription.ComicStatus), true); err != nil {
 		s.logger.Printf("scheduler: update manual download baseline %s/%s: %v", subscription.SourceID, subscription.Title, err)
 	}
 	s.downloads.Notify()
@@ -372,7 +355,7 @@ func (s *Scheduler) queueAll(ctx context.Context, subscription model.Subscriptio
 		}
 	}
 	newest := chapters[len(chapters)-1]
-	if err := s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(chapters, subscription.ComicStatus), true); err != nil {
+	if err := s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, subscription.ComicStatus, completedStatus(subscription.ComicStatus), true); err != nil {
 		s.logger.Printf("scheduler: update full download baseline %s/%s: %v", subscription.SourceID, subscription.Title, err)
 	}
 	s.downloads.Notify()

@@ -72,6 +72,89 @@ func TestDownloadResumedNoticeUsesSubscriptionCoverBlur(t *testing.T) {
 	}
 }
 
+func TestRenderSubscriptionArchiveWarning(t *testing.T) {
+	text := renderSubscriptionArchiveWarning(SubscriptionArchiveNotice{
+		Title:          "夏日深处",
+		Source:         "包子漫画",
+		Author:         "测试作者",
+		ChapterCount:   42,
+		DaysWithoutNew: 12,
+		DaysRemaining:  3,
+		Completed:      true,
+	})
+	for _, want := range []string{
+		"订阅归档预警",
+		"<b>夏日深处（包子）</b>",
+		"内容源：包子漫画",
+		"作者：测试作者",
+		"章节总数：42 章",
+		"作品状态：已完结",
+		"已连续 12 天未检测到新章节",
+		"预计 3 天后自动归档",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("archive warning missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestRenderSubscriptionArchived(t *testing.T) {
+	text := renderSubscriptionArchived(SubscriptionArchiveNotice{
+		Title:         "长期连载",
+		Source:        "哔咔漫画",
+		Author:        "测试作者",
+		ChapterCount:  80,
+		ThresholdDays: 30,
+	})
+	for _, want := range []string{
+		"订阅已归档",
+		"<b>长期连载（哔咔）</b>",
+		"内容源：哔咔漫画",
+		"作者：测试作者",
+		"章节总数：80 章",
+		"未检测到完结状态，连续 30 天未检测到新章节",
+		"已自动移入归档集",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("archive notice missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestSubscriptionArchiveNoticeUsesCoverBlur(t *testing.T) {
+	var payload map[string]any
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Enabled = true
+	service.cfg.Token = "test-token"
+	service.cfg.ChatIDs = []string{"1"}
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode telegram payload: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":42}}`)),
+		}, nil
+	})}
+	service.SubscriptionArchived(context.Background(), SubscriptionArchiveNotice{
+		Title:         "测试作品",
+		Source:        "包子漫画",
+		Author:        "测试作者",
+		CoverURL:      "https://example.test/cover.jpg",
+		CoverBlur:     true,
+		ChapterCount:  18,
+		ThresholdDays: 30,
+	})
+	if payload["has_spoiler"] != true {
+		t.Fatalf("archive cover blur not forwarded to Telegram: %+v", payload)
+	}
+	caption, _ := payload["caption"].(string)
+	if !strings.Contains(caption, "章节总数：18 章") {
+		t.Fatalf("archive caption missing chapter count: %s", caption)
+	}
+}
+
 func TestNotificationWorkTitleUsesSourceAbbreviation(t *testing.T) {
 	if got := notificationWorkTitle("作品甲", "包子漫画"); got != "<b>作品甲（包子）</b>" {
 		t.Fatalf("Chinese source title = %q", got)

@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.7.1.1"
+	appVersion    = "v0.7.2"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -7703,21 +7703,70 @@ func (s *Server) RunSubscriptionMaintenance(ctx context.Context, interval time.D
 	}
 	run := func() {
 		current := s.loadSettings(ctx)
-		if err := s.store.MaintainSubscriptions(ctx, current.StaleDays, time.Now()); err != nil {
+		result, err := s.store.MaintainSubscriptions(ctx, current.StaleDays, time.Now())
+		if err != nil {
 			s.logger.Printf("maintenance: subscriptions: %v", err)
+			return
+		}
+		if len(result.Warnings) > 0 || len(result.Archived) > 0 {
+			if err := s.configs.PersistSubscriptions(ctx, s.store); err != nil {
+				s.logger.Printf("maintenance: persist subscriptions: %v", err)
+			}
+		}
+		for _, event := range result.Warnings {
+			s.notifySubscriptionArchive(ctx, event, true)
+		}
+		for _, event := range result.Archived {
+			s.notifySubscriptionArchive(ctx, event, false)
 		}
 	}
 	run()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	next := time.Now().Truncate(interval).Add(interval)
+	timer := time.NewTimer(time.Until(next))
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			run()
+			timer.Reset(interval)
 		}
 	}
+}
+
+func (s *Server) notifySubscriptionArchive(
+	ctx context.Context,
+	event store.SubscriptionMaintenanceEvent,
+	warning bool,
+) {
+	if s.telegram == nil {
+		return
+	}
+	item := s.subscriptionWithCovers(ctx, event.Subscription)
+	author, _ := s.subscriptionLocalMetadata(item)
+	sourceName := item.SourceID
+	if adapter, err := s.registry.Get(item.SourceID); err == nil {
+		sourceName = adapter.Info().Name
+	}
+	notice := telegram.SubscriptionArchiveNotice{
+		Title:          item.Title,
+		Source:         sourceName,
+		Author:         source.FirstNonEmpty(item.Author, author),
+		CoverURL:       item.Cover,
+		CoverFile:      s.localCoverFileForSubscription(item),
+		CoverBlur:      item.CoverBlur,
+		ChapterCount:   item.ChapterCount,
+		DaysWithoutNew: event.DaysWithoutNew,
+		DaysRemaining:  event.DaysRemaining,
+		ThresholdDays:  event.ThresholdDays,
+		Completed:      event.Completed,
+	}
+	if warning {
+		s.telegram.SubscriptionArchiveWarning(ctx, notice)
+		return
+	}
+	s.telegram.SubscriptionArchived(ctx, notice)
 }
 
 func isManagedSource(sourceID string) bool {
