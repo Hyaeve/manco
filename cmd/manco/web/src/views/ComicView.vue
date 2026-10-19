@@ -90,6 +90,7 @@ const sourceDefaultDownloadDir = computed(() => {
   const account = sourceAccounts.value[sourceId]
   return String(account?.settings?.defaultDownloadDir || '').trim()
 })
+const sourceDefaultCoverBlur = computed(() => Boolean(sourceAccounts.value[sourceId]?.settings?.coverBlur))
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
@@ -419,7 +420,7 @@ function openSubscribe() {
     seriesDir: '',
     convertToSimplified: true,
     chapterMarker: false,
-    coverBlur: false,
+    coverBlur: sourceDefaultCoverBlur.value,
     allChapters: true,
   }
   // 自动追更默认勾选；关掉后 Cron 留空，等于不启用定时检查。

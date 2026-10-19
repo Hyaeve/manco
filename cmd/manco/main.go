@@ -190,6 +190,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 		Telegram:           bot,
 	})
 	bot.SetApp(server)
+	engine.SetRetryNotifier(server.NotifyDownloadRetry)
 	// 旧的「打开添加内容源就把所有仓库枚举一遍」会把几百个扩展留在运行时里，
 	// 每次重启 sidecar 都要全部加载，整站都会跟着变慢；启动时先清一次。
 	if removed, err := server.PruneUnusedPlugins(ctx); err != nil {

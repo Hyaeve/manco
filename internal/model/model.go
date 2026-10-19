@@ -112,6 +112,9 @@ type SourceDownloadSettings struct {
 	PageConcurrency      int `json:"pageConcurrency"`
 	BatchSize            int `json:"batchSize"`
 	BatchIntervalMinutes int `json:"batchIntervalMinutes"`
+	// CoverBlur is only a default for newly created subscriptions and Telegram
+	// search results. Each subscription keeps its own editable CoverBlur value.
+	CoverBlur bool `json:"coverBlur"`
 	// DefaultDownloadDir pre-fills the download location when subscribing to a
 	// work from this source; the user can still override it per subscription.
 	DefaultDownloadDir string `json:"defaultDownloadDir,omitempty"`

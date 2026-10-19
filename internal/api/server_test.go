@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,17 @@ import (
 	"github.com/hyaeve/manco/internal/sources"
 	"github.com/hyaeve/manco/internal/store"
 )
+
+func TestSourceDownloadSettingsCoverBlur(t *testing.T) {
+	server := &Server{}
+	if got := server.sourceDownloadSettings(nil); got.CoverBlur {
+		t.Fatal("cover blur should default to false")
+	}
+	raw := json.RawMessage(`{"downloadSettings":{"coverBlur":true,"chapterConcurrency":2}}`)
+	if got := server.sourceDownloadSettings(raw); !got.CoverBlur || got.ChapterConcurrency != 2 {
+		t.Fatalf("source settings = %#v, want coverBlur enabled with chapter concurrency 2", got)
+	}
+}
 
 type lazyFilterFixture struct {
 	info    model.SourceInfo
@@ -626,5 +638,26 @@ func TestSourceConnectionProbeUsesBrowseWhenAvailable(t *testing.T) {
 	}
 	if probe != "browse" {
 		t.Fatalf("testSourceConnection() probe = %q, want browse", probe)
+	}
+}
+
+func TestLoadSettingsDefaultsSimplifiedConversionEnabled(t *testing.T) {
+	repository, err := store.Open(filepath.Join(t.TempDir(), "manco.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	server := &Server{
+		cfg:   config.Config{},
+		store: repository,
+	}
+	if !server.loadSettings(context.Background()).ConvertToSimplified {
+		t.Fatal("global simplified conversion should default to enabled")
+	}
+	if err := repository.SetSetting(context.Background(), "convert_to_simplified", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if server.loadSettings(context.Background()).ConvertToSimplified {
+		t.Fatal("explicit disabled setting should override the default")
 	}
 }

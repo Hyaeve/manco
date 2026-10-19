@@ -182,6 +182,7 @@ const activeSourceDefaultDir = computed(() => {
   const account = sourceAccounts.value[activeSource.value?.id]
   return String(account?.settings?.defaultDownloadDir || '').trim()
 })
+const activeSourceCoverBlur = computed(() => Boolean(sourceAccounts.value[activeSource.value?.id]?.settings?.coverBlur))
 const hasNextPage = computed(() => {
   const panel = activePanel.value
   if (!panel) return false
@@ -550,6 +551,9 @@ function clearDiscoverSelection() {
 
 function enterDiscoverSelection(event, item, index) {
   event.preventDefault()
+  if (!selectedItems.value.size) {
+    batchCoverBlur.value = activeSourceCoverBlur.value
+  }
   const next = new Set(selectedItems.value)
   if (event.shiftKey && selectionAnchor >= 0) {
     const [start, end] = selectionAnchor < index ? [selectionAnchor, index] : [index, selectionAnchor]
@@ -561,6 +565,7 @@ function enterDiscoverSelection(event, item, index) {
     next.add(discoveryKey(item))
   }
   selectedItems.value = next
+  if (!next.size) batchCoverBlur.value = false
   selectionAnchor = index
 }
 
@@ -580,6 +585,7 @@ function handleDiscoverItemClick(event, item, index) {
     next.add(discoveryKey(item))
   }
   selectedItems.value = next
+  if (!next.size) batchCoverBlur.value = false
   selectionAnchor = index
 }
 

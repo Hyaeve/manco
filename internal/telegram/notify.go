@@ -18,17 +18,29 @@ import (
 
 type SubscriptionDownloadCompletedNotice struct {
 	Title          string
+	Source         string
 	Author         string
 	Description    string
 	CoverURL       string
 	CoverFile      string
+	CoverBlur      bool
 	Succeeded      int
 	Failed         int
 	NextCheckLabel string
 }
 
+type DownloadRetryNotice struct {
+	Title     string
+	Source    string
+	Author    string
+	CoverURL  string
+	CoverFile string
+	CoverBlur bool
+	Chapters  []string
+}
+
 // notifyPhotoAll 给每个配置的会话发一条带图通知；封面取不到就退回纯文字。
-func (s *Service) notifyPhotoAll(ctx context.Context, photo, text string) {
+func (s *Service) notifyPhotoAll(ctx context.Context, photo, text string, coverBlur bool) {
 	if !s.Enabled() || strings.TrimSpace(text) == "" {
 		return
 	}
@@ -38,12 +50,16 @@ func (s *Service) notifyPhotoAll(ctx context.Context, photo, text string) {
 	photo = strings.TrimSpace(photo)
 	for _, chat := range chats {
 		if photo != "" {
-			if _, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+			payload := map[string]any{
 				"chat_id":    chat,
 				"photo":      photo,
 				"caption":    text,
 				"parse_mode": "HTML",
-			}); err == nil {
+			}
+			if coverBlur {
+				payload["has_spoiler"] = true
+			}
+			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
 				continue
 			}
 		}
@@ -57,10 +73,16 @@ func (s *Service) SubscriptionChecked(ctx context.Context, subscription model.Su
 	if !s.Enabled() || queued <= 0 {
 		return
 	}
+	sourceNames := s.notificationSourceNames(ctx)
+	text := renderSubscriptionChecked(subscription, sourceNames[subscription.SourceID], queued, titles)
+	s.notifyPhotoAll(ctx, subscription.Cover, text, subscription.CoverBlur)
+}
+
+func renderSubscriptionChecked(subscription model.Subscription, sourceName string, queued int, titles []string) string {
 	lines := []string{
-		fmt.Sprintf("<b>%s</b>", fallback(strings.TrimSpace(subscription.Title), "未命名作品")),
-		fmt.Sprintf("%s · 例行检查", fallback(subscription.Author, "未知作者")),
-		fmt.Sprintf("发现 %d 个新章节，已加入下载队列：", queued),
+		notificationWorkTitle(subscription.Title, sourceName),
+		html.EscapeString(fallback(subscription.Author, "未知作者")),
+		fmt.Sprintf("发现 %d 个新章节，已加入下载队列 · 例行检查：", queued),
 	}
 	const titleLimit = 10
 	for index, title := range titles {
@@ -70,7 +92,7 @@ func (s *Service) SubscriptionChecked(ctx context.Context, subscription model.Su
 		}
 		lines = append(lines, "· "+title)
 	}
-	s.notifyPhotoAll(ctx, subscription.Cover, strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
 }
 
 // SubscriptionDownloadCompleted sends one summary after a new subscription's
@@ -85,17 +107,21 @@ func (s *Service) SubscriptionDownloadCompleted(ctx context.Context, notice Subs
 	s.mu.RUnlock()
 	for _, chat := range chats {
 		if path := strings.TrimSpace(notice.CoverFile); path != "" {
-			if err := s.sendPhotoFile(ctx, chat, path, caption); err == nil {
+			if err := s.sendPhotoFile(ctx, chat, path, caption, notice.CoverBlur); err == nil {
 				continue
 			}
 		}
 		if photo := strings.TrimSpace(notice.CoverURL); photo != "" {
-			if _, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+			payload := map[string]any{
 				"chat_id":    chat,
 				"photo":      photo,
 				"caption":    caption,
 				"parse_mode": "HTML",
-			}); err == nil {
+			}
+			if notice.CoverBlur {
+				payload["has_spoiler"] = true
+			}
+			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
 				continue
 			}
 		}
@@ -103,15 +129,77 @@ func (s *Service) SubscriptionDownloadCompleted(ctx context.Context, notice Subs
 	}
 }
 
+// DownloadRetryScheduled sends one work-level notification after failed
+// chapters have been put back into the queue.
+func (s *Service) DownloadRetryScheduled(ctx context.Context, notice DownloadRetryNotice) {
+	if !s.Enabled() || len(notice.Chapters) == 0 {
+		return
+	}
+	caption := renderDownloadRetryNotice(notice)
+	s.mu.RLock()
+	chats := append([]string(nil), s.cfg.ChatIDs...)
+	s.mu.RUnlock()
+	for _, chat := range chats {
+		if path := strings.TrimSpace(notice.CoverFile); path != "" {
+			if err := s.sendPhotoFile(ctx, chat, path, caption, notice.CoverBlur); err == nil {
+				continue
+			}
+		}
+		if photo := strings.TrimSpace(notice.CoverURL); photo != "" {
+			payload := map[string]any{
+				"chat_id":    chat,
+				"photo":      photo,
+				"caption":    caption,
+				"parse_mode": "HTML",
+			}
+			if notice.CoverBlur {
+				payload["has_spoiler"] = true
+			}
+			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
+				continue
+			}
+		}
+		s.sendPersistentMessage(ctx, chat, caption, nil)
+	}
+}
+
+func renderDownloadRetryNotice(notice DownloadRetryNotice) string {
+	title := fallback(strings.TrimSpace(notice.Title), "未命名作品")
+	lines := []string{
+		notificationWorkTitle(title, notice.Source),
+		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
+		fmt.Sprintf("失败重试 · %d 个章节已重新加入下载队列：", len(notice.Chapters)),
+	}
+	const limit = 3
+	for index, chapter := range notice.Chapters {
+		if index >= limit {
+			remaining := notice.Chapters[limit:]
+			summary := fmt.Sprintf("… 其余 %d 章", len(remaining))
+			first := strings.TrimSpace(remaining[0])
+			last := strings.TrimSpace(remaining[len(remaining)-1])
+			switch {
+			case first != "" && last != "" && len(remaining) > 1 && first != last:
+				summary += fmt.Sprintf("（%s 至 %s）", first, last)
+			case first != "":
+				summary += fmt.Sprintf("（%s）", first)
+			}
+			lines = append(lines, html.EscapeString(summary))
+			break
+		}
+		lines = append(lines, "· "+html.EscapeString(fallback(strings.TrimSpace(chapter), "未命名章节")))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (s *Service) DownloadResumed(ctx context.Context, jobs []model.DownloadJob) {
-	text := renderDownloadResumed(jobs)
+	text := renderDownloadResumed(jobs, s.notificationSourceNames(ctx))
 	if text == "" {
 		return
 	}
 	s.NotifyAll(ctx, text)
 }
 
-func renderDownloadResumed(jobs []model.DownloadJob) string {
+func renderDownloadResumed(jobs []model.DownloadJob, sourceNames map[string]string) string {
 	if len(jobs) == 0 {
 		return ""
 	}
@@ -127,10 +215,12 @@ func renderDownloadResumed(jobs []model.DownloadJob) string {
 		}
 		title := fallback(strings.TrimSpace(job.ComicTitle), "未命名作品")
 		chapter := fallback(strings.TrimSpace(job.ChapterTitle), "未命名章节")
+		sourceLabel := shortSourceName(fallback(strings.TrimSpace(sourceNames[job.SourceID]), "未知"))
 		lines = append(lines, fmt.Sprintf(
-			"%d. 《%s》· %s",
+			"%d. 《%s》（%s）· %s",
 			index+1,
 			html.EscapeString(title),
+			html.EscapeString(sourceLabel),
 			html.EscapeString(chapter),
 		))
 	}
@@ -140,7 +230,7 @@ func renderDownloadResumed(jobs []model.DownloadJob) string {
 func renderSubscriptionDownloadCompleted(notice SubscriptionDownloadCompletedNotice) string {
 	title := fallback(strings.TrimSpace(notice.Title), "未命名作品")
 	lines := []string{
-		fmt.Sprintf("<b>%s</b>", html.EscapeString(title)),
+		notificationWorkTitle(title, notice.Source),
 		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
 	}
 	description := cleanComicSummary(title, notice.Description)
@@ -155,7 +245,35 @@ func renderSubscriptionDownloadCompleted(notice SubscriptionDownloadCompletedNot
 	return strings.Join(lines, "\n")
 }
 
-func (s *Service) sendPhotoFile(ctx context.Context, chat, path, caption string) error {
+func (s *Service) notificationSourceNames(ctx context.Context) map[string]string {
+	s.mu.RLock()
+	app := s.app
+	s.mu.RUnlock()
+	result := map[string]string{}
+	if app == nil {
+		return result
+	}
+	sources, err := app.BotSources(ctx)
+	if err != nil {
+		return result
+	}
+	for _, item := range sources {
+		result[item.ID] = item.Name
+	}
+	return result
+}
+
+func notificationWorkTitle(title, sourceName string) string {
+	title = fallback(strings.TrimSpace(title), "未命名作品")
+	sourceName = fallback(strings.TrimSpace(sourceName), "未知")
+	return fmt.Sprintf(
+		"<b>%s（%s）</b>",
+		html.EscapeString(title),
+		html.EscapeString(shortSourceName(sourceName)),
+	)
+}
+
+func (s *Service) sendPhotoFile(ctx context.Context, chat, path, caption string, coverBlur bool) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -171,6 +289,11 @@ func (s *Service) sendPhotoFile(ctx context.Context, chat, path, caption string)
 	}
 	if err := writer.WriteField("parse_mode", "HTML"); err != nil {
 		return err
+	}
+	if coverBlur {
+		if err := writer.WriteField("has_spoiler", "true"); err != nil {
+			return err
+		}
 	}
 	part, err := writer.CreateFormFile("photo", filepath.Base(path))
 	if err != nil {
@@ -213,7 +336,7 @@ func (s *Service) sendPhotoFile(ctx context.Context, chat, path, caption string)
 }
 
 // DownloadSummary pushes an aggregated download result for one work.
-func (s *Service) DownloadSummary(ctx context.Context, title string, succeeded, failed int) {
+func (s *Service) DownloadSummary(ctx context.Context, title string, succeeded, failed int, sourceNames ...string) {
 	if !s.Enabled() {
 		return
 	}
@@ -221,12 +344,18 @@ func (s *Service) DownloadSummary(ctx context.Context, title string, succeeded, 
 	if title == "" {
 		title = "未命名作品"
 	}
+	sourceName := ""
+	if len(sourceNames) > 0 {
+		sourceName = strings.TrimSpace(sourceNames[0])
+	}
+	sourceLabel := shortSourceName(fallback(sourceName, "未知"))
+	workTitle := fmt.Sprintf("《%s》（%s）", title, sourceLabel)
 	switch {
 	case failed > 0 && succeeded > 0:
-		s.NotifyAll(ctx, fmt.Sprintf("《%s》下载完成 %d 章，失败 %d 章。", title, succeeded, failed))
+		s.NotifyAll(ctx, fmt.Sprintf("%s下载完成 %d 章，失败 %d 章。", workTitle, succeeded, failed))
 	case failed > 0:
-		s.NotifyAll(ctx, fmt.Sprintf("《%s》有 %d 章下载失败，可在任务列表重试。", title, failed))
+		s.NotifyAll(ctx, fmt.Sprintf("%s有 %d 章下载失败，可在任务列表重试。", workTitle, failed))
 	case succeeded > 0:
-		s.NotifyAll(ctx, fmt.Sprintf("《%s》已成功下载 %d 章。", title, succeeded))
+		s.NotifyAll(ctx, fmt.Sprintf("%s已成功下载 %d 章。", workTitle, succeeded))
 	}
 }

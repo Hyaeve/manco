@@ -67,6 +67,7 @@ type Engine struct {
 	convertToSimplified      bool
 	activeTotal              int
 	activeBySource           map[string]int
+	retryNotifier            func(context.Context, []model.DownloadJob)
 
 	mu      sync.Mutex
 	metaMu  sync.Mutex
@@ -156,6 +157,7 @@ type Jobs interface {
 	FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error
 	ResetDownloadJob(ctx context.Context, id int64, queuePriority int) error
 	ActivateDueRetries(ctx context.Context, now time.Time) (int64, error)
+	DueRetryJobs(ctx context.Context, now time.Time) ([]model.DownloadJob, error)
 	UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error
 	FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error)
 }
@@ -239,14 +241,24 @@ func (e *Engine) Notify() {
 	}
 }
 
+// SetRetryNotifier installs the work-level callback used when failed jobs are
+// put back into the download queue.
+func (e *Engine) SetRetryNotifier(notifier func(context.Context, []model.DownloadJob)) {
+	e.mu.Lock()
+	e.retryNotifier = notifier
+	e.mu.Unlock()
+}
+
 func (e *Engine) Retry(ctx context.Context, id int64) error {
-	if _, err := e.store.DownloadJob(ctx, id); err != nil {
+	job, err := e.store.DownloadJob(ctx, id)
+	if err != nil {
 		return err
 	}
 	if err := e.store.ResetDownloadJob(ctx, id, model.QueuePriorityManual); err != nil {
 		return err
 	}
 	e.Notify()
+	e.notifyRetries([]model.DownloadJob{job})
 	return nil
 }
 
@@ -259,6 +271,7 @@ func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID strin
 		return 0, err
 	}
 	retried := 0
+	resetJobs := make([]model.DownloadJob, 0, len(jobs))
 	var firstErr error
 	for _, job := range jobs {
 		if err := e.store.ResetDownloadJob(ctx, job.ID, queuePriority); err != nil {
@@ -269,11 +282,36 @@ func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID strin
 			continue
 		}
 		retried++
+		resetJobs = append(resetJobs, job)
 	}
 	if retried > 0 {
 		e.Notify()
+		e.notifyRetries(resetJobs)
 	}
 	return retried, firstErr
+}
+
+func (e *Engine) notifyRetries(jobs []model.DownloadJob) {
+	e.mu.Lock()
+	notifier := e.retryNotifier
+	e.mu.Unlock()
+	if notifier == nil || len(jobs) == 0 {
+		return
+	}
+	grouped := make(map[string][]model.DownloadJob)
+	for _, job := range jobs {
+		key := job.SourceID + "\x00" + job.ComicID
+		grouped[key] = append(grouped[key], job)
+	}
+	keys := make([]string, 0, len(grouped))
+	for key := range grouped {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		batch := append([]model.DownloadJob(nil), grouped[key]...)
+		go notifier(context.Background(), batch)
+	}
 }
 
 func (e *Engine) Cancel(id int64) bool {
@@ -332,10 +370,18 @@ func (e *Engine) loop(ctx context.Context) {
 		case <-ticker.C:
 		case <-e.kick:
 		}
-		if activated, err := e.store.ActivateDueRetries(ctx, time.Now()); err != nil {
+		now := time.Now()
+		dueRetries, dueErr := e.store.DueRetryJobs(ctx, now)
+		if dueErr != nil {
+			e.logger.Printf("downloader: list due retries: %v", dueErr)
+		}
+		if activated, err := e.store.ActivateDueRetries(ctx, now); err != nil {
 			e.logger.Printf("downloader: activate retries: %v", err)
 		} else if activated > 0 {
 			e.logger.Printf("downloader: requeued %d failed job(s) for automatic retry", activated)
+			if dueErr == nil {
+				e.notifyRetries(dueRetries)
+			}
 		}
 
 		jobs, err := e.store.ListQueuedJobs(ctx)

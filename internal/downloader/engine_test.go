@@ -166,6 +166,22 @@ func (m *memoryJobs) ActivateDueRetries(_ context.Context, now time.Time) (int64
 	return activated, nil
 }
 
+func (m *memoryJobs) DueRetryJobs(_ context.Context, now time.Time) ([]model.DownloadJob, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var due []model.DownloadJob
+	for _, job := range m.jobs {
+		if job.Status != "failed" || job.RetryCount >= 2 || job.NextRetryAt == nil {
+			continue
+		}
+		if job.NextRetryAt.After(now) {
+			continue
+		}
+		due = append(due, job)
+	}
+	return due, nil
+}
+
 func (m *memoryJobs) FailedDownloadJobsByComic(_ context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1720,6 +1736,10 @@ func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
 		{ID: 3, SourceID: "other", ComicID: "1", Status: "failed", RetryCount: 2, NextRetryAt: &nextRetry},
 	}}
 	engine := NewEngine(sources.NewRegistry(nil, nil, nil), jobs, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+	retryBatches := make(chan []model.DownloadJob, 1)
+	engine.SetRetryNotifier(func(_ context.Context, batch []model.DownloadJob) {
+		retryBatches <- batch
+	})
 
 	retried, err := engine.RetryFailedByComic(context.Background(), "stub", "1", model.QueuePriorityManual)
 	if err != nil {
@@ -1738,6 +1758,48 @@ func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
 	other, _ := jobs.find(3)
 	if other.Status != "failed" || other.RetryCount != 2 {
 		t.Fatalf("unrelated job changed = %#v", other)
+	}
+	select {
+	case batch := <-retryBatches:
+		if len(batch) != 1 || batch[0].SourceID != "stub" || batch[0].ComicID != "1" {
+			t.Fatalf("retry notification batch = %#v", batch)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry notification was not emitted")
+	}
+}
+
+func TestNotifyRetriesGroupsByWork(t *testing.T) {
+	engine := NewEngine(sources.NewRegistry(nil, nil, nil), &memoryJobs{}, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+	batches := make(chan []model.DownloadJob, 3)
+	engine.SetRetryNotifier(func(_ context.Context, batch []model.DownloadJob) {
+		batches <- batch
+	})
+	engine.notifyRetries([]model.DownloadJob{
+		{SourceID: "a", ComicID: "1", ChapterTitle: "第1话"},
+		{SourceID: "a", ComicID: "1", ChapterTitle: "第2话"},
+		{SourceID: "b", ComicID: "2", ChapterTitle: "第3话"},
+	})
+	got := map[string]int{}
+	for range 2 {
+		select {
+		case batch := <-batches:
+			if len(batch) == 0 {
+				t.Fatal("empty retry notification batch")
+			}
+			key := batch[0].SourceID + "/" + batch[0].ComicID
+			got[key] = len(batch)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for grouped retry notification")
+		}
+	}
+	if got["a/1"] != 2 || got["b/2"] != 1 {
+		t.Fatalf("grouped retry notifications = %#v", got)
+	}
+	select {
+	case batch := <-batches:
+		t.Fatalf("unexpected extra retry batch: %#v", batch)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

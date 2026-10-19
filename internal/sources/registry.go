@@ -182,11 +182,18 @@ func (r *Registry) Account(ctx context.Context, id string) (source.Account, erro
 	stored, err := r.store.SourceAccount(ctx, id)
 	if err != nil {
 		if err == store.ErrNotFound {
-			return source.Account{}, nil
+			account := source.Account{}
+			source.ApplyDefaultAccountUseProxy(id, &account)
+			return account, nil
 		}
 		return source.Account{}, err
 	}
-	return source.AccountFromModel(r.box, stored)
+	account, err := source.AccountFromModel(r.box, stored)
+	if err != nil {
+		return source.Account{}, err
+	}
+	source.ApplyDefaultAccountUseProxy(id, &account)
+	return account, nil
 }
 
 func (r *Registry) Credentials(ctx context.Context, id string) (source.Account, error) {

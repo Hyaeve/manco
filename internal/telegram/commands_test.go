@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hyaeve/manco/internal/model"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -41,6 +43,25 @@ func TestSplitCommand(t *testing.T) {
 		command, arg := splitCommand(item.input)
 		if command != item.command || arg != item.arg {
 			t.Fatalf("splitCommand(%q) = %q, %q; want %q, %q", item.input, command, arg, item.command, item.arg)
+		}
+	}
+}
+
+func TestParseViewText(t *testing.T) {
+	cases := map[string]string{
+		"查看包子榜单":    "包子",
+		"查看包子漫画榜单":  "包子漫画",
+		"查看 AA2 榜单": "AA2",
+	}
+	for input, want := range cases {
+		got, ok := parseViewText(input)
+		if !ok || got != want {
+			t.Fatalf("parseViewText(%q) = %q, %v; want %q, true", input, got, ok, want)
+		}
+	}
+	for _, input := range []string{"查看订阅", "包子榜单", "查看榜单 包子"} {
+		if got, ok := parseViewText(input); ok {
+			t.Fatalf("parseViewText(%q) unexpectedly matched %q", input, got)
 		}
 	}
 }
@@ -138,7 +159,7 @@ func TestSendResultListUsesFirstCoverPhoto(t *testing.T) {
 		}, nil
 	})}
 	entries := []resultEntry{
-		{Title: "第一个结果", Cover: "https://example.test/first.jpg"},
+		{Title: "第一个结果", Cover: "https://example.test/first.jpg", CoverBlur: true},
 		{Title: "第二个结果", Cover: "https://example.test/second.jpg"},
 	}
 	id, photo, err := service.sendResultList(context.Background(), "1", "搜索结果", entries, resultKeyboard(entries))
@@ -156,6 +177,24 @@ func TestSendResultListUsesFirstCoverPhoto(t *testing.T) {
 	}
 	if _, ok := payload["reply_markup"]; !ok {
 		t.Fatal("reply_markup missing from photo message")
+	}
+	if payload["has_spoiler"] != true {
+		t.Fatalf("cover blur not forwarded to Telegram: %+v", payload)
+	}
+}
+
+func TestNewResultEntryInheritsSourceCoverBlur(t *testing.T) {
+	entry := newResultEntry(BotSource{
+		ID:        "blurred",
+		Name:      "测试内容源",
+		CoverBlur: true,
+	}, model.Comic{
+		ID:    "comic-1",
+		Title: "测试作品",
+		Cover: "https://example.test/cover.jpg",
+	})
+	if !entry.CoverBlur {
+		t.Fatal("result entry did not inherit source cover blur")
 	}
 }
 
@@ -382,6 +421,7 @@ func TestRenderDownloadingRunningOnlyAndPauseNext(t *testing.T) {
 func TestRenderSubscriptionDownloadCompletedNotice(t *testing.T) {
 	text := renderSubscriptionDownloadCompleted(SubscriptionDownloadCompletedNotice{
 		Title:          "测试作品",
+		Source:         "包子漫画",
 		Author:         "测试作者",
 		Description:    "这是一段作品简介。",
 		Succeeded:      25,
@@ -389,7 +429,7 @@ func TestRenderSubscriptionDownloadCompletedNotice(t *testing.T) {
 		NextCheckLabel: "明天 21:30",
 	})
 	for _, want := range []string{
-		"<b>测试作品</b>",
+		"<b>测试作品（包子）</b>",
 		"作者：测试作者",
 		"简介：这是一段作品简介。",
 		"历史章节下载完成：成功 25 章",
@@ -536,19 +576,42 @@ func TestBrowseKeyboardAndPageRules(t *testing.T) {
 	entries := []resultEntry{{Title: "作品一"}, {Title: "作品二"}}
 	first := browseKeyboard(entries, 1, true).(map[string]any)
 	rows := first["inline_keyboard"].([][]map[string]string)
-	if len(rows) != 3 {
-		t.Fatalf("first page keyboard rows = %d, want 2 results + next row", len(rows))
+	if len(rows) != 2 {
+		t.Fatalf("first page keyboard rows = %d, want one number row + next row", len(rows))
 	}
-	if rows[2][0]["callback_data"] != "browse:next" {
-		t.Fatalf("first page navigation = %+v", rows[2])
+	if rows[0][0]["text"] != "1" || rows[0][1]["text"] != "2" {
+		t.Fatalf("first page result buttons = %+v", rows[0])
+	}
+	if rows[1][0]["callback_data"] != "browse:next" {
+		t.Fatalf("first page navigation = %+v", rows[1])
 	}
 	second := browseKeyboard(entries, 2, false).(map[string]any)
 	rows = second["inline_keyboard"].([][]map[string]string)
-	if rows[0][0]["text"] != "11. 作品一" {
+	if rows[0][0]["text"] != "11" || rows[0][0]["callback_data"] != "open:0" {
 		t.Fatalf("second page result numbering = %+v", rows[0])
 	}
-	if rows[2][0]["callback_data"] != "browse:prev" {
-		t.Fatalf("second page navigation = %+v", rows[2])
+	if rows[1][0]["callback_data"] != "browse:prev" {
+		t.Fatalf("second page navigation = %+v", rows[1])
+	}
+}
+
+func TestBrowseKeyboardUsesFiveNumberButtonsPerRow(t *testing.T) {
+	entries := make([]resultEntry, browsePageSize)
+	keyboard := browseKeyboard(entries, 1, true).(map[string]any)
+	rows := keyboard["inline_keyboard"].([][]map[string]string)
+	if len(rows) != 3 {
+		t.Fatalf("keyboard rows = %d, want two result rows + navigation row", len(rows))
+	}
+	for index, row := range rows[:2] {
+		if len(row) != 5 {
+			t.Fatalf("result row %d has %d buttons, want 5", index+1, len(row))
+		}
+	}
+	if rows[0][0]["text"] != "1" || rows[1][4]["text"] != "10" {
+		t.Fatalf("result button numbering = %+v / %+v", rows[0], rows[1])
+	}
+	if len(rows[2]) != 1 || rows[2][0]["callback_data"] != "browse:next" {
+		t.Fatalf("navigation row = %+v, want separate next button", rows[2])
 	}
 }
 
@@ -556,12 +619,12 @@ func TestGlobalSearchKeyboardHasTypePageNavigation(t *testing.T) {
 	entries := []resultEntry{{Title: "作品一"}, {Title: "作品二"}}
 	first := globalSearchKeyboard(entries, 1, 3).(map[string]any)
 	rows := first["inline_keyboard"].([][]map[string]string)
-	if len(rows) != 3 || rows[2][0]["callback_data"] != "browse:next" {
+	if len(rows) != 2 || rows[1][0]["callback_data"] != "browse:next" {
 		t.Fatalf("first page keyboard = %+v", rows)
 	}
 	second := globalSearchKeyboard(entries, 2, 3).(map[string]any)
 	rows = second["inline_keyboard"].([][]map[string]string)
-	if len(rows) != 3 || rows[2][0]["callback_data"] != "browse:prev" || rows[2][1]["callback_data"] != "browse:next" {
+	if len(rows) != 2 || rows[1][0]["callback_data"] != "browse:prev" || rows[1][1]["callback_data"] != "browse:next" {
 		t.Fatalf("middle page keyboard = %+v", rows)
 	}
 }

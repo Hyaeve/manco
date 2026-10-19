@@ -456,9 +456,9 @@ function formatNextRun(value) {
 .overview-dashboard {
   display: grid;
   width: 100%;
-  height: calc(100dvh - 120px);
+  height: calc(100dvh - 92px);
   min-width: 0;
-  grid-template-rows: minmax(0, 0.46fr) minmax(0, 0.54fr);
+  grid-template-rows: minmax(0, 0.53fr) minmax(0, 0.47fr);
   gap: 12px;
 }
 
@@ -499,7 +499,7 @@ function formatNextRun(value) {
   background-image: var(--overview-hero-image);
   background-position: center;
   background-size: cover;
-  filter: blur(30px) saturate(1.08) brightness(1.06);
+  filter: blur(18px) saturate(1.08) brightness(1.06);
   opacity: 0.46;
   transform: scale(1.16);
   will-change: opacity, transform;
@@ -626,8 +626,8 @@ function formatNextRun(value) {
   background:
     linear-gradient(90deg, rgba(255, 254, 248, 0.93), rgba(255, 251, 238, 0.84) 54%, rgba(255, 253, 247, 0.68)),
     color-mix(in srgb, var(--surface) 88%, transparent);
-  backdrop-filter: blur(10px) saturate(1.08);
-  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+  backdrop-filter: blur(6px) saturate(1.08);
+  -webkit-backdrop-filter: blur(6px) saturate(1.08);
 }
 
 .overview-hero-content {
@@ -664,8 +664,8 @@ function formatNextRun(value) {
 }
 
 .overview-hero-poster.blurred img {
-  filter: blur(14px);
-  transform: scale(1.12);
+  filter: blur(9px);
+  transform: scale(1.1);
 }
 
 .overview-hero-poster.blurred:hover img,
@@ -1173,17 +1173,18 @@ function formatNextRun(value) {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: filter 0.32s ease, transform 0.32s ease;
+  transition: filter 0.42s ease, transform 0.42s ease;
 }
 
 .overview-upcoming-cover.blurred img {
-  filter: blur(7px);
-  transform: scale(1.08);
+  filter: blur(9px);
+  transform: scale(1.1);
 }
 
-.overview-upcoming-cover.blurred:hover img {
+.overview-upcoming-cover.blurred:hover img,
+.overview-upcoming-card:focus-visible .overview-upcoming-cover.blurred img {
   filter: blur(0);
-  transform: scale(1);
+  transform: scale(1.04);
 }
 
 .overview-upcoming-cron {
@@ -1325,7 +1326,7 @@ function formatNextRun(value) {
 
 :global([data-theme='dark'] .overview-hero-backdrop) {
   inset: -24px;
-  filter: blur(25px) saturate(0.9);
+  filter: blur(14px) saturate(0.9);
   opacity: 0.66;
   transform: scale(1.1);
 }

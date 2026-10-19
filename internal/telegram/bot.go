@@ -44,9 +44,10 @@ type App interface {
 
 // BotSource is the display shape of a content source for the bot.
 type BotSource struct {
-	ID   string
-	Name string
-	Kind string
+	ID        string
+	Name      string
+	Kind      string
+	CoverBlur bool
 }
 
 // BotSubscription is the display shape of a subscription for the bot.
@@ -160,13 +161,14 @@ type session struct {
 }
 
 type browseSession struct {
-	SourceID   string
-	SourceName string
-	SourcePage int
-	Page       int
-	HasMore    bool
-	HasNext    bool
-	Pool       []resultEntry
+	SourceID        string
+	SourceName      string
+	SourceCoverBlur bool
+	SourcePage      int
+	Page            int
+	HasMore         bool
+	HasNext         bool
+	Pool            []resultEntry
 }
 
 type globalSearchPager struct {
@@ -190,6 +192,7 @@ type resultEntry struct {
 	Latest       string
 	ChapterCount int
 	Cover        string
+	CoverBlur    bool
 	Summary      string
 }
 
@@ -368,7 +371,7 @@ func (s *Service) registerCommands(ctx context.Context) {
 		`{"command":"subscriptions","description":"查看订阅计划"},` +
 		`{"command":"check","description":"检查订阅作品"},` +
 		`{"command":"downloading","description":"查看下载队列"},` +
-		`{"command":"view","description":"查看内容源"},` +
+		`{"command":"view","description":"查看榜单"},` +
 		`{"command":"sources","description":"查看内容源列表"},` +
 		`{"command":"sh","description":"搜索作品"}` +
 		`]}`

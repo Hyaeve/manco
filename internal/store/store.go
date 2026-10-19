@@ -1490,6 +1490,29 @@ func (s *Store) ActivateDueRetries(ctx context.Context, now time.Time) (int64, e
 	}
 	return result.RowsAffected()
 }
+
+// DueRetryJobs returns the failed jobs that ActivateDueRetries will requeue on
+// this pass, so the engine can emit one grouped notification per work.
+func (s *Store) DueRetryJobs(ctx context.Context, now time.Time) ([]model.DownloadJob, error) {
+	rows, err := s.reader().QueryContext(ctx, jobSelect+`
+		WHERE status = 'failed' AND retry_count < 2
+			AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+		ORDER BY source_id ASC, comic_id ASC, chapter_order ASC, id ASC`, now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var jobs []model.DownloadJob
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, rows.Err()
+}
+
 func (s *Store) UpdateDownloadProgress(ctx context.Context, id int64, completedPages int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE download_jobs SET completed_pages = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, completedPages, id)
 	return err

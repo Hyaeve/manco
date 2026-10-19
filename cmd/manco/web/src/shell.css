@@ -1075,7 +1075,7 @@ body,
 
 .app-shell {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 232px minmax(0, 1fr);
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
@@ -1231,6 +1231,10 @@ body,
   min-height: 100%;
   margin: 0 auto;
   padding: 26px 30px 44px;
+}
+
+.page-content.dashboard-page {
+  padding-bottom: 16px;
 }
 
 .nav-overlay {

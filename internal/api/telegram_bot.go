@@ -17,18 +17,52 @@ var _ telegram.App = (*Server)(nil)
 // the resource extension page shows them.
 func (s *Server) BotSources(ctx context.Context) ([]telegram.BotSource, error) {
 	items := s.filteredSourceList(s.hiddenSources(ctx), nil)
+	settings := s.allSourceDownloadSettings(ctx)
 	result := make([]telegram.BotSource, 0, len(items))
 	for _, item := range items {
 		if item.Hidden {
 			continue
 		}
 		result = append(result, telegram.BotSource{
-			ID:   item.ID,
-			Name: item.Name,
-			Kind: source.KindOf(item),
+			ID:        item.ID,
+			Name:      item.Name,
+			Kind:      source.KindOf(item),
+			CoverBlur: settings[item.ID].CoverBlur,
 		})
 	}
 	return result, nil
+}
+
+// NotifyDownloadRetry groups retry metadata into one Telegram notice per work.
+// The downloader invokes this after automatic, scheduled, or manual retries are
+// actually re-queued.
+func (s *Server) NotifyDownloadRetry(ctx context.Context, jobs []model.DownloadJob) {
+	if s.telegram == nil || len(jobs) == 0 {
+		return
+	}
+	first := jobs[0]
+	sourceName := first.SourceID
+	if adapter, err := s.registry.Get(first.SourceID); err == nil {
+		sourceName = adapter.Info().Name
+	}
+	notice := telegram.DownloadRetryNotice{
+		Title:    first.ComicTitle,
+		Source:   sourceName,
+		Author:   first.ComicAuthor,
+		CoverURL: first.ComicCover,
+	}
+	if subscription, err := s.store.SubscriptionByComic(ctx, first.SourceID, first.ComicID); err == nil {
+		item := s.subscriptionWithCovers(ctx, subscription)
+		notice.Title = source.FirstNonEmpty(item.Title, first.ComicTitle)
+		notice.Author = source.FirstNonEmpty(item.Author, first.ComicAuthor)
+		notice.CoverURL = source.FirstNonEmpty(item.Cover, first.ComicCover)
+		notice.CoverFile = s.localCoverFileForSubscription(item)
+		notice.CoverBlur = item.CoverBlur
+	}
+	for _, job := range jobs {
+		notice.Chapters = append(notice.Chapters, job.ChapterTitle)
+	}
+	s.telegram.DownloadRetryScheduled(ctx, notice)
 }
 
 // BotSearch runs one content source search and returns its top results.
@@ -125,6 +159,7 @@ func (s *Server) BotSubscribe(ctx context.Context, sourceID, comicID string) (mo
 		Author:              comic.Comic.Author,
 		DownloadDir:         downloadDir,
 		ConvertToSimplified: true,
+		CoverBlur:           settings.CoverBlur,
 		AutoDownload:        true,
 		CronExpr:            cronutil.Default(time.Now()),
 		Enabled:             true,

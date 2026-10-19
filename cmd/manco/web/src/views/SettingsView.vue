@@ -36,7 +36,7 @@ const form = reactive({
   proxyUsername: '',
   proxyPassword: '',
   staleDays: 30,
-  convertToSimplified: false,
+  convertToSimplified: true,
   telegramEnabled: false,
   telegramToken: '',
   telegramChatIds: '',

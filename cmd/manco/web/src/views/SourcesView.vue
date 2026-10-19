@@ -305,11 +305,12 @@ async function load() {
           userAgent: account.userAgent || '',
           homeUrl: account.homeUrl || '',
           reloginDays: Number(account.reloginDays ?? 7),
-          useProxy: account.useProxy !== false,
+          useProxy: typeof account.useProxy === 'boolean' ? account.useProxy : item.id !== 'baozimh',
           chapterConcurrency: Number(settings.chapterConcurrency ?? 1),
           pageConcurrency: Number(settings.pageConcurrency ?? 2),
           batchSize: Number(settings.batchSize ?? 5),
           batchIntervalMinutes: Number(settings.batchIntervalMinutes ?? 5),
+          coverBlur: Boolean(settings.coverBlur),
           defaultDownloadDir: settings.defaultDownloadDir || '',
         })
       } else {
@@ -318,11 +319,12 @@ async function load() {
         forms[item.id].homeUrl = account.homeUrl || ''
         forms[item.id].userAgent = account.userAgent || ''
         forms[item.id].reloginDays = Number(account.reloginDays ?? 7)
-        forms[item.id].useProxy = account.useProxy !== false
+        forms[item.id].useProxy = typeof account.useProxy === 'boolean' ? account.useProxy : item.id !== 'baozimh'
         forms[item.id].chapterConcurrency = Number(settings.chapterConcurrency ?? 1)
         forms[item.id].pageConcurrency = Number(settings.pageConcurrency ?? 2)
         forms[item.id].batchSize = Number(settings.batchSize ?? 5)
         forms[item.id].batchIntervalMinutes = Number(settings.batchIntervalMinutes ?? 5)
+        forms[item.id].coverBlur = Boolean(settings.coverBlur)
         forms[item.id].defaultDownloadDir = settings.defaultDownloadDir || ''
       }
     }
@@ -889,6 +891,7 @@ async function saveSource(item, login = false) {
         pageConcurrency: Number(form.pageConcurrency) || 4,
         batchSize: Number(form.batchSize) || 0,
         batchIntervalMinutes: Number(form.batchIntervalMinutes) || 0,
+        coverBlur: Boolean(form.coverBlur),
         defaultDownloadDir: form.defaultDownloadDir || '',
       },
     }
@@ -2041,10 +2044,16 @@ function onDragEnd() {
                 <span>内容源名称</span>
                 <input v-model="forms[editorSource.id].name" class="input" placeholder="自定义显示名称" />
               </label>
-              <label class="switch-row source-proxy-inline">
-                <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
-                <span>应用代理</span>
-              </label>
+              <div class="source-network-switches">
+                <label class="switch-row source-proxy-inline">
+                  <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
+                  <span>应用代理</span>
+                </label>
+                <label class="switch-row source-proxy-inline">
+                  <input v-model="forms[editorSource.id].coverBlur" type="checkbox" />
+                  <span>封面模糊</span>
+                </label>
+              </div>
             </div>
             <label v-else-if="!editorSource.builtin" class="field">
               <span>内容源名称</span>
@@ -2211,12 +2220,17 @@ function onDragEnd() {
         </section>
 
         <section v-if="!isPluginSource(editorSource)" class="source-editor-section">
-          <h3>网络</h3>
+          <h3>网络与封面</h3>
           <label class="switch-row">
             <input v-model="forms[editorSource.id].useProxy" type="checkbox" />
             <span>应用代理</span>
           </label>
           <p class="muted small">关闭后该内容源将直连，不经过系统设置中的全局代理。</p>
+          <label class="switch-row">
+            <input v-model="forms[editorSource.id].coverBlur" type="checkbox" />
+            <span>封面模糊</span>
+          </label>
+          <p class="muted small">开启后，该来源的新订阅默认勾选封面模糊，Telegram 搜索结果也会遮盖封面；具体订阅仍可单独关闭。</p>
         </section>
       </div>
       <div class="modal-foot source-editor-foot">

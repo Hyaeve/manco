@@ -5,6 +5,26 @@ import (
 	"strings"
 )
 
+// DefaultAccountUseProxy reports whether a source should use the configured
+// proxy before the user has saved an explicit choice.
+func DefaultAccountUseProxy(sourceID string) bool {
+	return !strings.EqualFold(strings.TrimSpace(sourceID), "baozimh")
+}
+
+// ApplyDefaultAccountUseProxy materializes the source default only when no
+// explicit preference exists, preserving user overrides.
+func ApplyDefaultAccountUseProxy(sourceID string, account *Account) {
+	if account == nil {
+		return
+	}
+	if account.Extra != nil {
+		if value, ok := account.Extra["useProxy"]; ok && value != nil {
+			return
+		}
+	}
+	SetAccountUseProxy(account, DefaultAccountUseProxy(sourceID))
+}
+
 // AccountUsesProxy reports whether a source account should route its
 // requests through the configured proxy. Sources default to using the proxy
 // and only opt out when the stored value is explicitly false.

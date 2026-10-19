@@ -509,7 +509,7 @@ function activityIcon(level) {
         </div>
       </header>
     <main class="content-scroll" :class="{ 'logs-page': route.name === 'logs', 'page-enter': pageAnimating }">
-        <div class="page-content">
+        <div class="page-content" :class="{ 'dashboard-page': route.name === 'dashboard' }">
           <RouterView v-slot="{ Component }">
             <KeepAlive :include="cachedViews">
               <component :is="Component" />

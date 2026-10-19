@@ -48,6 +48,10 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 	case "/sh", "搜索", "sh":
 		s.replySearch(ctx, chatID, argument, "")
 	default:
+		if sourceName, ok := parseViewText(text); ok {
+			s.replyBrowse(ctx, chatID, sourceName)
+			return
+		}
 		if query, sourceName, ok := parseSearchText(text); ok {
 			s.replySearch(ctx, chatID, query, sourceName)
 			return
@@ -58,6 +62,18 @@ func (s *Service) handleText(ctx context.Context, chatID int64, text string) {
 		}
 		s.sendMessage(ctx, chat, "未识别的指令。\n\n"+helpText(), nil)
 	}
+}
+
+// parseViewText accepts natural Chinese source-ranking commands such as
+// "查看包子榜单" and "查看包子漫画榜单" while keeping the older
+// "查看榜单 包子" command supported.
+func parseViewText(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "查看") || !strings.HasSuffix(trimmed, "榜单") {
+		return "", false
+	}
+	sourceName := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "查看"), "榜单"))
+	return sourceName, sourceName != ""
 }
 
 // splitCommand normalizes a leading slash command and returns its argument.
@@ -140,11 +156,11 @@ func helpText() string {
 		"/subscriptions [下载父目录] 查看全部订阅或指定父目录",
 		"/check [作品名或下载父目录] 检查全部、目录或单项",
 		"/downloading 查看正在下载与暂停状态",
-		"/view [内容源] 查看内容源榜单",
+		"/view [内容源] 查看榜单",
 		"/sources [漫画源|书籍源|视频源] 查看全部或指定类型内容源",
 		"/sh 关键词 全部来源分类型搜索",
 		"查看订阅 [下载父目录]",
-		"查看榜单 包子",
+		"查看包子榜单 / 查看包子漫画榜单",
 		"搜索 关键词 全局搜索",
 		"漫画搜索 关键词",
 		"书籍搜索 关键词",
@@ -842,18 +858,24 @@ func normalizedSourceKind(kind string) string {
 // an absolute cover URL fall back to the existing text message.
 func (s *Service) sendResultList(ctx context.Context, chat, text string, entries []resultEntry, keyboard any) (int64, bool, error) {
 	cover := ""
+	coverBlur := false
 	if len(entries) > 0 {
 		cover = telegramPhotoURL(entries[0].Cover)
+		coverBlur = entries[0].CoverBlur
 	}
 	if cover != "" {
 		photoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		id, err := s.callMethod(photoCtx, "sendPhoto", map[string]any{
+		payload := map[string]any{
 			"chat_id":      chat,
 			"photo":        cover,
 			"caption":      text,
 			"parse_mode":   "HTML",
 			"reply_markup": keyboard,
-		})
+		}
+		if coverBlur {
+			payload["has_spoiler"] = true
+		}
+		id, err := s.callMethod(photoCtx, "sendPhoto", payload)
 		cancel()
 		if err == nil && id != 0 {
 			s.trackTransientMessageForChat(chat, id)
@@ -897,7 +919,7 @@ func (s *Service) replyBrowse(ctx context.Context, chatID int64, sourceQuery str
 	chat := strconv.FormatInt(chatID, 10)
 	sourceQuery = strings.TrimSpace(sourceQuery)
 	if sourceQuery == "" {
-		s.sendMessage(ctx, chat, "请加入具体内容源，例如：查看榜单 包子、/view 包子 或 查看榜单 拷贝。", nil)
+		s.sendMessage(ctx, chat, "请加入具体内容源，例如：查看包子榜单、查看包子漫画榜单 或 /view 包子。", nil)
 		return
 	}
 	sources, err := s.app.BotSources(ctx)
@@ -928,12 +950,13 @@ func (s *Service) replyBrowse(ctx context.Context, chatID int64, sourceQuery str
 	}
 	s.mu.Lock()
 	s.sessions[chatID] = &session{browse: &browseSession{
-		SourceID:   source.ID,
-		SourceName: source.Name,
-		SourcePage: 1,
-		Page:       1,
-		HasMore:    firstPage.HasMore,
-		Pool:       pool,
+		SourceID:        source.ID,
+		SourceName:      source.Name,
+		SourceCoverBlur: source.CoverBlur,
+		SourcePage:      1,
+		Page:            1,
+		HasMore:         firstPage.HasMore,
+		Pool:            pool,
 	}}
 	s.mu.Unlock()
 	if err := s.showBrowsePage(ctx, chatID, chat, 1, 0); err != nil {
@@ -999,7 +1022,11 @@ func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat string,
 			browse.HasMore = false
 			break
 		}
-		source := BotSource{ID: browse.SourceID, Name: browse.SourceName}
+		source := BotSource{
+			ID:        browse.SourceID,
+			Name:      browse.SourceName,
+			CoverBlur: browse.SourceCoverBlur,
+		}
 		for _, item := range next.Items {
 			browse.Pool = append(browse.Pool, newResultEntry(source, item))
 		}
@@ -1218,7 +1245,7 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 	// 先用搜索结果里的缓存数据立刻建框，再异步拉详情并原位更新。
 	caption := renderResultDetail(entry, true)
 	keyboard := resultDetailKeyboard(index)
-	messageID, photo := s.sendResultDetail(ctx, chat, caption, entry.Cover, keyboard)
+	messageID, photo := s.sendResultDetail(ctx, chat, caption, entry.Cover, entry.CoverBlur, keyboard)
 	if messageID == 0 {
 		s.sendMessage(ctx, chat, "作品详情发送失败，请稍后重试。", nil)
 		return
@@ -1287,16 +1314,20 @@ func chapterCountLabel(count int, loading bool) string {
 	return "未知"
 }
 
-func (s *Service) sendResultDetail(ctx context.Context, chat, caption, cover string, keyboard any) (int64, bool) {
+func (s *Service) sendResultDetail(ctx context.Context, chat, caption, cover string, coverBlur bool, keyboard any) (int64, bool) {
 	if cover = strings.TrimSpace(cover); cover != "" {
 		photoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		id, err := s.callMethod(photoCtx, "sendPhoto", map[string]any{
+		payload := map[string]any{
 			"chat_id":      chat,
 			"photo":        cover,
 			"caption":      caption,
 			"parse_mode":   "HTML",
 			"reply_markup": keyboard,
-		})
+		}
+		if coverBlur {
+			payload["has_spoiler"] = true
+		}
+		id, err := s.callMethod(photoCtx, "sendPhoto", payload)
 		cancel()
 		if err == nil && id != 0 {
 			s.trackTransientMessageForChat(chat, id)
@@ -1409,12 +1440,16 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 		cover = strings.TrimSpace(entry.Cover)
 	}
 	if cover != "" {
-		if id, err := s.callMethod(ctx, "sendPhoto", map[string]any{
+		payload := map[string]any{
 			"chat_id":    chat,
 			"photo":      cover,
 			"caption":    caption,
 			"parse_mode": "HTML",
-		}); err == nil {
+		}
+		if subscription.CoverBlur {
+			payload["has_spoiler"] = true
+		}
+		if id, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
 			s.trackTransientMessageForChat(chat, id)
 			return
 		}
@@ -1436,6 +1471,7 @@ func newResultEntry(source BotSource, comic model.Comic) resultEntry {
 		Latest:       comic.LatestChapterTitle,
 		ChapterCount: comic.ChapterCount,
 		Cover:        cover,
+		CoverBlur:    source.CoverBlur,
 		Summary:      cleanComicSummary(comic.Title, comic.Description),
 	}
 }
@@ -1596,11 +1632,21 @@ func resultRows(entries []resultEntry) [][]map[string]string {
 }
 
 func resultRowsFrom(entries []resultEntry, offset int) [][]map[string]string {
-	rows := make([][]map[string]string, 0, len(entries))
-	for index, entry := range entries {
-		rows = append(rows, []map[string]string{
-			{"text": fmt.Sprintf("%d. %s", offset+index+1, truncate(entry.Title, 18)), "callback_data": fmt.Sprintf("open:%d", index)},
+	const resultsPerRow = 5
+	rows := make([][]map[string]string, 0, (len(entries)+resultsPerRow-1)/resultsPerRow)
+	row := make([]map[string]string, 0, resultsPerRow)
+	for index := range entries {
+		row = append(row, map[string]string{
+			"text":          fmt.Sprintf("%d", offset+index+1),
+			"callback_data": fmt.Sprintf("open:%d", index),
 		})
+		if len(row) == resultsPerRow {
+			rows = append(rows, row)
+			row = make([]map[string]string, 0, resultsPerRow)
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
 	}
 	return rows
 }

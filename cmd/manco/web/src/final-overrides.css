@@ -5474,9 +5474,9 @@ svg.source-editor-icon {
 /* 侧栏选中态：更圆的淡橘框 + 橘色图标 + 深色文字，栏目字号/图标略放大。 */
 .sidebar nav button {
   border-radius: 14px;
-  min-height: 47px;
-  gap: 13px;
-  font-size: 16px;
+  min-height: 45px;
+  gap: 12px;
+  font-size: 15px;
 }
 
 .sidebar {
@@ -5485,8 +5485,8 @@ svg.source-editor-icon {
 }
 
 .sidebar nav button svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
 }
 
 .sidebar nav button.active {
@@ -6010,6 +6010,18 @@ svg.source-editor-icon {
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   border-radius: 9px;
   background: var(--surface-muted);
+}
+
+.source-network-switches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-network-switches .source-proxy-inline {
+  justify-self: auto;
 }
 
 .browser-domain-row {

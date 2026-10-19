@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.6.10"
+	appVersion    = "v0.6.10.1"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -230,6 +230,7 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 		// 全局批量暂停：所有内容源加起来每下载 30 章，整体暂停 5 分钟。
 		BatchSize:            30,
 		BatchIntervalMinutes: 5,
+		ConvertToSimplified:  true,
 		CookieSecure:         s.cfg.CookieSecure,
 		SessionTTLDays:       30,
 		SourceConcurrency: map[string]int{
@@ -565,6 +566,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		for _, account := range stored {
 			plainPassword, _ := s.box.Decrypt(account.SecretCipher)
 			plain, _ := source.AccountFromModel(s.box, account)
+			source.ApplyDefaultAccountUseProxy(account.SourceID, &plain)
 			reloginDays := 0
 			if item, err := s.registry.Get(account.SourceID); err == nil {
 				if _, ok := item.(source.LoginSource); ok {
@@ -588,6 +590,16 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 				HasCookie:   account.CookieCipher != "",
 				UpdatedAt:   account.UpdatedAt,
 			}
+		}
+	}
+	for _, item := range s.registry.List() {
+		if _, ok := accounts[item.ID]; ok {
+			continue
+		}
+		accounts[item.ID] = accountView{
+			Settings: s.sourceDownloadSettings(nil),
+			SourceID: item.ID,
+			UseProxy: source.DefaultAccountUseProxy(item.ID),
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -3829,7 +3841,10 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	}
 	convertToSimplified := s.loadSettings(r.Context()).ConvertToSimplified
 	chapterMarker := payload.ChapterMarker != nil && *payload.ChapterMarker
-	coverBlur := payload.CoverBlur != nil && *payload.CoverBlur
+	coverBlur := s.sourceDownloadSettingsFor(r.Context(), payload.SourceID).CoverBlur
+	if payload.CoverBlur != nil {
+		coverBlur = *payload.CoverBlur
+	}
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
 	}
@@ -4015,12 +4030,18 @@ func (s *Server) processInitialDownloadNotices(ctx context.Context) {
 		if strings.TrimSpace(item.Author) == "" {
 			item.Author = author
 		}
+		sourceName := item.SourceID
+		if adapter, sourceErr := s.registry.Get(item.SourceID); sourceErr == nil {
+			sourceName = adapter.Info().Name
+		}
 		notice := telegram.SubscriptionDownloadCompletedNotice{
 			Title:          item.Title,
+			Source:         sourceName,
 			Author:         item.Author,
 			Description:    description,
 			CoverURL:       item.Cover,
 			CoverFile:      s.localCoverFileForSubscription(item),
+			CoverBlur:      item.CoverBlur,
 			Succeeded:      succeeded,
 			Failed:         failed,
 			NextCheckLabel: nextSubscriptionCheckLabel(item.CronExpr, now),
