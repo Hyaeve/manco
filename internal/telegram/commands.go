@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	maxSearchResultsPerKind = 5
-	maxDirectItems          = 5
+	maxSearchResultsPerKind = 10
+	searchPageSize          = 10
+	searchSourceFetchLimit  = 20
 	maxSearchConcurrency    = 6
 	titleLimit              = 24
 	summaryLimit            = 160
@@ -597,22 +598,22 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, scope st
 			s.sendMessage(ctx, chat, fmt.Sprintf("还没有添加%s。", kindLabel(kind)), nil)
 			return
 		}
-		entries := rankSearchEntries(query, s.searchSources(ctx, filtered, query))
-		if len(entries) > maxSearchResultsPerKind {
-			entries = entries[:maxSearchResultsPerKind]
-		}
-		if len(entries) == 0 {
-			s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", kindLabel(kind), query), nil)
-			return
-		}
-		text := renderScopedSearchResults(query, kindLabel(kind), entries)
-		messageID, _, sendErr := s.sendResultList(ctx, chat, text, entries, resultKeyboard(entries))
+		sessionID := s.allocateSession(chatID, &session{search: &sourceSearchPager{
+			Query:      query,
+			ScopeLabel: kindLabel(kind),
+			Sources:    filtered,
+			Page:       1,
+			SourcePage: 0,
+			HasMore:    true,
+		}})
+		found, sendErr := s.showSourceSearchPage(ctx, chatID, chat, sessionID, 1, 0)
 		if sendErr != nil {
 			s.logger.Printf("telegram: send type search results: %v", sendErr)
 		}
-		s.mu.Lock()
-		s.sessions[chatID] = &session{results: entries, resultsText: text, resultsMessageID: messageID}
-		s.mu.Unlock()
+		if !found {
+			s.deleteSession(chatID, sessionID)
+			s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", kindLabel(kind), query), nil)
+		}
 		return
 	}
 
@@ -621,27 +622,22 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, scope st
 		s.sendMessage(ctx, chat, fmt.Sprintf("没有找到内容源或搜索类型「%s」。", scope), nil)
 		return
 	}
-	items, err := s.app.BotSearch(ctx, source.ID, query, maxDirectItems)
-	if err != nil {
-		s.sendMessage(ctx, chat, fmt.Sprintf("%s 搜索失败：%s", source.Name, err.Error()), nil)
-		return
+	sessionID := s.allocateSession(chatID, &session{search: &sourceSearchPager{
+		Query:      query,
+		ScopeLabel: source.Name,
+		Sources:    []BotSource{source},
+		Page:       1,
+		SourcePage: 0,
+		HasMore:    true,
+	}})
+	found, sendErr := s.showSourceSearchPage(ctx, chatID, chat, sessionID, 1, 0)
+	if sendErr != nil {
+		s.logger.Printf("telegram: send source search results: %v", sendErr)
 	}
-	entries := make([]resultEntry, 0, len(items))
-	for _, item := range items {
-		entries = append(entries, newResultEntry(source, item))
-	}
-	if len(entries) == 0 {
+	if !found {
+		s.deleteSession(chatID, sessionID)
 		s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", source.Name, query), nil)
-		return
 	}
-	text := renderScopedSearchResults(query, source.Name, entries)
-	messageID, _, err := s.sendResultList(ctx, chat, text, entries, resultKeyboard(entries))
-	if err != nil {
-		s.logger.Printf("telegram: send source search results: %v", err)
-	}
-	s.mu.Lock()
-	s.sessions[chatID] = &session{results: entries, resultsText: text, resultsMessageID: messageID}
-	s.mu.Unlock()
 }
 
 type sourceSearchResult struct {
@@ -649,8 +645,9 @@ type sourceSearchResult struct {
 	Entries []resultEntry
 }
 
-func (s *Service) searchSources(ctx context.Context, sources []BotSource, query string) []sourceSearchResult {
+func (s *Service) searchSources(ctx context.Context, sources []BotSource, query string, page int) ([]sourceSearchResult, bool) {
 	results := make([]sourceSearchResult, len(sources))
+	hasMore := make([]bool, len(sources))
 	semaphore := make(chan struct{}, maxSearchConcurrency)
 	var wait sync.WaitGroup
 	for index, source := range sources {
@@ -667,22 +664,98 @@ func (s *Service) searchSources(ctx context.Context, sources []BotSource, query 
 			}
 			sourceCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
-			items, err := s.app.BotSearch(sourceCtx, source.ID, query, maxDirectItems)
+			pageResult, err := s.app.BotSearch(sourceCtx, source.ID, query, page, searchSourceFetchLimit)
 			if err != nil {
 				s.logger.Printf("telegram: search source %s: %v", source.Name, err)
 				return
 			}
-			for _, item := range items {
+			hasMore[index] = pageResult.HasMore
+			for _, item := range pageResult.Items {
 				results[index].Entries = append(results[index].Entries, newResultEntry(source, item))
 			}
 		}()
 	}
 	wait.Wait()
-	return results
+	more := false
+	for _, value := range hasMore {
+		more = more || value
+	}
+	return results, more
+}
+
+func (s *Service) showSourceSearchPage(ctx context.Context, chatID int64, chat, sessionID string, page int, messageID int64) (bool, error) {
+	s.mu.RLock()
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID || current.search == nil {
+		s.mu.RUnlock()
+		return false, fmt.Errorf("搜索会话已过期")
+	}
+	pager := *current.search
+	pager.Sources = append([]BotSource(nil), current.search.Sources...)
+	pager.Pool = append([]resultEntry(nil), current.search.Pool...)
+	s.mu.RUnlock()
+	if page < 1 {
+		page = 1
+	}
+
+	for {
+		for pager.HasMore && len(pager.Pool) < page*searchPageSize {
+			pager.SourcePage++
+			groups, more := s.searchSources(ctx, pager.Sources, pager.Query, pager.SourcePage)
+			pager.HasMore = more
+			seen := make(map[string]bool, len(pager.Pool))
+			for _, entry := range pager.Pool {
+				seen[entry.SourceID+"\x00"+entry.ComicID] = true
+			}
+			added := 0
+			for _, entry := range rankSearchEntries(pager.Query, groups) {
+				key := entry.SourceID + "\x00" + entry.ComicID
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				pager.Pool = append(pager.Pool, entry)
+				added++
+			}
+			if added == 0 && !pager.HasMore {
+				break
+			}
+		}
+		maxPage := max(1, (len(pager.Pool)+searchPageSize-1)/searchPageSize)
+		if page <= maxPage || page == 1 {
+			break
+		}
+		page = maxPage
+	}
+
+	start := (page - 1) * searchPageSize
+	if start >= len(pager.Pool) {
+		return false, nil
+	}
+	end := min(len(pager.Pool), start+searchPageSize)
+	entries := append([]resultEntry(nil), pager.Pool[start:end]...)
+	hasNext := end < len(pager.Pool) || pager.HasMore
+	text := renderScopedSearchResults(pager.Query, pager.ScopeLabel, page, entries)
+	keyboard := browseKeyboard(entries, page, hasNext, sessionID)
+	if messageID != 0 {
+		s.deleteMessageAsync(chat, messageID)
+	}
+	newID, _, err := s.sendResultList(ctx, chat, text, entries, keyboard)
+	if err != nil {
+		return false, err
+	}
+	pager.Page = page
+	s.mutateSession(chatID, sessionID, func(current *session) {
+		current.results = entries
+		current.resultsText = text
+		current.resultsMessageID = newID
+		current.search = &pager
+	})
+	return true, nil
 }
 
 func (s *Service) replyGlobalSearch(ctx context.Context, chatID int64, chat, query string, sources []BotSource) {
-	searched := s.searchSources(ctx, sources, query)
+	searched, _ := s.searchSources(ctx, sources, query, 1)
 	byKind := map[string][]sourceSearchResult{
 		"comic": nil,
 		"book":  nil,
@@ -713,22 +786,20 @@ func (s *Service) replyGlobalSearch(ctx context.Context, chatID int64, chat, que
 		s.sendMessage(ctx, chat, fmt.Sprintf("没有搜到「%s」的结果。", query), nil)
 		return
 	}
-	s.mu.Lock()
-	s.sessions[chatID] = &session{globalSearch: &globalSearchPager{
+	sessionID := s.allocateSession(chatID, &session{globalSearch: &globalSearchPager{
 		Query: query,
 		Page:  1,
 		Pages: pages,
-	}}
-	s.mu.Unlock()
-	if err := s.showGlobalSearchPage(ctx, chatID, chat, 1, 0); err != nil {
+	}})
+	if err := s.showGlobalSearchPage(ctx, chatID, chat, sessionID, 1, 0); err != nil {
 		s.sendMessage(ctx, chat, "全局搜索结果发送失败："+err.Error(), nil)
 	}
 }
 
-func (s *Service) showGlobalSearchPage(ctx context.Context, chatID int64, chat string, page int, messageID int64) error {
+func (s *Service) showGlobalSearchPage(ctx context.Context, chatID int64, chat, sessionID string, page int, messageID int64) error {
 	s.mu.RLock()
-	current := s.sessions[chatID]
-	if current == nil || current.globalSearch == nil || len(current.globalSearch.Pages) == 0 {
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID || current.globalSearch == nil || len(current.globalSearch.Pages) == 0 {
 		s.mu.RUnlock()
 		return fmt.Errorf("全局搜索会话已过期")
 	}
@@ -744,7 +815,7 @@ func (s *Service) showGlobalSearchPage(ctx context.Context, chatID int64, chat s
 	resultPage := pager.Pages[page-1]
 	entries := append([]resultEntry(nil), resultPage.Entries...)
 	text := renderGlobalSearchResults(pager.Query, resultPage, page, len(pager.Pages))
-	keyboard := globalSearchKeyboard(entries, page, len(pager.Pages))
+	keyboard := globalSearchKeyboard(entries, page, len(pager.Pages), sessionID)
 	if messageID != 0 {
 		s.deleteMessageAsync(chat, messageID)
 	}
@@ -752,14 +823,14 @@ func (s *Service) showGlobalSearchPage(ctx context.Context, chatID int64, chat s
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	if session := s.sessions[chatID]; session != nil && session.globalSearch != nil {
-		session.results = entries
-		session.resultsText = text
-		session.resultsMessageID = newID
-		session.globalSearch.Page = page
-	}
-	s.mu.Unlock()
+	s.mutateSession(chatID, sessionID, func(current *session) {
+		if current.globalSearch != nil {
+			current.results = entries
+			current.resultsText = text
+			current.resultsMessageID = newID
+			current.globalSearch.Page = page
+		}
+	})
 	return nil
 }
 
@@ -948,8 +1019,7 @@ func (s *Service) replyBrowse(ctx context.Context, chatID int64, sourceQuery str
 		s.sendMessage(ctx, chat, fmt.Sprintf("%s 当前没有榜单内容。", source.Name), nil)
 		return
 	}
-	s.mu.Lock()
-	s.sessions[chatID] = &session{browse: &browseSession{
+	sessionID := s.allocateSession(chatID, &session{browse: &browseSession{
 		SourceID:        source.ID,
 		SourceName:      source.Name,
 		SourceCoverBlur: source.CoverBlur,
@@ -957,9 +1027,8 @@ func (s *Service) replyBrowse(ctx context.Context, chatID int64, sourceQuery str
 		Page:            1,
 		HasMore:         firstPage.HasMore,
 		Pool:            pool,
-	}}
-	s.mu.Unlock()
-	if err := s.showBrowsePage(ctx, chatID, chat, 1, 0); err != nil {
+	}})
+	if err := s.showBrowsePage(ctx, chatID, chat, sessionID, 1, 0); err != nil {
 		s.sendMessage(ctx, chat, "榜单发送失败："+err.Error(), nil)
 	}
 }
@@ -993,13 +1062,13 @@ func asciiSourceName(value string) bool {
 	return true
 }
 
-func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat string, page int, messageID int64) error {
+func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat, sessionID string, page int, messageID int64) error {
 	if page < 1 {
 		page = 1
 	}
 	s.mu.RLock()
-	current := s.sessions[chatID]
-	if current == nil || current.browse == nil {
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID || current.browse == nil {
 		s.mu.RUnlock()
 		return fmt.Errorf("榜单会话已过期")
 	}
@@ -1040,7 +1109,7 @@ func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat string,
 	entries := append([]resultEntry(nil), browse.Pool[start:end]...)
 	hasNext := end < len(browse.Pool) || browse.HasMore
 	text := renderBrowseResults(browse.SourceName, page, start, entries)
-	keyboard := browseKeyboard(entries, page, hasNext)
+	keyboard := browseKeyboard(entries, page, hasNext, sessionID)
 	if messageID != 0 {
 		s.deleteMessageAsync(chat, messageID)
 	}
@@ -1051,14 +1120,14 @@ func (s *Service) showBrowsePage(ctx context.Context, chatID int64, chat string,
 	messageID = newID
 	browse.Page = page
 	browse.HasNext = hasNext
-	s.mu.Lock()
-	if existing := s.sessions[chatID]; existing != nil && existing.browse != nil {
-		existing.results = entries
-		existing.resultsText = text
-		existing.resultsMessageID = messageID
-		existing.browse = &browse
-	}
-	s.mu.Unlock()
+	s.mutateSession(chatID, sessionID, func(existing *session) {
+		if existing.browse != nil {
+			existing.results = entries
+			existing.resultsText = text
+			existing.resultsMessageID = messageID
+			existing.browse = &browse
+		}
+	})
 	return nil
 }
 
@@ -1077,14 +1146,14 @@ func renderBrowseResults(sourceName string, page, start int, entries []resultEnt
 	return strings.Join(lines, "\n")
 }
 
-func browseKeyboard(entries []resultEntry, page int, hasNext bool) any {
-	rows := resultRowsFrom(entries, (page-1)*browsePageSize)
+func browseKeyboard(entries []resultEntry, page int, hasNext bool, sessionID string) any {
+	rows := resultRowsFrom(entries, (page-1)*browsePageSize, sessionID)
 	navigation := make([]map[string]string, 0, 2)
 	if page > 1 {
-		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": "browse:prev"})
+		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": fmt.Sprintf("browse:%s:prev", sessionID)})
 	}
 	if hasNext {
-		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": "browse:next"})
+		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": fmt.Sprintf("browse:%s:next", sessionID)})
 	}
 	if len(navigation) > 0 {
 		rows = append(rows, navigation)
@@ -1092,14 +1161,14 @@ func browseKeyboard(entries []resultEntry, page int, hasNext bool) any {
 	return map[string]any{"inline_keyboard": rows}
 }
 
-func globalSearchKeyboard(entries []resultEntry, page, pageCount int) any {
-	rows := resultRowsFrom(entries, 0)
+func globalSearchKeyboard(entries []resultEntry, page, pageCount int, sessionID string) any {
+	rows := resultRowsFrom(entries, 0, sessionID)
 	navigation := make([]map[string]string, 0, 2)
 	if page > 1 {
-		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": "browse:prev"})
+		navigation = append(navigation, map[string]string{"text": "上一页", "callback_data": fmt.Sprintf("browse:%s:prev", sessionID)})
 	}
 	if page < pageCount {
-		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": "browse:next"})
+		navigation = append(navigation, map[string]string{"text": "下一页", "callback_data": fmt.Sprintf("browse:%s:next", sessionID)})
 	}
 	if len(navigation) > 0 {
 		rows = append(rows, navigation)
@@ -1117,126 +1186,168 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 	if !s.allowed(chatID) {
 		return
 	}
+	s.touchChatSessions(chatID)
 	s.refreshTransientChat(chatID)
 	data := strings.TrimSpace(query.Data)
 	switch {
 	case strings.HasPrefix(data, "open:"):
-		index, err := strconv.Atoi(strings.TrimPrefix(data, "open:"))
-		if err != nil {
+		sessionID, index, ok := parseIndexCallback(data, "open:")
+		if !ok || s.session(chatID, sessionID) == nil {
 			return
 		}
-		// 打开详情时先收起搜索结果，聊天里同时只留一个消息框。
-		s.mu.RLock()
+		// 只收起当前交互消息，其他指令产生的消息框保持可用。
 		resultsMessageID := int64(0)
-		if current := s.sessions[chatID]; current != nil {
+		s.mu.RLock()
+		if current := s.sessions[sessionID]; current != nil && current.ChatID == chatID {
 			resultsMessageID = current.resultsMessageID
 		}
 		s.mu.RUnlock()
 		s.deleteMessageAsync(chat, resultsMessageID)
-		s.mu.Lock()
-		if current := s.sessions[chatID]; current != nil {
+		s.mutateSession(chatID, sessionID, func(current *session) {
 			current.resultsMessageID = 0
-		}
-		s.mu.Unlock()
-		s.replyResultDetail(ctx, chatID, chat, index)
+		})
+		s.replyResultDetail(ctx, chatID, chat, sessionID, index)
 	case strings.HasPrefix(data, "subscribe:"):
-		index, err := strconv.Atoi(strings.TrimPrefix(data, "subscribe:"))
-		if err != nil {
+		sessionID, index, ok := parseIndexCallback(data, "subscribe:")
+		if !ok || s.session(chatID, sessionID) == nil {
 			return
 		}
-		s.replySubscribe(ctx, chatID, chat, index, query.Message.MessageID)
-	case data == "browse:prev" || data == "browse:next":
+		s.replySubscribe(ctx, chatID, chat, sessionID, index, query.Message.MessageID)
+	case strings.HasPrefix(data, "browse:"):
+		parts := strings.Split(data, ":")
+		if len(parts) != 3 {
+			return
+		}
+		sessionID, action := parts[1], parts[2]
+		current := s.session(chatID, sessionID)
+		if current == nil {
+			s.sendMessage(ctx, chat, "搜索或榜单会话已过期，请重新发起。", nil)
+			return
+		}
 		s.mu.RLock()
-		current := s.sessions[chatID]
 		page := 0
 		globalSearch := false
-		if current != nil && current.browse != nil {
+		sourceSearch := false
+		if current.browse != nil {
 			page = current.browse.Page
-		} else if current != nil && current.globalSearch != nil {
+		} else if current.globalSearch != nil {
 			page = current.globalSearch.Page
 			globalSearch = true
+		} else if current.search != nil {
+			page = current.search.Page
+			sourceSearch = true
 		}
 		s.mu.RUnlock()
 		if page == 0 {
 			s.sendMessage(ctx, chat, "搜索或榜单会话已过期，请重新发起。", nil)
 			return
 		}
-		if data == "browse:prev" {
+		if action == "prev" {
 			page--
-		} else {
+		} else if action == "next" {
 			page++
+		} else {
+			return
 		}
 		if globalSearch {
-			if err := s.showGlobalSearchPage(ctx, chatID, chat, page, query.Message.MessageID); err != nil {
+			if err := s.showGlobalSearchPage(ctx, chatID, chat, sessionID, page, query.Message.MessageID); err != nil {
 				s.logger.Printf("telegram: global search page: %v", err)
 			}
-		} else if err := s.showBrowsePage(ctx, chatID, chat, page, query.Message.MessageID); err != nil {
+		} else if sourceSearch {
+			found, err := s.showSourceSearchPage(ctx, chatID, chat, sessionID, page, query.Message.MessageID)
+			if err != nil {
+				s.logger.Printf("telegram: source search page: %v", err)
+			} else if !found {
+				s.sendMessage(ctx, chat, "没有更多搜索结果。", nil)
+			}
+		} else if err := s.showBrowsePage(ctx, chatID, chat, sessionID, page, query.Message.MessageID); err != nil {
 			s.logger.Printf("telegram: browse page: %v", err)
 		}
-	case data == "back":
+	case strings.HasPrefix(data, "back:"):
+		sessionID := strings.TrimSpace(strings.TrimPrefix(data, "back:"))
+		if s.session(chatID, sessionID) == nil {
+			return
+		}
 		// 收起详情，并把搜索结果重新发一份，供用户重新选择。
 		s.deleteMessageAsync(chat, query.Message.MessageID)
-		results := s.sessionResults(chatID)
+		results := s.sessionResults(chatID, sessionID)
 		if len(results) == 0 {
 			s.sendMessage(ctx, chat, "没有可返回的搜索结果。", nil)
 			return
 		}
-		resultsText := s.sessionResultsText(chatID)
+		resultsText := s.sessionResultsText(chatID, sessionID)
 		if resultsText == "" {
 			resultsText = renderResults("", results)
 		}
-		keyboard := s.sessionResultsKeyboard(chatID, results)
+		keyboard := s.sessionResultsKeyboard(chatID, sessionID, results)
 		messageID, _, err := s.sendResultList(ctx, chat, resultsText, results, keyboard)
 		if err != nil {
 			s.logger.Printf("telegram: resend search results: %v", err)
 			return
 		}
-		s.mu.Lock()
-		if current := s.sessions[chatID]; current != nil {
+		s.mutateSession(chatID, sessionID, func(current *session) {
 			current.resultsMessageID = messageID
 			current.detailMessageID = 0
 			current.detailPhoto = false
 			current.detailIndex = 0
-		}
-		s.mu.Unlock()
+		})
 	}
 }
 
-func (s *Service) sessionResults(chatID int64) []resultEntry {
+func parseIndexCallback(data, prefix string) (string, int, bool) {
+	parts := strings.Split(strings.TrimPrefix(data, prefix), ":")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		return "", 0, false
+	}
+	index, err := strconv.Atoi(parts[1])
+	if err != nil || index < 0 {
+		return "", 0, false
+	}
+	return parts[0], index, true
+}
+
+func (s *Service) sessionResults(chatID int64, sessionID string) []resultEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	current := s.sessions[chatID]
-	if current == nil {
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID {
 		return nil
 	}
 	return append([]resultEntry(nil), current.results...)
 }
 
-func (s *Service) sessionResultsText(chatID int64) string {
+func (s *Service) sessionResultsText(chatID int64, sessionID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	current := s.sessions[chatID]
-	if current == nil {
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID {
 		return ""
 	}
 	return current.resultsText
 }
 
-func (s *Service) sessionResultsKeyboard(chatID int64, results []resultEntry) any {
+func (s *Service) sessionResultsKeyboard(chatID int64, sessionID string, results []resultEntry) any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	current := s.sessions[chatID]
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID {
+		return resultKeyboard(results, sessionID)
+	}
 	if current != nil && current.browse != nil {
-		return browseKeyboard(results, current.browse.Page, current.browse.HasNext)
+		return browseKeyboard(results, current.browse.Page, current.browse.HasNext, sessionID)
 	}
 	if current != nil && current.globalSearch != nil {
-		return globalSearchKeyboard(results, current.globalSearch.Page, len(current.globalSearch.Pages))
+		return globalSearchKeyboard(results, current.globalSearch.Page, len(current.globalSearch.Pages), sessionID)
 	}
-	return resultKeyboard(results)
+	if current != nil && current.search != nil {
+		hasNext := current.search.Page*searchPageSize < len(current.search.Pool) || current.search.HasMore
+		return browseKeyboard(results, current.search.Page, hasNext, sessionID)
+	}
+	return resultKeyboard(results, sessionID)
 }
 
-func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat string, index int) {
-	results := s.sessionResults(chatID)
+func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat, sessionID string, index int) {
+	results := s.sessionResults(chatID, sessionID)
 	if index < 0 || index >= len(results) {
 		s.sendMessage(ctx, chat, "结果已过期，请重新搜索。", nil)
 		return
@@ -1244,30 +1355,28 @@ func (s *Service) replyResultDetail(ctx context.Context, chatID int64, chat stri
 	entry := results[index]
 	// 先用搜索结果里的缓存数据立刻建框，再异步拉详情并原位更新。
 	caption := renderResultDetail(entry, true)
-	keyboard := resultDetailKeyboard(index)
+	keyboard := resultDetailKeyboard(index, sessionID)
 	messageID, photo := s.sendResultDetail(ctx, chat, caption, entry.Cover, entry.CoverBlur, keyboard)
 	if messageID == 0 {
 		s.sendMessage(ctx, chat, "作品详情发送失败，请稍后重试。", nil)
 		return
 	}
-	s.mu.Lock()
-	if current := s.sessions[chatID]; current != nil {
+	s.mutateSession(chatID, sessionID, func(current *session) {
 		current.detailMessageID = messageID
 		current.detailPhoto = photo
 		current.detailIndex = index
-	}
-	s.mu.Unlock()
+	})
 	if resultNeedsDetail(entry) {
-		go s.enrichResultDetail(ctx, chatID, chat, index, messageID, photo)
+		go s.enrichResultDetail(ctx, chatID, chat, sessionID, index, messageID, photo)
 	}
 }
 
-func resultDetailKeyboard(index int) any {
+func resultDetailKeyboard(index int, sessionID string) any {
 	return map[string]any{
 		"inline_keyboard": [][]map[string]string{
 			{
-				{"text": "返回", "callback_data": "back"},
-				{"text": "订阅", "callback_data": fmt.Sprintf("subscribe:%d", index)},
+				{"text": "返回", "callback_data": fmt.Sprintf("back:%s", sessionID)},
+				{"text": "订阅", "callback_data": fmt.Sprintf("subscribe:%s:%d", sessionID, index)},
 			},
 		},
 	}
@@ -1351,8 +1460,8 @@ func (s *Service) sendResultDetail(ctx context.Context, chat, caption, cover str
 	return id, false
 }
 
-func (s *Service) enrichResultDetail(ctx context.Context, chatID int64, chat string, index int, messageID int64, photo bool) {
-	results := s.sessionResults(chatID)
+func (s *Service) enrichResultDetail(ctx context.Context, chatID int64, chat, sessionID string, index int, messageID int64, photo bool) {
+	results := s.sessionResults(chatID, sessionID)
 	if index < 0 || index >= len(results) {
 		return
 	}
@@ -1381,24 +1490,25 @@ func (s *Service) enrichResultDetail(ctx context.Context, chatID int64, chat str
 	}
 
 	s.mu.Lock()
-	current := s.sessions[chatID]
-	if current == nil || current.detailMessageID != messageID || current.detailIndex != index {
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID || current.detailMessageID != messageID || current.detailIndex != index {
 		s.mu.Unlock()
 		return
 	}
 	current.results[index] = entry
+	current.UpdatedAt = time.Now()
 	s.mu.Unlock()
 
 	caption := renderResultDetail(entry, false)
 	editCtx, editCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer editCancel()
-	if err := s.editMessage(editCtx, chat, messageID, photo, caption, resultDetailKeyboard(index)); err != nil {
+	if err := s.editMessage(editCtx, chat, messageID, photo, caption, resultDetailKeyboard(index, sessionID)); err != nil {
 		s.logger.Printf("telegram: edit detail %s/%s: %v", entry.SourceID, entry.ComicID, err)
 	}
 }
 
-func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string, index int, detailMessageID int64) {
-	results := s.sessionResults(chatID)
+func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat, sessionID string, index int, detailMessageID int64) {
+	results := s.sessionResults(chatID, sessionID)
 	if index < 0 || index >= len(results) {
 		s.sendMessage(ctx, chat, "结果已过期，请重新搜索。", nil)
 		return
@@ -1412,15 +1522,13 @@ func (s *Service) replySubscribe(ctx context.Context, chatID int64, chat string,
 	// 订阅完成后收起搜索结果与作品详情，只留一条结果消息。
 	s.mu.RLock()
 	resultsMessageID := int64(0)
-	if current := s.sessions[chatID]; current != nil {
+	if current := s.sessions[sessionID]; current != nil && current.ChatID == chatID {
 		resultsMessageID = current.resultsMessageID
 	}
 	s.mu.RUnlock()
 	s.deleteMessage(ctx, chat, resultsMessageID)
 	s.deleteMessage(ctx, chat, detailMessageID)
-	s.mu.Lock()
-	delete(s.sessions, chatID)
-	s.mu.Unlock()
+	s.deleteSession(chatID, sessionID)
 
 	// 订阅回执：封面 → 作品名 → 作者（内容源）→ cron → 完整下载位置 → 待下载章节数。
 	lines := []string{
@@ -1492,10 +1600,10 @@ func renderResults(query string, entries []resultEntry) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderScopedSearchResults(query, scopeLabel string, entries []resultEntry) string {
+func renderScopedSearchResults(query, scopeLabel string, page int, entries []resultEntry) string {
 	lines := []string{
 		fmt.Sprintf("<b>搜索：%s</b>", html.EscapeString(query)),
-		fmt.Sprintf("%s · %d 个候选", html.EscapeString(scopeLabel), len(entries)),
+		fmt.Sprintf("%s · 第 %d 页 · %d 个候选", html.EscapeString(scopeLabel), page, len(entries)),
 	}
 	for index, entry := range entries {
 		lines = append(lines, fmt.Sprintf(
@@ -1623,22 +1731,22 @@ func renderCheckReport(outcomes []subscriptionCheckOutcome, ctxErr error) string
 	return strings.Join(lines, "\n")
 }
 
-func resultKeyboard(entries []resultEntry) any {
-	return map[string]any{"inline_keyboard": resultRows(entries)}
+func resultKeyboard(entries []resultEntry, sessionID string) any {
+	return map[string]any{"inline_keyboard": resultRows(entries, sessionID)}
 }
 
-func resultRows(entries []resultEntry) [][]map[string]string {
-	return resultRowsFrom(entries, 0)
+func resultRows(entries []resultEntry, sessionID string) [][]map[string]string {
+	return resultRowsFrom(entries, 0, sessionID)
 }
 
-func resultRowsFrom(entries []resultEntry, offset int) [][]map[string]string {
+func resultRowsFrom(entries []resultEntry, offset int, sessionID string) [][]map[string]string {
 	const resultsPerRow = 5
 	rows := make([][]map[string]string, 0, (len(entries)+resultsPerRow-1)/resultsPerRow)
 	row := make([]map[string]string, 0, resultsPerRow)
 	for index := range entries {
 		row = append(row, map[string]string{
 			"text":          fmt.Sprintf("%d", offset+index+1),
-			"callback_data": fmt.Sprintf("open:%d", index),
+			"callback_data": fmt.Sprintf("open:%s:%d", sessionID, index),
 		})
 		if len(row) == resultsPerRow {
 			rows = append(rows, row)

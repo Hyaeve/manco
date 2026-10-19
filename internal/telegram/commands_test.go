@@ -142,6 +142,43 @@ func TestPersistentNotificationIsNotTrackedForExpiry(t *testing.T) {
 	}
 }
 
+func TestInteractiveSessionsRemainIndependent(t *testing.T) {
+	service := New(log.New(io.Discard, "", 0))
+	firstID := service.allocateSession(1, &session{
+		results:     []resultEntry{{Title: "榜单作品"}},
+		resultsText: "榜单结果",
+	})
+	secondID := service.allocateSession(1, &session{
+		results:     []resultEntry{{Title: "搜索作品"}},
+		resultsText: "搜索结果",
+	})
+	if firstID == secondID {
+		t.Fatal("interactive sessions received the same id")
+	}
+	if got := service.sessionResults(1, firstID); len(got) != 1 || got[0].Title != "榜单作品" {
+		t.Fatalf("first session results = %#v", got)
+	}
+	if got := service.sessionResults(1, secondID); len(got) != 1 || got[0].Title != "搜索作品" {
+		t.Fatalf("second session results = %#v", got)
+	}
+	keyboard := resultKeyboard(service.sessionResults(1, firstID), firstID).(map[string]any)
+	rows := keyboard["inline_keyboard"].([][]map[string]string)
+	if callback := rows[0][0]["callback_data"]; callback != "open:"+firstID+":0" {
+		t.Fatalf("first session callback = %q", callback)
+	}
+	sessionID, index, ok := parseIndexCallback("open:"+secondID+":2", "open:")
+	if !ok || sessionID != secondID || index != 2 {
+		t.Fatalf("parsed callback = %q, %d, %v", sessionID, index, ok)
+	}
+	service.deleteSession(1, firstID)
+	if service.session(1, firstID) != nil {
+		t.Fatal("deleted session still exists")
+	}
+	if service.session(1, secondID) == nil {
+		t.Fatal("new session was removed with the old session")
+	}
+}
+
 func TestSendResultListUsesFirstCoverPhoto(t *testing.T) {
 	var method string
 	var payload map[string]any
@@ -162,7 +199,7 @@ func TestSendResultListUsesFirstCoverPhoto(t *testing.T) {
 		{Title: "第一个结果", Cover: "https://example.test/first.jpg", CoverBlur: true},
 		{Title: "第二个结果", Cover: "https://example.test/second.jpg"},
 	}
-	id, photo, err := service.sendResultList(context.Background(), "1", "搜索结果", entries, resultKeyboard(entries))
+	id, photo, err := service.sendResultList(context.Background(), "1", "搜索结果", entries, resultKeyboard(entries, "s1"))
 	if err != nil {
 		t.Fatalf("sendResultList: %v", err)
 	}
@@ -574,7 +611,7 @@ func TestDuplicateSourceOrdinalSelection(t *testing.T) {
 
 func TestBrowseKeyboardAndPageRules(t *testing.T) {
 	entries := []resultEntry{{Title: "作品一"}, {Title: "作品二"}}
-	first := browseKeyboard(entries, 1, true).(map[string]any)
+	first := browseKeyboard(entries, 1, true, "s1").(map[string]any)
 	rows := first["inline_keyboard"].([][]map[string]string)
 	if len(rows) != 2 {
 		t.Fatalf("first page keyboard rows = %d, want one number row + next row", len(rows))
@@ -582,22 +619,22 @@ func TestBrowseKeyboardAndPageRules(t *testing.T) {
 	if rows[0][0]["text"] != "1" || rows[0][1]["text"] != "2" {
 		t.Fatalf("first page result buttons = %+v", rows[0])
 	}
-	if rows[1][0]["callback_data"] != "browse:next" {
+	if rows[1][0]["callback_data"] != "browse:s1:next" {
 		t.Fatalf("first page navigation = %+v", rows[1])
 	}
-	second := browseKeyboard(entries, 2, false).(map[string]any)
+	second := browseKeyboard(entries, 2, false, "s1").(map[string]any)
 	rows = second["inline_keyboard"].([][]map[string]string)
-	if rows[0][0]["text"] != "11" || rows[0][0]["callback_data"] != "open:0" {
+	if rows[0][0]["text"] != "11" || rows[0][0]["callback_data"] != "open:s1:0" {
 		t.Fatalf("second page result numbering = %+v", rows[0])
 	}
-	if rows[1][0]["callback_data"] != "browse:prev" {
+	if rows[1][0]["callback_data"] != "browse:s1:prev" {
 		t.Fatalf("second page navigation = %+v", rows[1])
 	}
 }
 
 func TestBrowseKeyboardUsesFiveNumberButtonsPerRow(t *testing.T) {
 	entries := make([]resultEntry, browsePageSize)
-	keyboard := browseKeyboard(entries, 1, true).(map[string]any)
+	keyboard := browseKeyboard(entries, 1, true, "s1").(map[string]any)
 	rows := keyboard["inline_keyboard"].([][]map[string]string)
 	if len(rows) != 3 {
 		t.Fatalf("keyboard rows = %d, want two result rows + navigation row", len(rows))
@@ -610,21 +647,21 @@ func TestBrowseKeyboardUsesFiveNumberButtonsPerRow(t *testing.T) {
 	if rows[0][0]["text"] != "1" || rows[1][4]["text"] != "10" {
 		t.Fatalf("result button numbering = %+v / %+v", rows[0], rows[1])
 	}
-	if len(rows[2]) != 1 || rows[2][0]["callback_data"] != "browse:next" {
+	if len(rows[2]) != 1 || rows[2][0]["callback_data"] != "browse:s1:next" {
 		t.Fatalf("navigation row = %+v, want separate next button", rows[2])
 	}
 }
 
 func TestGlobalSearchKeyboardHasTypePageNavigation(t *testing.T) {
 	entries := []resultEntry{{Title: "作品一"}, {Title: "作品二"}}
-	first := globalSearchKeyboard(entries, 1, 3).(map[string]any)
+	first := globalSearchKeyboard(entries, 1, 3, "s1").(map[string]any)
 	rows := first["inline_keyboard"].([][]map[string]string)
-	if len(rows) != 2 || rows[1][0]["callback_data"] != "browse:next" {
+	if len(rows) != 2 || rows[1][0]["callback_data"] != "browse:s1:next" {
 		t.Fatalf("first page keyboard = %+v", rows)
 	}
-	second := globalSearchKeyboard(entries, 2, 3).(map[string]any)
+	second := globalSearchKeyboard(entries, 2, 3, "s1").(map[string]any)
 	rows = second["inline_keyboard"].([][]map[string]string)
-	if len(rows) != 2 || rows[1][0]["callback_data"] != "browse:prev" || rows[1][1]["callback_data"] != "browse:next" {
+	if len(rows) != 2 || rows[1][0]["callback_data"] != "browse:s1:prev" || rows[1][1]["callback_data"] != "browse:s1:next" {
 		t.Fatalf("middle page keyboard = %+v", rows)
 	}
 }

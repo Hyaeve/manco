@@ -65,19 +65,22 @@ func (s *Server) NotifyDownloadRetry(ctx context.Context, jobs []model.DownloadJ
 	s.telegram.DownloadRetryScheduled(ctx, notice)
 }
 
-// BotSearch runs one content source search and returns its top results.
-func (s *Server) BotSearch(ctx context.Context, sourceID, query string, limit int) ([]model.Comic, error) {
+// BotSearch runs one page of a content source search.
+func (s *Server) BotSearch(ctx context.Context, sourceID, query string, page, limit int) (telegram.BotSearchPage, error) {
 	adapter, err := s.registry.Get(sourceID)
 	if err != nil {
-		return nil, err
+		return telegram.BotSearchPage{}, err
 	}
 	account, err := s.registry.Account(ctx, sourceID)
 	if err != nil {
-		return nil, err
+		return telegram.BotSearchPage{}, err
 	}
-	result, err := adapter.Search(ctx, account, strings.TrimSpace(query), 1)
+	if page < 1 {
+		page = 1
+	}
+	result, err := adapter.Search(ctx, account, strings.TrimSpace(query), page)
 	if err != nil {
-		return nil, err
+		return telegram.BotSearchPage{}, err
 	}
 	info := adapter.Info()
 	kind := source.KindOf(info)
@@ -89,7 +92,8 @@ func (s *Server) BotSearch(ctx context.Context, sourceID, query string, limit in
 			break
 		}
 	}
-	return items, nil
+	hasMore := result.HasMore || (result.Pages > 0 && page < result.Pages) || (limit > 0 && len(result.Items) > limit)
+	return telegram.BotSearchPage{Items: items, HasMore: hasMore}, nil
 }
 
 func (s *Server) BotBrowse(ctx context.Context, sourceID string, page int) (telegram.BotBrowsePage, error) {

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hyaeve/manco/internal/model"
@@ -27,7 +28,7 @@ const transientMessageTTL = 10 * time.Minute
 // dependency cycle between the HTTP API and the bot.
 type App interface {
 	BotSources(ctx context.Context) ([]BotSource, error)
-	BotSearch(ctx context.Context, sourceID, query string, limit int) ([]model.Comic, error)
+	BotSearch(ctx context.Context, sourceID, query string, page, limit int) (BotSearchPage, error)
 	BotBrowse(ctx context.Context, sourceID string, page int) (BotBrowsePage, error)
 	BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, int, error)
 	BotSubscriptions(ctx context.Context) ([]BotSubscription, error)
@@ -75,6 +76,11 @@ type BotDownloadingSnapshot struct {
 type BotBrowsePage struct {
 	Items   []model.Comic
 	Page    int
+	HasMore bool
+}
+
+type BotSearchPage struct {
+	Items   []model.Comic
 	HasMore bool
 }
 
@@ -136,7 +142,8 @@ type Service struct {
 	cancel       context.CancelFunc
 	offset       int64
 	started      bool
-	sessions     map[int64]*session
+	sessions     map[string]*session
+	sessionSeq   atomic.Uint64
 	transient    map[int64]map[int64]*transientMessage
 	transientTTL time.Duration
 }
@@ -147,7 +154,11 @@ type transientMessage struct {
 }
 
 type session struct {
-	results []resultEntry
+	ChatID int64
+	// UpdatedAt keeps a short-lived interactive session after its message is
+	// sent. Messages themselves still expire through the transient TTL.
+	UpdatedAt time.Time
+	results   []resultEntry
 	// 搜索结果的原始列表文本，返回时直接复用，不再重新拼接。
 	resultsText string
 	// 搜索结果的 message_id：订阅成功后要把那条消息删掉。
@@ -158,6 +169,7 @@ type session struct {
 	detailIndex     int
 	browse          *browseSession
 	globalSearch    *globalSearchPager
+	search          *sourceSearchPager
 }
 
 type browseSession struct {
@@ -175,6 +187,16 @@ type globalSearchPager struct {
 	Query string
 	Page  int
 	Pages []globalSearchPage
+}
+
+type sourceSearchPager struct {
+	Query      string
+	ScopeLabel string
+	Sources    []BotSource
+	Page       int
+	SourcePage int
+	HasMore    bool
+	Pool       []resultEntry
 }
 
 type globalSearchPage struct {
@@ -269,10 +291,83 @@ func New(logger *log.Logger) *Service {
 	return &Service{
 		client:       &http.Client{Timeout: 70 * time.Second},
 		logger:       logger,
-		sessions:     map[int64]*session{},
+		sessions:     map[string]*session{},
 		transient:    map[int64]map[int64]*transientMessage{},
 		transientTTL: transientMessageTTL,
 	}
+}
+
+func (s *Service) allocateSession(chatID int64, value *session) string {
+	if value == nil {
+		value = &session{}
+	}
+	id := strconv.FormatUint(s.sessionSeq.Add(1), 36)
+	now := time.Now()
+	ttl := s.transientTTL
+	if ttl <= 0 {
+		ttl = transientMessageTTL
+	}
+	s.mu.Lock()
+	for key, existing := range s.sessions {
+		if existing != nil && existing.ChatID == chatID {
+			existing.UpdatedAt = now
+			continue
+		}
+		if existing == nil || now.Sub(existing.UpdatedAt) > ttl {
+			delete(s.sessions, key)
+		}
+	}
+	value.ChatID = chatID
+	value.UpdatedAt = now
+	s.sessions[id] = value
+	s.mu.Unlock()
+	return id
+}
+
+func (s *Service) session(chatID int64, id string) *session {
+	s.mu.RLock()
+	value := s.sessions[id]
+	s.mu.RUnlock()
+	if value == nil || value.ChatID != chatID {
+		return nil
+	}
+	return value
+}
+
+func (s *Service) touchSession(chatID int64, id string) {
+	s.mu.Lock()
+	if value := s.sessions[id]; value != nil && value.ChatID == chatID {
+		value.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) touchChatSessions(chatID int64) {
+	now := time.Now()
+	s.mu.Lock()
+	for _, value := range s.sessions {
+		if value != nil && value.ChatID == chatID {
+			value.UpdatedAt = now
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) mutateSession(chatID int64, id string, mutate func(*session)) {
+	s.mu.Lock()
+	if value := s.sessions[id]; value != nil && value.ChatID == chatID {
+		mutate(value)
+		value.UpdatedAt = time.Now()
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) deleteSession(chatID int64, id string) {
+	s.mu.Lock()
+	if value := s.sessions[id]; value != nil && value.ChatID == chatID {
+		delete(s.sessions, id)
+	}
+	s.mu.Unlock()
 }
 
 // SetApp binds the host application the bot queries.
