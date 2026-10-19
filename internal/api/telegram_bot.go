@@ -126,6 +126,29 @@ func (s *Server) BotBrowse(ctx context.Context, sourceID string, page int) (tele
 	}, nil
 }
 
+// BotSubscriptionVisual returns the current subscription cover and blur policy
+// used by download lifecycle notifications.
+func (s *Server) BotSubscriptionVisual(ctx context.Context, sourceID, comicID string) (telegram.BotSubscriptionVisual, error) {
+	subscription, err := s.store.SubscriptionByComic(ctx, sourceID, comicID)
+	if err != nil {
+		return telegram.BotSubscriptionVisual{}, err
+	}
+	item := s.subscriptionWithCovers(ctx, subscription)
+	sourceName := item.SourceID
+	if adapter, err := s.registry.Get(item.SourceID); err == nil {
+		sourceName = adapter.Info().Name
+	}
+	author, _ := s.subscriptionLocalMetadata(item)
+	return telegram.BotSubscriptionVisual{
+		Title:     item.Title,
+		Author:    source.FirstNonEmpty(item.Author, author),
+		Source:    sourceName,
+		CoverURL:  item.Cover,
+		CoverFile: s.localCoverFileForSubscription(item),
+		CoverBlur: item.CoverBlur,
+	}, nil
+}
+
 // BotSubscribe creates a subscription with the same defaults the web UI uses:
 // source default download location, simplified conversion, historical chapters
 // and weekly automatic updates.

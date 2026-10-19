@@ -273,8 +273,8 @@ function formatNextRun(value) {
               type="button"
               :class="{ active: index === heroIndex }"
               :aria-label="`切换到 ${item.title}`"
-              :title="item.title"
               @mouseenter="selectHero(index)"
+              @pointerenter="selectHero(index)"
               @focus="selectHero(index)"
               @click="selectHero(index)"
             />
@@ -682,14 +682,10 @@ function formatNextRun(value) {
   z-index: 1;
   border-radius: inherit;
   background:
-    repeating-linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.1) 0 1px,
-      rgba(255, 255, 255, 0) 1px 4px
-    ),
+    radial-gradient(circle at 35% 28%, rgba(255, 255, 255, 0.2), transparent 62%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.16), rgba(87, 76, 60, 0.12));
-  backdrop-filter: blur(1.5px) saturate(0.84);
-  -webkit-backdrop-filter: blur(1.5px) saturate(0.84);
+  backdrop-filter: blur(2.2px) saturate(0.84);
+  -webkit-backdrop-filter: blur(2.2px) saturate(0.84);
   content: '';
   pointer-events: none;
   transition: opacity 0.32s ease;
@@ -763,35 +759,47 @@ function formatNextRun(value) {
   bottom: 18px;
   z-index: 2;
   display: flex;
-  gap: 9px;
-  padding: 4px;
+  gap: 0;
+  padding: 0 4px;
 }
 
 .overview-hero-dots button {
-  width: 8px;
-  height: 8px;
+  position: relative;
+  display: grid;
+  width: 22px;
+  height: 18px;
+  place-items: center;
   padding: 0;
   border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.overview-hero-dots button::before {
+  width: 8px;
+  height: 8px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--primary-strong) 28%, transparent);
-  cursor: pointer;
-  transform: translateZ(0);
+  content: '';
   transition:
-    width 0.34s cubic-bezier(0.22, 1.35, 0.36, 1),
-    background-color 0.24s ease,
-    box-shadow 0.24s ease,
-    transform 0.24s ease;
+    width 0.18s cubic-bezier(0.22, 1.2, 0.36, 1),
+    background-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
   will-change: width, transform;
 }
 
-.overview-hero-dots button.active,
-.overview-hero-dots button:hover,
-.overview-hero-dots button:focus-visible {
+.overview-hero-dots button.active::before,
+.overview-hero-dots button:hover::before,
+.overview-hero-dots button:focus-visible::before {
   width: 22px;
   background: var(--primary-strong);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
-  outline: none;
   transform: scaleY(1.08);
+}
+
+.overview-hero-dots button:focus-visible {
+  outline: none;
 }
 
 .overview-hero-empty {
@@ -1380,13 +1388,13 @@ function formatNextRun(value) {
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32);
 }
 
-:global([data-theme='dark'] .overview-hero-dots button) {
+:global([data-theme='dark'] .overview-hero-dots button::before) {
   background: rgba(255, 255, 255, 0.35);
 }
 
-:global([data-theme='dark'] .overview-hero-dots button.active),
-:global([data-theme='dark'] .overview-hero-dots button:hover),
-:global([data-theme='dark'] .overview-hero-dots button:focus-visible) {
+:global([data-theme='dark'] .overview-hero-dots button.active::before),
+:global([data-theme='dark'] .overview-hero-dots button:hover::before),
+:global([data-theme='dark'] .overview-hero-dots button:focus-visible::before) {
   background: #fff;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.12);
 }

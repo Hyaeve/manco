@@ -192,37 +192,122 @@ func renderDownloadRetryNotice(notice DownloadRetryNotice) string {
 }
 
 func (s *Service) DownloadResumed(ctx context.Context, jobs []model.DownloadJob) {
-	text := renderDownloadResumed(jobs, s.notificationSourceNames(ctx))
-	if text == "" {
+	groups := groupDownloadJobs(jobs)
+	if len(groups) == 0 {
 		return
 	}
-	s.NotifyAll(ctx, text)
+	s.mu.RLock()
+	app := s.app
+	s.mu.RUnlock()
+	sourceNames := s.notificationSourceNames(ctx)
+	for _, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		first := group[0]
+		title := fallback(strings.TrimSpace(first.ComicTitle), "未命名作品")
+		author := strings.TrimSpace(first.ComicAuthor)
+		sourceName := sourceNames[first.SourceID]
+		coverURL := first.ComicCover
+		coverFile := ""
+		coverBlur := false
+		if app != nil {
+			if visual, err := app.BotSubscriptionVisual(ctx, first.SourceID, first.ComicID); err == nil {
+				title = fallback(strings.TrimSpace(visual.Title), title)
+				author = strings.TrimSpace(visual.Author)
+				sourceName = visual.Source
+				coverURL = visual.CoverURL
+				coverFile = visual.CoverFile
+				coverBlur = visual.CoverBlur
+			}
+		}
+		chapters := make([]string, 0, len(group))
+		for _, job := range group {
+			chapters = append(chapters, job.ChapterTitle)
+		}
+		s.sendDownloadResumedNotice(ctx, DownloadResumedNotice{
+			Title:     title,
+			Author:    author,
+			Source:    sourceName,
+			CoverURL:  coverURL,
+			CoverFile: coverFile,
+			CoverBlur: coverBlur,
+			Chapters:  chapters,
+		})
+	}
 }
 
-func renderDownloadResumed(jobs []model.DownloadJob, sourceNames map[string]string) string {
+type DownloadResumedNotice struct {
+	Title     string
+	Author    string
+	Source    string
+	CoverURL  string
+	CoverFile string
+	CoverBlur bool
+	Chapters  []string
+}
+
+func groupDownloadJobs(jobs []model.DownloadJob) [][]model.DownloadJob {
 	if len(jobs) == 0 {
-		return ""
+		return nil
 	}
+	var groups [][]model.DownloadJob
+	index := map[string]int{}
+	for _, job := range jobs {
+		key := job.SourceID + "\x00" + job.ComicID
+		if position, ok := index[key]; ok {
+			groups[position] = append(groups[position], job)
+			continue
+		}
+		index[key] = len(groups)
+		groups = append(groups, []model.DownloadJob{job})
+	}
+	return groups
+}
+
+func (s *Service) sendDownloadResumedNotice(ctx context.Context, notice DownloadResumedNotice) {
+	caption := renderDownloadResumedNotice(notice)
+	s.mu.RLock()
+	chats := append([]string(nil), s.cfg.ChatIDs...)
+	s.mu.RUnlock()
+	for _, chat := range chats {
+		if path := strings.TrimSpace(notice.CoverFile); path != "" {
+			if err := s.sendPhotoFile(ctx, chat, path, caption, notice.CoverBlur); err == nil {
+				continue
+			}
+		}
+		if photo := strings.TrimSpace(notice.CoverURL); photo != "" {
+			payload := map[string]any{
+				"chat_id":    chat,
+				"photo":      photo,
+				"caption":    caption,
+				"parse_mode": "HTML",
+			}
+			if notice.CoverBlur {
+				payload["has_spoiler"] = true
+			}
+			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
+				continue
+			}
+		}
+		s.sendPersistentMessage(ctx, chat, caption, nil)
+	}
+}
+
+func renderDownloadResumedNotice(notice DownloadResumedNotice) string {
+	title := fallback(strings.TrimSpace(notice.Title), "未命名作品")
 	lines := []string{
-		"<b>Manco 已恢复任务下载</b>",
-		"正在下载：",
+		notificationWorkTitle(title, notice.Source),
+		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
+		fmt.Sprintf("Manco 已恢复任务下载 · %d 个章节已重新加入下载队列：", len(notice.Chapters)),
 	}
-	const limit = 20
-	for index, job := range jobs {
+	const limit = 5
+	for index, chapter := range notice.Chapters {
 		if index >= limit {
-			lines = append(lines, fmt.Sprintf("… 另有 %d 个中断任务已恢复", len(jobs)-limit))
+			lines = append(lines, fmt.Sprintf("… 其余 %d 章", len(notice.Chapters)-limit))
 			break
 		}
-		title := fallback(strings.TrimSpace(job.ComicTitle), "未命名作品")
-		chapter := fallback(strings.TrimSpace(job.ChapterTitle), "未命名章节")
-		sourceLabel := shortSourceName(fallback(strings.TrimSpace(sourceNames[job.SourceID]), "未知"))
-		lines = append(lines, fmt.Sprintf(
-			"%d. 《%s》（%s）· %s",
-			index+1,
-			html.EscapeString(title),
-			html.EscapeString(sourceLabel),
-			html.EscapeString(chapter),
-		))
+		lines = append(lines, "· "+html.EscapeString(fallback(strings.TrimSpace(chapter), "未命名章节")))
 	}
 	return strings.Join(lines, "\n")
 }

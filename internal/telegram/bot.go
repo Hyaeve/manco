@@ -30,6 +30,7 @@ type App interface {
 	BotSources(ctx context.Context) ([]BotSource, error)
 	BotSearch(ctx context.Context, sourceID, query string, page, limit int) (BotSearchPage, error)
 	BotBrowse(ctx context.Context, sourceID string, page int) (BotBrowsePage, error)
+	BotSubscriptionVisual(ctx context.Context, sourceID, comicID string) (BotSubscriptionVisual, error)
 	BotSubscribe(ctx context.Context, sourceID, comicID string) (model.Subscription, int, error)
 	BotSubscriptions(ctx context.Context) ([]BotSubscription, error)
 	BotDownloading(ctx context.Context) (BotDownloadingSnapshot, error)
@@ -82,6 +83,15 @@ type BotBrowsePage struct {
 type BotSearchPage struct {
 	Items   []model.Comic
 	HasMore bool
+}
+
+type BotSubscriptionVisual struct {
+	Title     string
+	Author    string
+	Source    string
+	CoverURL  string
+	CoverFile string
+	CoverBlur bool
 }
 
 // BotCheckResult summarises one subscription check.

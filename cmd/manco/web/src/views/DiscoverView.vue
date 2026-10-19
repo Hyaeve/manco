@@ -56,7 +56,7 @@ const sourceStripRef = ref(null)
 const gridRef = ref(null)
 const stripCanLeft = ref(false)
 const stripCanRight = ref(false)
-const gridColumns = ref(7)
+const gridColumns = ref(responsiveGridColumns())
 const refreshRevealing = ref(false)
 const requestStates = new Map()
 let refreshRevealTimer = 0
@@ -88,6 +88,15 @@ const activeSortGroup = computed(() => {
 function kindOf(source) {
   if (source.kind === 'book' || source.kind === 'other') return source.kind
   return 'comic'
+}
+
+function responsiveGridColumns(width = window.innerWidth) {
+  if (width <= 460) return 2
+  if (width <= 650) return 3
+  if (width <= 920) return 4
+  if (width <= 1180) return 5
+  if (width <= 1500) return 6
+  return 7
 }
 
 function readSavedFilters() {
@@ -176,6 +185,10 @@ const visibleItems = computed(() => {
   if (!panel) return []
   const start = (panel.page - 1) * pageSize.value
   return panel.items.slice(start, start + pageSize.value)
+})
+const loadingPlaceholderCount = computed(() => {
+  if (!activePanel.value?.loading) return 0
+  return Math.max(0, pageSize.value - visibleItems.value.length)
 })
 const discoverSelecting = computed(() => selectedItems.value.size > 0)
 const activeSourceDefaultDir = computed(() => {
@@ -388,18 +401,27 @@ async function ensure(source, panel, targetPage) {
   try {
     await ensureSourceFilters(source)
     if (!isCurrentPanelRequest(source, request)) return
-    while (panel.items.length < need) {
+    let sourcePagesFetched = 0
+    while (panel.items.length < need && sourcePagesFetched < 12) {
       const result = await fetchPage(source, panel, panel.sourcePage, request.controller.signal)
       if (!isCurrentPanelRequest(source, request)) return
       const items = result.items || []
-      panel.items = panel.items.concat(items)
+      const seen = new Set(panel.items.map((item) => `${item.sourceId}:${item.id}`))
+      const newItems = items.filter((item) => {
+        const key = `${item.sourceId}:${item.id}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      panel.items = panel.items.concat(newItems)
       panel.sourcePage += 1
       panel.sourceHasMore = Boolean(result.hasMore)
+      sourcePagesFetched += 1
       if (!items.length) {
         panel.sourceHasMore = false
         break
       }
-      if (!panel.sourceHasMore) break
+      if (!newItems.length) break
     }
   } catch (err) {
     if (!isCurrentPanelRequest(source, request) || err?.name === 'AbortError') return
@@ -819,63 +841,92 @@ function latestLabel(item) {
       </div>
 
       <div v-if="activePanel.error" class="alert error">{{ activePanel.error }}</div>
-      <div v-else-if="activePanel.loading" class="source-cat-loading">
-        <div class="source-cat-loader">
+      <div v-else class="source-results-stage">
+        <div v-if="activePanel.loading" class="source-inline-loading" aria-live="polite">
           <img src="/loading-box-cat.png" alt="" />
+          <span>正在加载作品</span>
         </div>
-        <span>正在加载作品</span>
-      </div>
-      <div v-else-if="!activePanel.items.length" class="source-empty">
-        <ImageOff :size="24" />
-        <span>没有作品</span>
-      </div>
-      <div
-        v-else-if="viewMode === 'grid'"
-        ref="gridRef"
-        class="source-comic-grid source-comic-grid-7"
-        :class="{ 'refresh-reveal': refreshRevealing }"
-      >
-        <ContentLink
-          v-for="(item, index) in visibleItems"
-          :key="`${item.sourceId}-${item.id}`"
-          class="comic-card source-comic-card"
-          :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
-          :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-          :before-navigate="() => !discoverSelecting"
-          @click="handleDiscoverCardClick($event, item, index)"
-          @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
+        <div
+          v-if="viewMode === 'grid' && (activePanel.loading || visibleItems.length)"
+          ref="gridRef"
+          class="source-comic-grid source-comic-grid-7"
+          :class="{ 'refresh-reveal': refreshRevealing }"
         >
-          <div class="comic-cover">
-            <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
-            <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
+          <ContentLink
+            v-for="(item, index) in visibleItems"
+            :key="`${item.sourceId}-${item.id}`"
+            class="comic-card source-comic-card"
+            :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
+            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+            :before-navigate="() => !discoverSelecting"
+            @click="handleDiscoverCardClick($event, item, index)"
+            @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
+          >
+            <div class="comic-cover">
+              <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
+              <span v-else class="cover-fallback"><BookOpen :size="26" /></span>
+            </div>
+            <div class="comic-body">
+              <span class="comic-title">{{ item.title }}</span>
+              <span class="comic-meta">{{ latestLabel(item) }}</span>
+            </div>
+          </ContentLink>
+          <div
+            v-for="index in loadingPlaceholderCount"
+            :key="`grid-placeholder-${index}`"
+            class="comic-card source-comic-card source-placeholder-card"
+            aria-hidden="true"
+          >
+            <div class="comic-cover source-placeholder-cover"></div>
+            <div class="comic-body">
+              <span class="source-placeholder-line"></span>
+              <span class="source-placeholder-line is-short"></span>
+            </div>
           </div>
-          <div class="comic-body">
-            <span class="comic-title">{{ item.title }}</span>
-            <span class="comic-meta">{{ latestLabel(item) }}</span>
-          </div>
-        </ContentLink>
-      </div>
-      <div v-else class="source-list-view" :class="{ 'refresh-reveal': refreshRevealing }">
-        <ContentLink
-          v-for="(item, index) in visibleItems"
-          :key="`${item.sourceId}-${item.id}`"
-          class="source-list-card"
-          :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
-          :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-          :before-navigate="() => !discoverSelecting"
-          @click="handleDiscoverCardClick($event, item, index)"
-          @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
+        </div>
+        <div
+          v-else-if="viewMode === 'list' && (activePanel.loading || visibleItems.length)"
+          class="source-list-view"
+          :class="{ 'refresh-reveal': refreshRevealing }"
         >
-          <div class="source-list-cover">
-            <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
-            <span v-else class="cover-fallback"><BookOpen :size="24" /></span>
+          <ContentLink
+            v-for="(item, index) in visibleItems"
+            :key="`${item.sourceId}-${item.id}`"
+            class="source-list-card"
+            :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
+            :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
+            :before-navigate="() => !discoverSelecting"
+            @click="handleDiscoverCardClick($event, item, index)"
+            @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
+          >
+            <div class="source-list-cover">
+              <img v-if="item.cover || item.cachedCover" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
+              <span v-else class="cover-fallback"><BookOpen :size="24" /></span>
+            </div>
+            <div class="source-list-body">
+              <strong>{{ item.title }}</strong>
+              <span>{{ item.author || '未知作者' }} · {{ item.status || '连载中' }}</span>
+              <p>{{ item.description || '暂无简介' }}</p>
+            </div>
+          </ContentLink>
+          <div
+            v-for="index in loadingPlaceholderCount"
+            :key="`list-placeholder-${index}`"
+            class="source-list-card source-list-placeholder"
+            aria-hidden="true"
+          >
+            <div class="source-list-cover source-placeholder-cover"></div>
+            <div class="source-list-body">
+              <span class="source-placeholder-line"></span>
+              <span class="source-placeholder-line is-short"></span>
+              <span class="source-placeholder-line"></span>
+            </div>
           </div>
-          <div class="source-list-body">
-            <strong>{{ item.title }}</strong>
-            <span>{{ item.author || '未知作者' }} · {{ item.status || '连载中' }}</span>
-            <p>{{ item.description || '暂无简介' }}</p>
-          </div>
-        </ContentLink>
+        </div>
+        <div v-else class="source-empty">
+          <ImageOff :size="24" />
+          <span>没有作品</span>
+        </div>
       </div>
 
       <div v-if="!activePanel.loading && activePanel.items.length" class="source-pagination">

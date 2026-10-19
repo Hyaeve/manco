@@ -1,29 +1,74 @@
 package telegram
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/hyaeve/manco/internal/model"
 )
 
-func TestRenderDownloadResumed(t *testing.T) {
-	text := renderDownloadResumed([]model.DownloadJob{
-		{SourceID: "bao", ComicTitle: "作品甲", ChapterTitle: "第1话"},
-		{SourceID: "goda", ComicTitle: "作品乙", ChapterTitle: "第2话"},
-	}, map[string]string{"bao": "包子漫画", "goda": "GoDA"})
+func TestGroupDownloadJobsByWork(t *testing.T) {
+	groups := groupDownloadJobs([]model.DownloadJob{
+		{SourceID: "bao", ComicID: "1", ComicTitle: "作品甲", ChapterTitle: "第1话"},
+		{SourceID: "bao", ComicID: "1", ComicTitle: "作品甲", ChapterTitle: "第2话"},
+		{SourceID: "goda", ComicID: "2", ComicTitle: "作品乙", ChapterTitle: "第3话"},
+	})
+	if len(groups) != 2 || len(groups[0]) != 2 || len(groups[1]) != 1 {
+		t.Fatalf("resume groups = %#v", groups)
+	}
+}
+
+func TestRenderDownloadResumedNotice(t *testing.T) {
+	text := renderDownloadResumedNotice(DownloadResumedNotice{
+		Title:     "作品甲",
+		Source:    "包子漫画",
+		Author:    "测试作者",
+		CoverBlur: true,
+		Chapters:  []string{"第1话", "第2话"},
+	})
 	for _, want := range []string{
-		"Manco 已恢复任务下载",
-		"正在下载：",
-		"1. 《作品甲》（包子）· 第1话",
-		"2. 《作品乙》（GoDa）· 第2话",
+		"<b>作品甲（包子）</b>",
+		"作者：测试作者",
+		"Manco 已恢复任务下载 · 2 个章节已重新加入下载队列：",
+		"· 第1话",
+		"· 第2话",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("resume notice missing %q:\n%s", want, text)
 		}
 	}
-	if renderDownloadResumed(nil, nil) != "" {
-		t.Fatal("empty interrupted jobs should not create a notice")
+}
+
+func TestDownloadResumedNoticeUsesSubscriptionCoverBlur(t *testing.T) {
+	var payload map[string]any
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.cfg.ChatIDs = []string{"1"}
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode telegram payload: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":42}}`)),
+		}, nil
+	})}
+	service.sendDownloadResumedNotice(context.Background(), DownloadResumedNotice{
+		Title:     "测试作品",
+		Source:    "包子漫画",
+		Author:    "测试作者",
+		CoverURL:  "https://example.test/cover.jpg",
+		CoverBlur: true,
+		Chapters:  []string{"第1话"},
+	})
+	if payload["has_spoiler"] != true {
+		t.Fatalf("resumed cover blur not forwarded to Telegram: %+v", payload)
 	}
 }
 
