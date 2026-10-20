@@ -311,6 +311,15 @@ func (s *Store) migrate(ctx context.Context) error {
 		WHERE status = 'queued'`); err != nil {
 		return err
 	}
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_download_jobs_active_order
+		ON download_jobs(
+			CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END,
+			CASE WHEN status = 'queued' THEN queue_priority ELSE 0 END DESC,
+			CASE WHEN status IN ('failed', 'canceled') THEN -id ELSE id END ASC
+		) WHERE status <> 'completed'`); err != nil {
+		return err
+	}
 	if err := s.ensureColumn(ctx, "extension_repositories", "custom_name", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
@@ -1397,38 +1406,7 @@ func (s *Store) DownloadJob(ctx context.Context, id int64) (model.DownloadJob, e
 // a NAS with tens of thousands of finished chapters that dominated both the
 // query and the browser's parse time, so the UI now pages through it.
 func (s *Store) DownloadJobPage(ctx context.Context, status string, limit, offset int) ([]model.DownloadJob, int, error) {
-	if limit <= 0 {
-		limit = 200
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	where := `status <> 'completed'`
-	// 同一状态内：手动操作入队的章节先执行，同优先级保持 id 升序；失败记录
-	// 仍按最新优先展示。
-	order := `CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END, CASE WHEN status = 'queued' THEN queue_priority ELSE 0 END DESC, CASE WHEN status IN ('failed', 'canceled') THEN -id ELSE id END ASC`
-	if strings.EqualFold(strings.TrimSpace(status), "completed") {
-		where = `status = 'completed'`
-		order = `COALESCE(finished_at, updated_at, created_at) DESC, id DESC`
-	}
-	var total int
-	if err := s.reader().QueryRowContext(ctx, `SELECT COUNT(*) FROM download_jobs WHERE `+where).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE `+where+` ORDER BY `+order+` LIMIT ? OFFSET ?`, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	jobs := make([]model.DownloadJob, 0, limit)
-	for rows.Next() {
-		job, err := scanJob(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		jobs = append(jobs, job)
-	}
-	return jobs, total, rows.Err()
+	return s.QueryDownloadJobPage(ctx, DownloadJobQuery{Status: status}, limit, offset)
 }
 
 func (s *Store) ListDownloadJobs(ctx context.Context, limit int) ([]model.DownloadJob, error) {

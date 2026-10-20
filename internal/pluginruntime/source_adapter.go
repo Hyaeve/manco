@@ -40,6 +40,7 @@ type Adapter struct {
 var _ source.ChapterArchiveSource = (*Adapter)(nil)
 var _ source.DetailWithChaptersSource = (*Adapter)(nil)
 var _ source.PageFileSource = (*Adapter)(nil)
+var _ source.MediaSource = (*Adapter)(nil)
 
 func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 	if manager == nil {
@@ -163,7 +164,9 @@ func (a *Adapter) Detail(ctx context.Context, account source.Account, comicID st
 	if err != nil {
 		return model.Comic{}, err
 	}
-	return a.toComic(item), nil
+	comic := a.toComic(item)
+	comic.ID = comicID
+	return comic, nil
 }
 
 func (a *Adapter) DetailWithChapters(ctx context.Context, account source.Account, comicID string) (model.ComicDetail, error) {
@@ -258,10 +261,40 @@ func (a *Adapter) PageFile(ctx context.Context, account source.Account, _ string
 	return file, stringValue(artifact["contentType"]), filepath.Base(relativePath), nil
 }
 
+func (a *Adapter) ResolveMedia(ctx context.Context, account source.Account, page model.Page) (model.Page, error) {
+	raw, err := decodeObject(page.AssetID)
+	if err != nil {
+		return model.Page{}, err
+	}
+	operation := "media"
+	if a.config.Runtime == RuntimeMihon {
+		operation = "pageUrl"
+	}
+	result, err := a.call(ctx, operation, map[string]any{"page": raw}, source.AccountUsesProxy(account))
+	if err != nil {
+		return model.Page{}, err
+	}
+	address := strings.TrimSpace(stringValue(result["url"]))
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return model.Page{}, errors.New("解析器没有返回可用的视频地址")
+	}
+	page.URL = address
+	if headers := stringMap(result["headers"]); headers != nil {
+		page.Headers = headers
+	}
+	page.AssetID = ""
+	return page, nil
+}
+
 func (a *Adapter) CoverImage(ctx context.Context, account source.Account, comic model.Comic) ([]byte, string, error) {
 	raw, err := decodeObject(comic.ID)
 	if err != nil {
 		return nil, "", err
+	}
+	if strings.TrimSpace(comic.Cover) != "" {
+		raw["coverUrl"] = comic.Cover
+		raw["largeCoverUrl"] = comic.Cover
 	}
 	result, err := a.call(ctx, "cover", map[string]any{"content": raw, "large": true}, source.AccountUsesProxy(account))
 	if err != nil {
@@ -638,6 +671,7 @@ func (a *Adapter) detailAndChapters(ctx context.Context, account source.Account,
 		return model.Comic{}, nil, err
 	}
 	comic := a.toComic(item)
+	comic.ID = comicID
 	values, _ := arrayField(item, "chapters")
 	chapters := make([]model.Chapter, 0, len(values))
 	for _, value := range values {
@@ -682,7 +716,13 @@ func (a *Adapter) searchResult(result map[string]any, page int) (model.SearchRes
 }
 
 func (a *Adapter) toComic(item map[string]any) model.Comic {
-	id, _ := encodeObject(item)
+	identity := make(map[string]any, len(item))
+	for key, value := range item {
+		if key != "chapters" {
+			identity[key] = value
+		}
+	}
+	id, _ := encodeObject(identity)
 	comic := model.Comic{
 		SourceID:           a.info.ID,
 		ID:                 id,

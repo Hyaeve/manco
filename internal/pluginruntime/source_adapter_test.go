@@ -1,11 +1,69 @@
 package pluginruntime
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 )
+
+func TestCoverUsesFreshMetadataWithStableComicID(t *testing.T) {
+	manager, calls := newProtocolTestManagerResult(t, map[string]any{
+		"artifact": map[string]any{"relativePath": "cover.img", "contentType": "image/png"},
+	})
+	manager.dataDir = t.TempDir()
+	imagePath := manager.ImagePath(RuntimeKototoro, "cover.img")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(imagePath, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewAdapter(manager, model.CustomSource{
+		ID: "demo", Config: json.RawMessage(`{"runtime":"kototoro-parser","pluginId":"demo","sourceName":"demo"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := encodeObject(map[string]any{"id": "1", "coverUrl": "https://cdn.example/old.png"})
+	_, _, err = adapter.CoverImage(context.Background(), source.Account{}, model.Comic{
+		ID: id, Cover: "https://cdn.example/new.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := <-calls
+	content := call["content"].(map[string]any)
+	if content["coverUrl"] != "https://cdn.example/new.png" || content["largeCoverUrl"] != "https://cdn.example/new.png" {
+		t.Fatal("stable work ID caused the old cover to be reused")
+	}
+}
+
+func TestResolveMediaUsesRuntimeHeadersWithoutImageArtifact(t *testing.T) {
+	manager, calls := newProtocolTestManagerResult(t, map[string]any{
+		"url":     "https://cdn.example/video.mp4",
+		"headers": map[string]any{"Cookie": "runtime=1", "Referer": "https://source.example/"},
+	})
+	adapter, err := NewAdapter(manager, model.CustomSource{
+		ID: "video", Config: json.RawMessage(`{"runtime":"kototoro-parser","pluginId":"demo","sourceName":"demo","contentType":"VIDEO"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset, _ := encodeObject(map[string]any{"id": "page", "source": map[string]any{"name": "demo"}})
+	page, err := adapter.ResolveMedia(context.Background(), source.Account{Extra: map[string]any{"useProxy": false}}, model.Page{AssetID: asset})
+	if err != nil || page.URL != "https://cdn.example/video.mp4" || page.Headers["Cookie"] != "runtime=1" {
+		t.Fatalf("resolved page = %+v: %v", page, err)
+	}
+	call := <-calls
+	if call["operation"] != "media" || call["useProxy"] != false {
+		t.Fatalf("wrong runtime operation: %v", call["operation"])
+	}
+}
 
 func TestKindForContentType(t *testing.T) {
 	tests := []struct {
@@ -80,5 +138,12 @@ func TestToComicExtractsLatestChapterTitleWithoutKeepingChapters(t *testing.T) {
 	}
 	if comic.UpdatedAt != "2026-10-17T04:00:00Z" {
 		t.Fatalf("updated at = %q, want newest chapter timestamp", comic.UpdatedAt)
+	}
+	identity, err := decodeObject(comic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := identity["chapters"]; exists {
+		t.Fatal("comic ID retained chapter payloads")
 	}
 }

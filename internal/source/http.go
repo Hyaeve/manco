@@ -146,6 +146,23 @@ func SetHTTPClientProxyCredentials(client *http.Client, raw, username, password 
 	return nil
 }
 
+// HTTPClientProxy returns the same per-source proxy used by the HTTP client.
+// Media subprocesses must not silently fall back to another environment proxy.
+func HTTPClientProxy(client *http.Client, request *http.Request) (*url.URL, error) {
+	if client == nil {
+		return nil, nil
+	}
+	switch transport := client.Transport.(type) {
+	case *proxyTransport:
+		return transport.proxy.Proxy(request)
+	case *http.Transport:
+		if transport.Proxy != nil {
+			return transport.Proxy(request)
+		}
+	}
+	return nil, nil
+}
+
 func FetchText(ctx context.Context, client *http.Client, address string, headers map[string]string) (string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {

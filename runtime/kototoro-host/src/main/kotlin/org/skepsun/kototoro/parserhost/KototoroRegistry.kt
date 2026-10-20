@@ -118,16 +118,9 @@ class ParserPluginRegistry(
         val parserInstances = HashMap<String, ContentParser>()
         val sources = constants.values.map { constant ->
             val source = constant as? ContentSource ?: throw ParserPluginException(ParserPluginFailure.NO_SOURCES)
-            val parser = runCatching {
-                withContextLoader(loader) { factory.invoke(null, constant, context) as ContentParser }
-            }.getOrNull()
-            if (parser != null) parserInstances[source.name] = parser
-            val homepage = parser?.let { runCatching { it.domain }.getOrNull() }
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { "https://${it.removePrefix("https://").removePrefix("http://")}" }
-                .orEmpty()
-            ParserSourceInfo(source.toSourceRef(), titleOf(constant), id, metadata.architecture, homepage)
+            // A repository can declare thousands of sources. Enumeration
+            // must not construct their parsers or retain their site caches.
+            ParserSourceInfo(source.toSourceRef(), titleOf(constant), id, metadata.architecture)
         }
         return Plugin(LoadedParserPlugin(id, metadata, sources), loader, factory, constants, parserInstances)
     }

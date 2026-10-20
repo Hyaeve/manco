@@ -92,6 +92,7 @@ const (
 	queuePageSize       = 64
 	queuePagesPerNotify = 8
 	maxHeavyImageLoads  = 2
+	maxDetailCacheSize  = 64
 )
 
 // SetConcurrency applies a settings update. New chapters and page requests
@@ -271,16 +272,45 @@ func (e *Engine) SetRetryNotifier(notifier func(context.Context, []model.Downloa
 }
 
 func (e *Engine) Retry(ctx context.Context, id int64) error {
-	job, err := e.store.DownloadJob(ctx, id)
-	if err != nil {
-		return err
+	_, err := e.RetryJobs(ctx, []int64{id})
+	return err
+}
+
+// RetryJobs resets several selected tasks in one operation. Retry notifications
+// are grouped by source/comic so a work never produces one message per chapter.
+func (e *Engine) RetryJobs(ctx context.Context, ids []int64) (int, error) {
+	seen := make(map[int64]struct{}, len(ids))
+	resetJobs := make([]model.DownloadJob, 0, len(ids))
+	var firstErr error
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		job, err := e.store.DownloadJob(ctx, id)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := e.store.ResetDownloadJob(ctx, id, model.QueuePriorityManual); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			e.logger.Printf("downloader: reset selected job %d: %v", id, err)
+			continue
+		}
+		resetJobs = append(resetJobs, job)
 	}
-	if err := e.store.ResetDownloadJob(ctx, id, model.QueuePriorityManual); err != nil {
-		return err
+	if len(resetJobs) > 0 {
+		e.Notify()
+		e.notifyRetries(resetJobs)
 	}
-	e.Notify()
-	e.notifyRetries([]model.DownloadJob{job})
-	return nil
+	return len(resetJobs), firstErr
 }
 
 // RetryFailedByComic restarts the automatic retry budget for failed or
@@ -414,6 +444,10 @@ func (e *Engine) loop(ctx context.Context) {
 func (e *Engine) dispatchQueuedJobs(ctx context.Context) bool {
 	for page := 0; page < queuePagesPerNotify; page++ {
 		e.mu.Lock()
+		if e.activeTotal >= e.maxChapterConcurrency {
+			e.mu.Unlock()
+			return ctx.Err() == nil
+		}
 		offset := e.queueCursor
 		e.queueCursor += queuePageSize
 		e.mu.Unlock()
@@ -659,7 +693,6 @@ func (e *Engine) runJob(parent context.Context, job model.DownloadJob) {
 
 	err := e.download(ctx, job)
 	if err == nil {
-		e.markBatchComplete(job.SourceID)
 		return
 	}
 	// Reload persisted page progress before recording the terminal state. A
@@ -767,38 +800,25 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 		cached bool
 		err    error
 	}
-	results := make(chan fetched, len(pages))
-	semaphore := make(chan struct{}, e.pageConcurrency(job.SourceID))
+	pageWorkers := e.pageConcurrency(job.SourceID)
+	results := make(chan fetched, pageWorkers)
 	pageCtx, cancelPages := context.WithCancel(ctx)
 	defer cancelPages()
-	var wait sync.WaitGroup
-	for index, page := range pages {
-		index, page := index, page
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
+	go func() {
+		runPageWorkers(pageCtx, len(pages), pageWorkers, func(index int) {
+			page := pages[index]
 			cachePath := stagingPagePath(tempDir, index)
 			if info, statErr := os.Stat(cachePath); statErr == nil && info.Mode().IsRegular() && info.Size() > 0 {
 				results <- fetched{index: index, cached: true}
 				return
 			}
-			select {
-			case semaphore <- struct{}{}:
-			case <-pageCtx.Done():
-				results <- fetched{index: index, err: pageCtx.Err()}
-				return
-			}
-			defer func() { <-semaphore }()
 			_, fetchErr := downloadPageToFile(e, pageCtx, client, account, item, job.ComicID, chapter, page, cachePath)
 			if fetchErr != nil {
 				results <- fetched{index: index, err: fetchErr}
 				return
 			}
 			results <- fetched{index: index}
-		}()
-	}
-	go func() {
-		wait.Wait()
+		})
 		close(results)
 	}()
 
@@ -820,6 +840,9 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 	if firstErr != nil {
 		return firstErr
+	}
+	if err := pageCtx.Err(); err != nil {
+		return err
 	}
 
 	entries := make([]pageEntry, 0, len(pages))
@@ -918,13 +941,6 @@ func (e *Engine) cachedSourceDetail(ctx context.Context, item source.Source, acc
 	key := item.Info().ID + "\x00" + comicID
 	now := time.Now()
 	e.detailMu.Lock()
-	if len(e.details) > 256 {
-		for cacheKey, cached := range e.details {
-			if cached.done == nil && now.After(cached.expires) {
-				delete(e.details, cacheKey)
-			}
-		}
-	}
 	if cached := e.details[key]; cached != nil {
 		if cached.done != nil {
 			done := cached.done
@@ -941,6 +957,20 @@ func (e *Engine) cachedSourceDetail(ctx context.Context, item source.Source, acc
 			e.detailMu.Unlock()
 			return detail, err
 		}
+	}
+	// Never evict in-flight requests: their waiters share the same entry.
+	for len(e.details) >= maxDetailCacheSize {
+		oldestKey := ""
+		var oldest time.Time
+		for cacheKey, cached := range e.details {
+			if cached.done == nil && (oldestKey == "" || cached.expires.Before(oldest)) {
+				oldestKey, oldest = cacheKey, cached.expires
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(e.details, oldestKey)
 	}
 	entry := &detailCacheEntry{done: make(chan struct{})}
 	e.details[key] = entry
@@ -1557,54 +1587,29 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 		contentType string
 	}
 	results := make([]otherPage, len(pages))
-	semaphore := make(chan struct{}, e.pageConcurrency(job.SourceID))
 	otherCtx, cancelPages := context.WithCancel(ctx)
 	defer cancelPages()
-	var wait sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex
 	completed := 0
-	for index, page := range pages {
-		index, page := index, page
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			select {
-			case semaphore <- struct{}{}:
-			case <-otherCtx.Done():
-				return
-			}
-			defer func() { <-semaphore }()
-			stream, contentType, filename, address, openErr := openPageContent(otherCtx, client, account, item, job.ComicID, chapter, page)
-			if openErr != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("第 %d 个文件下载失败: %w", index+1, openErr)
-					cancelPages()
-				}
-				errMu.Unlock()
-				return
-			}
-			path, extension, savedContentType, writeErr := writeOtherPage(stream, tempDir, index, source.FirstNonEmpty(contentType, page.ContentType), source.FirstNonEmpty(filename, page.FileName), source.FirstNonEmpty(address, page.URL))
-			_ = stream.Close()
-			if writeErr != nil {
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = fmt.Errorf("第 %d 个文件保存失败: %w", index+1, writeErr)
-					cancelPages()
-				}
-				errMu.Unlock()
-				return
-			}
-			results[index] = otherPage{path: path, extension: extension, contentType: savedContentType}
+	runPageWorkers(otherCtx, len(pages), e.pageConcurrency(job.SourceID), func(index int) {
+		path, extension, savedContentType, downloadErr := downloadOtherPage(otherCtx, client, account, item, job.ComicID, chapter, pages[index], tempDir, index)
+		if downloadErr != nil {
 			errMu.Lock()
-			completed++
-			current := completed
+			if firstErr == nil {
+				firstErr = fmt.Errorf("第 %d 个文件下载失败: %w", index+1, downloadErr)
+				cancelPages()
+			}
 			errMu.Unlock()
-			_ = e.store.UpdateDownloadProgress(ctx, job.ID, current)
-		}()
-	}
-	wait.Wait()
+			return
+		}
+		results[index] = otherPage{path: path, extension: extension, contentType: savedContentType}
+		errMu.Lock()
+		completed++
+		current := completed
+		errMu.Unlock()
+		_ = e.store.UpdateDownloadProgress(ctx, job.ID, current)
+	})
 	if firstErr != nil {
 		return firstErr
 	}
@@ -3107,6 +3112,13 @@ func OpenPreviewPageFile(ctx context.Context, client *http.Client, account sourc
 }
 
 func openPageContent(ctx context.Context, client *http.Client, account source.Account, item source.Source, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, string, error) {
+	if mediaSource, ok := item.(source.MediaSource); ok && source.KindOf(item.Info()) == source.KindOther {
+		resolved, err := mediaSource.ResolveMedia(ctx, account, page)
+		if err != nil {
+			return nil, "", "", "", err
+		}
+		return openHTTPPageContent(ctx, streamingClient(client), account, resolved)
+	}
 	if fileSource, ok := item.(source.PageFileSource); ok {
 		reader, contentType, filename, err := fileSource.PageFile(ctx, account, comicID, chapter, page)
 		return reader, contentType, filename, page.URL, err
@@ -3150,8 +3162,10 @@ func openHTTPPageContent(ctx context.Context, client *http.Client, account sourc
 			for key, value := range page.Headers {
 				request.Header.Set(key, value)
 			}
-			for key, value := range source.HeaderCookie(account.Cookie) {
-				request.Header.Set(key, value)
+			if request.Header.Get("Cookie") == "" {
+				for key, value := range source.HeaderCookie(account.Cookie) {
+					request.Header.Set(key, value)
+				}
 			}
 			response, err := client.Do(request)
 			if err != nil {

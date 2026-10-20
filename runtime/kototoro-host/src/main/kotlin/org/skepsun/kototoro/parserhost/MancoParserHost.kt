@@ -26,10 +26,12 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.File
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.decodeFromJsonElement
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ScriptableObject
 import org.skepsun.kototoro.core.source.SourceEndpoint
 import org.skepsun.kototoro.core.source.SourcePreferenceStore
+import org.skepsun.kototoro.core.source.SourcePage
 import org.skepsun.kototoro.parsers.ContentParserCredentialsAuthProvider
 import org.skepsun.kototoro.dex.DexJarConverter
 import org.skepsun.kototoro.parsers.bitmap.Bitmap
@@ -154,8 +156,9 @@ private fun serve(args: Array<String>) {
                 registry.load(jvmJar, plugin.id)
             }
             val images = FileSourceImageStore(resolve(base, config.imageDirectory))
+            val runtime = ParserSourceRuntime(registry, platform, images)
             val endpoint = SourceEndpoint(
-                ParserSourceRuntime(registry, platform, images),
+                runtime,
                 { request, error ->
                     System.err.println(
                         "kototoro-host: failed ${request.call::class.simpleName}: ${causeChain(error)}",
@@ -176,6 +179,7 @@ private fun serve(args: Array<String>) {
                     when (operation) {
                         "authCapabilities" -> authCapabilitiesResponse(line, registry)
                         "loginCredentials" -> loginCredentialsResponse(line, registry)
+                        "media" -> mediaResponse(line, registry, runtime, platform)
                         else -> runBlocking { endpoint.exchange(line) }
                     }
                 }
@@ -396,6 +400,45 @@ private fun customResponse(requestId: String, result: JsonObject): String = buil
     put("requestId", requestId)
     put("result", result)
 }.toString()
+
+private fun mediaResponse(
+    line: String,
+    registry: ParserPluginRegistry,
+    runtime: ParserSourceRuntime,
+    platform: ParserPlatform,
+): String {
+    val envelope = hostJson.parseToJsonElement(line).jsonObject
+    val requestId = envelope["requestId"]?.jsonPrimitive?.content.orEmpty()
+    return runCatching {
+        val page = hostJson.decodeFromJsonElement<SourcePage>(
+            requireNotNull(envelope["call"]?.jsonObject?.get("page")),
+        )
+        runBlocking {
+            val url = runtime.getPageUrl(page)
+            registry.withParser(page.source.name) { handle ->
+                val explicit = page.headers.orEmpty().toMutableMap()
+                if (explicit.keys.none { it.equals("Accept", ignoreCase = true) }) explicit["Accept"] = "*/*"
+                val request = ParserImageRequests(platform).request(handle.parser, url, explicit)
+                val headers = request.headers.newBuilder()
+                if (headers["Cookie"] == null) {
+                    val cookies = platform.cookieJar.loadForRequest(request.url)
+                    if (cookies.isNotEmpty()) {
+                        headers["Cookie"] = cookies.joinToString("; ") { "${it.name}=${it.value}" }
+                    }
+                }
+                buildJsonObject {
+                    put("url", request.url.toString())
+                    put("headers", buildJsonObject {
+                        headers.build().forEach { (name, value) -> put(name, value) }
+                    })
+                }
+            }
+        }
+    }.fold(
+        onSuccess = { customResponse(requestId, it) },
+        onFailure = { customError(requestId, "RUNTIME_FAILURE", "无法解析视频资源地址") },
+    )
+}
 
 private fun customError(requestId: String, code: String, message: String): String = buildJsonObject {
     put("version", 1)

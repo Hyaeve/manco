@@ -803,10 +803,8 @@ function latestLabel(item) {
     </div>
 
     <div v-if="sourcesError" class="alert error">{{ sourcesError }}</div>
-    <div v-else-if="loadingSources" class="source-cat-loading source-cat-loading-resources">
-      <div class="source-cat-loader">
-        <img src="/loading-box-cat.png" alt="" />
-      </div>
+    <div v-else-if="loadingSources" class="empty">
+      <Loader2 :size="22" class="spin" />
       <span>正在加载资源</span>
     </div>
     <div v-else-if="!sources.length" class="card empty">
@@ -842,10 +840,6 @@ function latestLabel(item) {
 
       <div v-if="activePanel.error" class="alert error">{{ activePanel.error }}</div>
       <div v-else class="source-results-stage">
-        <div v-if="activePanel.loading" class="source-inline-loading" aria-live="polite">
-          <img src="/loading-box-cat.png" alt="" />
-          <span>正在加载作品</span>
-        </div>
         <div
           v-if="viewMode === 'grid' && (activePanel.loading || visibleItems.length)"
           ref="gridRef"

@@ -101,6 +101,7 @@ export const api = {
     if (kind) params.set('kind', kind)
     return request(`/api/search?${params.toString()}`)
   },
+  searchHistory: () => request('/api/search/history'),
   sourceFilters: (id) => request(`/api/sources/${encodeURIComponent(id)}/filters`),
   testSource: (id) => request(`/api/sources/${encodeURIComponent(id)}/test`, { method: 'POST' }),
   browse: (id, filters = {}, page = 1, signal) => {
@@ -156,34 +157,39 @@ export const api = {
   restoreSubscription: (id) => request(`/api/subscriptions/${id}/restore`, { method: 'POST' }),
   backfillChapterMarkers: (id) => request(`/api/subscriptions/${id}/chapter-marker/backfill`, { method: 'POST' }),
 
-  downloads: (limit = 0, offset = 0, status = '') => {
+  downloads: (limit = 0, offset = 0, status = '', options = {}) => {
     const params = new URLSearchParams()
     if (limit) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
     if (status) params.set('status', status)
+    if (options.filter) params.set('filter', options.filter)
+    if (options.query) params.set('q', options.query)
+    if (options.compact) params.set('compact', '1')
+    if (options.ids?.length) params.set('ids', options.ids.join(','))
     const query = params.toString()
-    return request(`/api/downloads${query ? `?${query}` : ''}`)
+    return request(`/api/downloads${query ? `?${query}` : ''}`, { signal: options.signal })
   },
   createDownload: (payload) => request('/api/downloads', { method: 'POST', body: JSON.stringify(payload) }),
   retryDownload: (id) => request(`/api/downloads/${id}/retry`, { method: 'POST' }),
-  retryDownloads: async (ids) => {
-    const results = []
-    for (const id of ids) {
-      results.push(await request(`/api/downloads/${id}/retry`, { method: 'POST' }))
-    }
-    return results
-  },
+  retryDownloads: (ids) => request('/api/downloads/retry', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  }),
   deleteDownload: (id, removeFile = false) =>
     request(`/api/downloads/${id}?removeFile=${removeFile}`, { method: 'DELETE' }),
 
   library: () => request('/api/library'),
-  localLibrary: (limit = 0, offset = 0) => {
+  localLibrary: (limit = 0, offset = 0, summary = false) => {
     const params = new URLSearchParams()
     if (limit) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
+    if (summary) params.set('summary', '1')
     const query = params.toString()
     return request(`/api/local${query ? `?${query}` : ''}`)
   },
+  localItem: (path) => request(`/api/local/item?${new URLSearchParams({ path })}`),
+  localChapterThumbnailUrl: (file) =>
+    `/api/local/cbz/thumbnail?${new URLSearchParams({ path: file.path, w: '240', v: file.modTime || '' })}`,
   localFileUrl: (path, download = false, width = 0) => {
     if (!path) return ''
     const params = new URLSearchParams({ path })

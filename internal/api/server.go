@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.7.2"
+	appVersion    = "v0.7.3"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -117,6 +117,7 @@ type Server struct {
 	imageHostsBySource map[string]map[string]struct{}
 
 	initialDownloadMu sync.Mutex
+	searchHistoryMu   sync.Mutex
 
 	// 活动通知的短缓存：前端每 15 秒轮询一次，同一份结果没必要重复聚合。
 	activityMu  sync.Mutex
@@ -384,6 +385,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sources/{id}/cookies", s.requireAuth(s.handleImportSourceCookies))
 	mux.HandleFunc("DELETE /api/sources/{id}/account", s.requireAuth(s.handleDeleteAccount))
 	mux.HandleFunc("GET /api/sources/{id}/search", s.requireAuth(s.handleSearch))
+	mux.HandleFunc("GET /api/search/history", s.requireAuth(s.handleGlobalSearchHistory))
 	mux.HandleFunc("GET /api/search", s.requireAuth(s.handleGlobalSearch))
 	mux.HandleFunc("GET /api/sources/{id}/browse", s.requireAuth(s.handleBrowse))
 	mux.HandleFunc("GET /api/sources/{id}/filters", s.requireAuth(s.handleSourceFilters))
@@ -414,11 +416,14 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/downloads", s.requireAuth(s.handleListDownloads))
 	mux.HandleFunc("POST /api/downloads", s.requireAuth(s.handleCreateDownload))
+	mux.HandleFunc("POST /api/downloads/retry", s.requireAuth(s.handleRetryDownloads))
 	mux.HandleFunc("POST /api/downloads/{id}/retry", s.requireAuth(s.handleRetryDownload))
 	mux.HandleFunc("DELETE /api/downloads/{id}", s.requireAuth(s.handleDeleteDownload))
 
 	mux.HandleFunc("GET /api/library", s.requireAuth(s.handleLibrary))
 	mux.HandleFunc("GET /api/local", s.requireAuth(s.handleLocalLibrary))
+	mux.HandleFunc("GET /api/local/item", s.requireAuth(s.handleLocalItem))
+	mux.HandleFunc("GET /api/local/cbz/thumbnail", s.requireAuth(s.handleLocalCBZThumbnail))
 	mux.HandleFunc("GET /api/local/file", s.requireAuth(s.handleLocalFile))
 	mux.HandleFunc("GET /api/local/cbz", s.requireAuth(s.handleLocalCBZ))
 	mux.HandleFunc("GET /api/local/cbz/file", s.requireAuth(s.handleLocalCBZFile))
@@ -2380,6 +2385,19 @@ func (s *Server) saveCustomSource(w http.ResponseWriter, r *http.Request, pathID
 				return
 			}
 		}
+		if item.Homepage == "" && s.runtime != nil {
+			// Repository enumeration is lightweight; construct only the
+			// selected parser to obtain its domain for icon acquisition.
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			result, describeErr := s.runtime.Call(ctx, "describe", map[string]any{"sourceName": runtimeConfig.SourceName})
+			cancel()
+			if describeErr == nil {
+				if descriptor, ok := result["descriptor"].(map[string]any); ok {
+					homepage, _ := descriptor["homepage"].(string)
+					item.Homepage = strings.TrimRight(strings.TrimSpace(homepage), "/")
+				}
+			}
+		}
 	} else {
 		if strings.TrimSpace(payload.Homepage) == "" {
 			writeError(w, http.StatusBadRequest, "普通来源的首页地址不能为空")
@@ -2758,6 +2776,17 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
 	page := intParam(r, "page", 1)
+	history := []string{}
+	if page <= 1 {
+		var historyErr error
+		history, historyErr = s.recordGlobalSearch(r.Context(), query)
+		if historyErr != nil {
+			s.logger.Printf("api: record global search: %v", historyErr)
+		}
+	}
+	if len(history) == 0 {
+		history, _ = s.globalSearchHistory(r.Context())
+	}
 	convert := s.loadSettings(r.Context()).ConvertToSimplified
 	sources := s.filteredSourceList(s.hiddenSources(r.Context()), nil)
 	type searchItem struct {
@@ -2826,7 +2855,12 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 			result[index].SourceName = downloader.SimplifiedText(result[index].SourceName)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result, "errors": errorsFound, "page": page})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":   result,
+		"errors":  errorsFound,
+		"page":    page,
+		"history": history,
+	})
 }
 
 func (s *Server) handleSourceFilters(w http.ResponseWriter, r *http.Request) {
@@ -4797,8 +4831,28 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 	var items []model.DownloadJob
 	total := 0
 	var err error
+	compact := paged && status == "active" && r.URL.Query().Get("compact") == "1"
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	var refreshIDs []int64
+	if raw := r.URL.Query().Get("ids"); raw != "" {
+		parts := strings.Split(raw, ",")
+		if len(parts) > 200 {
+			writeError(w, http.StatusBadRequest, "一次最多刷新 200 个任务")
+			return
+		}
+		for _, part := range parts {
+			id, parseErr := strconv.ParseInt(part, 10, 64)
+			if parseErr != nil || id <= 0 {
+				writeError(w, http.StatusBadRequest, "无效的任务 ID")
+				return
+			}
+			refreshIDs = append(refreshIDs, id)
+		}
+	}
 	if paged {
-		items, total, err = s.store.DownloadJobPage(r.Context(), status, intParam(r, "limit", 200), intParam(r, "offset", 0))
+		items, total, err = s.store.QueryDownloadJobPage(r.Context(), store.DownloadJobQuery{
+			Status: status, Filter: r.URL.Query().Get("filter"), Query: query, Compact: compact, IDs: refreshIDs,
+		}, intParam(r, "limit", 200), intParam(r, "offset", 0))
 	} else {
 		items, err = s.store.ListDownloadJobs(r.Context(), intParam(r, "limit", 0))
 		total = len(items)
@@ -4826,6 +4880,9 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 			} else if until, ok := cooldowns[items[index].SourceID]; ok && until.After(time.Now()) {
 				items[index].Status = "waiting"
 			}
+		}
+		if compact {
+			continue
 		}
 		if strings.TrimSpace(items[index].FilePath) == "" {
 			items[index].LocalCover = s.localCoverForJob(items[index])
@@ -4878,7 +4935,16 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total})
+	payload := map[string]any{"items": items, "total": total}
+	if compact && len(refreshIDs) == 0 {
+		counts, countErr := s.store.DownloadCounts(r.Context(), query)
+		if countErr != nil {
+			writeError(w, http.StatusInternalServerError, countErr.Error())
+			return
+		}
+		payload["counts"] = counts
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func subscriptionSeriesDirName(value, title string, convertToSimplified bool) string {
@@ -5386,6 +5452,34 @@ func (s *Server) handleRetryDownload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) handleRetryDownloads(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(payload.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "请选择需要重试的任务")
+		return
+	}
+	if len(payload.IDs) > 10000 {
+		writeError(w, http.StatusBadRequest, "一次最多重试 10000 个任务")
+		return
+	}
+	retried, err := s.engine.RetryJobs(r.Context(), payload.IDs)
+	if err != nil && retried == 0 {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	response := map[string]any{"ok": true, "retried": retried}
+	if err != nil {
+		response["warning"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -5470,26 +5564,27 @@ type localFileEntry struct {
 }
 
 type localItemEntry struct {
-	Title       string           `json:"title"`
-	Path        string           `json:"path"`
-	Kind        string           `json:"kind"`
-	SourceID    string           `json:"sourceId,omitempty"`
-	ComicID     string           `json:"comicId,omitempty"`
-	Author      string           `json:"author,omitempty"`
-	Description string           `json:"description,omitempty"`
-	Tags        []string         `json:"tags,omitempty"`
-	Status      string           `json:"status,omitempty"`
-	Publisher   string           `json:"publisher,omitempty"`
-	Language    string           `json:"language,omitempty"`
-	PublishedAt string           `json:"publishedAt,omitempty"`
-	Cover       string           `json:"cover,omitempty"`
-	CachedCover string           `json:"cachedCover,omitempty"`
-	SourceCover string           `json:"sourceCover,omitempty"`
-	CoverBlur   bool             `json:"coverBlur,omitempty"`
-	Files       []localFileEntry `json:"files"`
-	TotalFiles  int              `json:"totalFiles"`
-	Size        int64            `json:"size"`
-	UpdatedAt   time.Time        `json:"updatedAt"`
+	Title        string           `json:"title"`
+	Path         string           `json:"path"`
+	Kind         string           `json:"kind"`
+	SourceID     string           `json:"sourceId,omitempty"`
+	ComicID      string           `json:"comicId,omitempty"`
+	Author       string           `json:"author,omitempty"`
+	Description  string           `json:"description,omitempty"`
+	Tags         []string         `json:"tags,omitempty"`
+	Status       string           `json:"status,omitempty"`
+	Publisher    string           `json:"publisher,omitempty"`
+	Language     string           `json:"language,omitempty"`
+	PublishedAt  string           `json:"publishedAt,omitempty"`
+	Cover        string           `json:"cover,omitempty"`
+	CachedCover  string           `json:"cachedCover,omitempty"`
+	SourceCover  string           `json:"sourceCover,omitempty"`
+	CoverBlur    bool             `json:"coverBlur,omitempty"`
+	Files        []localFileEntry `json:"files"`
+	TotalFiles   int              `json:"totalFiles"`
+	ChapterCount int              `json:"chapterCount"`
+	Size         int64            `json:"size"`
+	UpdatedAt    time.Time        `json:"updatedAt"`
 }
 
 func (s *Server) localRoots(ctx context.Context) []string {
@@ -5613,6 +5708,13 @@ func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items
 			end = total
 		}
 		items = items[offset:end]
+	}
+	if r.URL.Query().Get("summary") == "1" {
+		items = append([]localItemEntry(nil), items...)
+		for index := range items {
+			items[index].ChapterCount = len(items[index].Files)
+			items[index].Files = nil
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "downloadDir": s.cfg.DownloadDir, "downloadDirs": roots})
 }

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -16,8 +16,9 @@ import { api } from '../api'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
+import { refreshTaskRows } from '../utils/taskPages'
 
-const items = ref([])
+const items = shallowRef([])
 const loading = ref(true)
 const error = ref('')
 const busy = ref(0)
@@ -33,13 +34,20 @@ const TASK_ROW_GAP = 8
 const TASK_ROW_STEP = TASK_ROW_HEIGHT + TASK_ROW_GAP
 const TASK_VIRTUAL_OVERSCAN = 4
 // 每次从服务端取多少条；滚动到已加载末尾时继续追加。
-const TASK_PAGE_SIZE = 200
+const TASK_PAGE_SIZE = 100
 const virtualViewport = ref(null)
 const virtualScrollTop = ref(0)
 const virtualViewportHeight = ref(720)
 const totalTasks = ref(0)
 const loadingMore = ref(false)
 let scrollContainer = null
+let firstPageIDs = new Set()
+let requestGeneration = 0
+let loadController = null
+let pollLoading = false
+let viewActive = true
+let scrollFrame = 0
+const serverCounts = ref({ all: 0, active: 0, queued: 0, failed: 0 })
 
 const filters = [
   { value: 'all', label: '全部' },
@@ -59,34 +67,8 @@ function queryText(value) {
 const keyword = ref(queryText(route.query.q).trim())
 const searchInput = ref(keyword.value)
 
-// 关键词过滤：作品名、章节名、作者任一命中即可，便于从订阅卡片直达失败项。
-const scopedItems = computed(() => {
-  const key = keyword.value.trim().toLowerCase()
-  if (!key) return items.value
-  return items.value.filter((item) => {
-    const haystack = `${item.comicTitle || ''} ${item.chapterTitle || ''} ${item.comicAuthor || ''}`.toLowerCase()
-    return haystack.includes(key)
-  })
-})
-
-const nonCompletedItems = computed(() => scopedItems.value.filter((item) => item.status !== 'completed'))
-
-const counts = computed(() => {
-  const result = { all: nonCompletedItems.value.length, active: 0, queued: 0, failed: 0 }
-  for (const item of nonCompletedItems.value) {
-    if (item.status === 'running') result.active += 1
-    if (['queued', 'waiting', 'paused'].includes(item.status)) result.queued += 1
-    if (item.status === 'failed' || item.status === 'canceled') result.failed += 1
-  }
-  return result
-})
-
-const visible = computed(() => {
-  if (filter.value === 'all') return nonCompletedItems.value
-  if (filter.value === 'active') return nonCompletedItems.value.filter((item) => item.status === 'running')
-  if (filter.value === 'queued') return nonCompletedItems.value.filter((item) => ['queued', 'waiting', 'paused'].includes(item.status))
-  return nonCompletedItems.value.filter((item) => ['failed', 'canceled'].includes(item.status))
-})
+const counts = computed(() => serverCounts.value)
+const visible = computed(() => items.value)
 
 const virtualRange = computed(() => {
   const total = visible.value.length
@@ -107,8 +89,6 @@ const virtualRows = computed(() =>
 const virtualInnerHeight = computed(() =>
   visible.value.length ? visible.value.length * TASK_ROW_STEP - TASK_ROW_GAP : 0,
 )
-
-const hasActive = computed(() => items.value.some((item) => ['queued', 'waiting', 'running', 'paused'].includes(item.status)))
 
 watch(
   () => route.query.filter,
@@ -209,6 +189,7 @@ function clearSelection() {
 
 // 虚拟列表跟随页面滚动：用页面滚动位置换算相对列表顶部的偏移。
 function measureVirtual() {
+  if (!viewActive) return
   const viewport = virtualViewport.value
   if (!viewport) return
   const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0
@@ -217,13 +198,17 @@ function measureVirtual() {
   const height = scrollContainer ? scrollContainer.clientHeight : window.innerHeight
   virtualViewportHeight.value = Math.max(320, height || 720)
   // 默认视图（无筛选）滚到已加载末尾时静默补下一页。
-  if (filter.value === 'all' && !keyword.value.trim() && items.value.length < totalTasks.value) {
+  if (items.value.length < totalTasks.value) {
     if (virtualRange.value.end >= visible.value.length - TASK_VIRTUAL_OVERSCAN * 2) loadMoreTasks()
   }
 }
 
 function onPageScroll() {
-  measureVirtual()
+  if (!viewActive || scrollFrame) return
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0
+    measureVirtual()
+  })
 }
 
 function onPageResize() {
@@ -240,7 +225,11 @@ function resetVirtualScroll() {
   virtualScrollTop.value = 0
 }
 
-watch([filter, keyword], resetVirtualScroll)
+watch([filter, keyword], () => {
+  resetVirtualScroll()
+  clearSelection()
+  load()
+})
 
 function onKeydown(event) {
   if (event.key === 'Escape' && selecting.value) clearSelection()
@@ -256,7 +245,7 @@ function stopPolling() {
 function startPolling() {
   stopPolling()
   timer = window.setInterval(() => {
-    if (hasActive.value) load(true)
+    if (viewActive && !document.hidden && !loading.value && !loadingMore.value) load(true)
   }, 4000)
 }
 
@@ -272,6 +261,9 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  viewActive = false
+  loadController?.abort()
+  if (scrollFrame) cancelAnimationFrame(scrollFrame)
   stopPolling()
   scrollContainer?.removeEventListener('scroll', onPageScroll)
   window.removeEventListener('resize', onPageResize)
@@ -280,53 +272,79 @@ onUnmounted(() => {
 
 // 切走页面时退出多选，避免回到列表还停留在选中态。
 onDeactivated(() => {
+  viewActive = false
+  loadController?.abort()
+  if (scrollFrame) cancelAnimationFrame(scrollFrame)
+  scrollFrame = 0
   clearSelection()
   stopPolling()
 })
 
 onActivated(() => {
+  viewActive = true
+  if (!items.value.length && !pollLoading) load()
   measureVirtual()
   startPolling()
 })
 
 async function load(silent = false) {
+  if (silent && pollLoading) return
+  const generation = ++requestGeneration
+  loadController?.abort()
+  loadController = new AbortController()
+  const signal = loadController.signal
+  pollLoading = true
   if (!silent) loading.value = true
   try {
-    // 只取第一页：任务历史可能上万条，整表拉下来既慢又占内存。
-    const payload = await api.downloads(TASK_PAGE_SIZE, 0, 'active')
+    const refreshIDs = silent ? virtualRows.value.map(({ item }) => item.id).filter((id) => !firstPageIDs.has(id)) : []
+    const options = { filter: filter.value, query: keyword.value, compact: true, signal }
+    const [payload, snapshot] = await Promise.all([
+      api.downloads(TASK_PAGE_SIZE, 0, 'active', options),
+      refreshIDs.length ? api.downloads(200, 0, 'active', { ...options, ids: refreshIDs }) : Promise.resolve({ items: [] }),
+    ])
+    if (signal.aborted || generation !== requestGeneration) return
     const pageItems = payload.items || []
     if (silent && items.value.length) {
-      const updates = new Map(pageItems.map((item) => [item.id, item]))
-      const existing = new Set(items.value.map((item) => item.id))
-      const merged = items.value.map((item) => updates.get(item.id) || item)
-      for (const item of pageItems) {
-        if (!existing.has(item.id)) merged.push(item)
-      }
-      items.value = merged
+      items.value = refreshTaskRows(items.value, pageItems, firstPageIDs, refreshIDs, snapshot.items || [])
     } else {
       items.value = pageItems
     }
-    totalTasks.value = Number(payload.total || items.value.length)
+    firstPageIDs = new Set(pageItems.map((item) => item.id))
+    totalTasks.value = Number(payload.total ?? items.value.length)
+    serverCounts.value = payload.counts || { all: totalTasks.value, active: 0, queued: 0, failed: 0 }
+    const available = new Set(items.value.map((item) => item.id))
+    selected.value = new Set([...selected.value].filter((id) => available.has(id)))
+    if (!selected.value.size) selecting.value = false
     if (silent) error.value = ''
   } catch (err) {
-    if (!silent) error.value = err.message
+    if (!signal.aborted && generation === requestGeneration && !silent) error.value = err.message
   } finally {
-    loading.value = false
+    if (generation === requestGeneration) {
+      loading.value = false
+      pollLoading = false
+      await nextTick()
+      measureVirtual()
+    }
   }
 }
 
 // 虚拟列表滚到已加载数据末尾时再取下一页。
 async function loadMoreTasks() {
-  if (loadingMore.value || items.value.length >= totalTasks.value) return
+  if (loading.value || loadingMore.value || items.value.length >= totalTasks.value) return
+  const generation = requestGeneration
   loadingMore.value = true
   try {
-    const payload = await api.downloads(TASK_PAGE_SIZE, items.value.length, 'active')
+    const payload = await api.downloads(TASK_PAGE_SIZE, items.value.length, 'active', {
+      filter: filter.value, query: keyword.value, compact: true, signal: loadController?.signal,
+    })
+    if (generation !== requestGeneration || !viewActive) return
     const next = payload.items || []
-    if (next.length) items.value = [...items.value, ...next]
+    const existing = new Set(items.value.map((item) => item.id))
+    if (next.length) items.value = [...items.value, ...next.filter((item) => !existing.has(item.id))]
     totalTasks.value = Number(payload.total ?? totalTasks.value)
     error.value = ''
   } catch (err) {
-    error.value = err.message
+    if (generation === requestGeneration && err.name !== 'AbortError') error.value = err.message
   } finally {
     loadingMore.value = false
   }

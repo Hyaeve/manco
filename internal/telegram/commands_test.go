@@ -321,6 +321,40 @@ func TestParseSearchText(t *testing.T) {
 	}
 }
 
+type searchHistoryTestApp struct {
+	App
+	queries []string
+}
+
+func (a *searchHistoryTestApp) BotSources(context.Context) ([]BotSource, error) {
+	return []BotSource{}, nil
+}
+
+func (a *searchHistoryTestApp) BotRememberGlobalSearch(_ context.Context, query string) error {
+	a.queries = append(a.queries, query)
+	return nil
+}
+
+func TestReplySearchRecordsGlobalAndTypeSearches(t *testing.T) {
+	app := &searchHistoryTestApp{}
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Token = "test-token"
+	service.SetApp(app)
+	service.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":91}}`)),
+		}, nil
+	})}
+	service.replySearch(context.Background(), 1, "凡人修仙传", "")
+	service.replySearch(context.Background(), 1, "凡人修仙传", "漫画")
+	service.replySearch(context.Background(), 1, "凡人修仙传", "包子")
+	if fmt.Sprint(app.queries) != "[凡人修仙传 凡人修仙传]" {
+		t.Fatalf("recorded global searches = %v", app.queries)
+	}
+}
+
 func TestSearchKindScope(t *testing.T) {
 	cases := map[string]string{
 		"漫画":  "comic",

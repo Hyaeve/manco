@@ -75,6 +75,9 @@ func TestAdapterDetailWithChaptersReturnsOneCombinedResult(t *testing.T) {
 	if detail.Comic.Title != "测试书籍" || len(detail.Chapters) != 1 || detail.Chapters[0].Title != "第一章" {
 		t.Fatalf("detail = %#v", detail)
 	}
+	if detail.Comic.ID != comicID {
+		t.Fatal("detail changed the incoming work identity")
+	}
 
 	select {
 	case call := <-calls:

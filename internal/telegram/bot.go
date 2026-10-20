@@ -28,6 +28,7 @@ const transientMessageTTL = 10 * time.Minute
 // dependency cycle between the HTTP API and the bot.
 type App interface {
 	BotSources(ctx context.Context) ([]BotSource, error)
+	BotRememberGlobalSearch(ctx context.Context, query string) error
 	BotSearch(ctx context.Context, sourceID, query string, page, limit int) (BotSearchPage, error)
 	BotBrowse(ctx context.Context, sourceID string, page int) (BotBrowsePage, error)
 	BotSubscriptionVisual(ctx context.Context, sourceID, comicID string) (BotSubscriptionVisual, error)

@@ -2,12 +2,29 @@ package api
 
 import (
 	"bytes"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"strings"
 	"testing"
 )
+
+func TestThumbnailRejectsHugeImageBeforePixelDecode(t *testing.T) {
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	data := encoded.Bytes()
+	binary.BigEndian.PutUint32(data[16:20], 20000)
+	binary.BigEndian.PutUint32(data[20:24], 20000)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	if _, err := buildThumbnailFromReader(bytes.NewReader(data), 240); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("huge declared image dimensions were not rejected: %v", err)
+	}
+}
 
 func TestBuildThumbnailFromReaderScalesDown(t *testing.T) {
 	source := image.NewRGBA(image.Rect(0, 0, 800, 1200))

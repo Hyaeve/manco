@@ -749,30 +749,34 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, scope st
 		s.sendMessage(ctx, chat, "请给出搜索关键词，例如：搜索 凡人修仙传、漫画搜索 凡人修仙传、包子搜索 凡人修仙传", nil)
 		return
 	}
+	scope = strings.TrimSpace(scope)
+	kindScope := searchKindScope(scope)
+	if scope == "" || kindScope != "" {
+		s.rememberGlobalSearch(ctx, query)
+	}
 	sources, err := s.app.BotSources(ctx)
 	if err != nil {
 		s.sendMessage(ctx, chat, "读取内容源失败："+err.Error(), nil)
 		return
 	}
-	scope = strings.TrimSpace(scope)
 	if scope == "" {
 		s.replyGlobalSearch(ctx, chatID, chat, query, sources)
 		return
 	}
-	if kind := searchKindScope(scope); kind != "" {
+	if kindScope != "" {
 		filtered := make([]BotSource, 0, len(sources))
 		for _, source := range sources {
-			if normalizedSourceKind(source.Kind) == kind {
+			if normalizedSourceKind(source.Kind) == kindScope {
 				filtered = append(filtered, source)
 			}
 		}
 		if len(filtered) == 0 {
-			s.sendMessage(ctx, chat, fmt.Sprintf("还没有添加%s。", kindLabel(kind)), nil)
+			s.sendMessage(ctx, chat, fmt.Sprintf("还没有添加%s。", kindLabel(kindScope)), nil)
 			return
 		}
 		sessionID := s.allocateSession(chatID, &session{search: &sourceSearchPager{
 			Query:      query,
-			ScopeLabel: kindLabel(kind),
+			ScopeLabel: kindLabel(kindScope),
 			Sources:    filtered,
 			Page:       1,
 			SourcePage: 0,
@@ -784,7 +788,7 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, scope st
 		}
 		if !found {
 			s.deleteSession(chatID, sessionID)
-			s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", kindLabel(kind), query), nil)
+			s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", kindLabel(kindScope), query), nil)
 		}
 		return
 	}
@@ -809,6 +813,18 @@ func (s *Service) replySearch(ctx context.Context, chatID int64, query, scope st
 	if !found {
 		s.deleteSession(chatID, sessionID)
 		s.sendMessage(ctx, chat, fmt.Sprintf("%s里没有搜到「%s」的结果。", source.Name, query), nil)
+	}
+}
+
+func (s *Service) rememberGlobalSearch(ctx context.Context, query string) {
+	s.mu.RLock()
+	app := s.app
+	s.mu.RUnlock()
+	if app == nil {
+		return
+	}
+	if err := app.BotRememberGlobalSearch(ctx, query); err != nil {
+		s.logger.Printf("telegram: remember global search: %v", err)
 	}
 }
 
@@ -2016,6 +2032,9 @@ func matchSource(sources []BotSource, value string) (BotSource, bool) {
 		return BotSource{}, false
 	}
 	candidates := append([]BotSource(nil), sources...)
+	if len(candidates) == 0 {
+		return BotSource{}, false
+	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return sourceMatchScore(candidates[i], value) > sourceMatchScore(candidates[j], value)
 	})

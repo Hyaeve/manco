@@ -85,7 +85,6 @@ function handleActivityScroll() {
 const activityLoading = ref(false)
 const searchQuery = ref('')
 const searchInput = ref(null)
-const SEARCH_HISTORY_KEY = 'manco.search.history.v1'
 let sessionCheckTimer = 0
 let activityTimer = 0
 let prefetchHandle = 0
@@ -292,12 +291,6 @@ function handleGlobalKeys(event) {
 function submitGlobalSearch() {
   const query = searchQuery.value.trim()
   if (!query) return
-  let history = []
-  try {
-    history = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]')
-  } catch {}
-  if (!Array.isArray(history)) history = []
-  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify([query, ...history.filter((item) => item !== query)].slice(0, 3)))
   router.push({ name: 'search', query: { q: query } })
 }
 

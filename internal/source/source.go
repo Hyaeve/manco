@@ -195,6 +195,12 @@ type PageFileSource interface {
 	PageFile(ctx context.Context, account Account, comicID string, chapter model.Chapter, page model.Page) (io.ReadCloser, string, string, error)
 }
 
+// MediaSource resolves a playable resource and its runtime-owned headers.
+// Video bytes must not pass through image validation or image size limits.
+type MediaSource interface {
+	ResolveMedia(ctx context.Context, account Account, page model.Page) (model.Page, error)
+}
+
 // FilterSource is implemented by sources that discover their filter controls
 // lazily instead of exposing a static list from Info.
 type FilterSource interface {

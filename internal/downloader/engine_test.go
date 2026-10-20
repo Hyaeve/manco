@@ -1791,6 +1791,40 @@ func TestRetryFailedByComicResetsRetryBudget(t *testing.T) {
 	}
 }
 
+func TestRetryJobsNotifiesOncePerWork(t *testing.T) {
+	jobs := &memoryJobs{jobs: []model.DownloadJob{
+		{ID: 1, SourceID: "stub", ComicID: "1", ComicTitle: "作品甲", ChapterTitle: "第1话", Status: "failed"},
+		{ID: 2, SourceID: "stub", ComicID: "1", ComicTitle: "作品甲", ChapterTitle: "第2话", Status: "canceled"},
+		{ID: 3, SourceID: "other", ComicID: "2", ComicTitle: "作品乙", ChapterTitle: "第1话", Status: "paused"},
+	}}
+	engine := NewEngine(sources.NewRegistry(nil, nil, nil), jobs, t.TempDir(), 1, 1, log.New(io.Discard, "", 0))
+	retryBatches := make(chan []model.DownloadJob, 2)
+	engine.SetRetryNotifier(func(_ context.Context, batch []model.DownloadJob) {
+		retryBatches <- batch
+	})
+
+	retried, err := engine.RetryJobs(context.Background(), []int64{1, 2, 3, 1})
+	if err != nil {
+		t.Fatalf("RetryJobs() error = %v", err)
+	}
+	if retried != 3 {
+		t.Fatalf("RetryJobs() retried = %d, want 3", retried)
+	}
+	got := map[string]int{}
+	for range 2 {
+		select {
+		case batch := <-retryBatches:
+			key := batch[0].SourceID + "/" + batch[0].ComicID
+			got[key] = len(batch)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for grouped retry notification")
+		}
+	}
+	if got["stub/1"] != 2 || got["other/2"] != 1 {
+		t.Fatalf("retry notification batches = %#v", got)
+	}
+}
+
 type detailCountingSource struct {
 	*staticSource
 	mu    sync.Mutex

@@ -26,6 +26,7 @@ import { api } from '../api'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import SortMenu from '../components/SortMenu.vue'
+import WindowedGrid from '../components/WindowedGrid.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import { dirBasename, splitAuthors } from '../utils/metadata'
@@ -38,6 +39,8 @@ const loading = ref(true)
 const query = ref('')
 const kind = ref('all')
 const active = ref(null)
+const detailLoading = ref(false)
+let detailGeneration = 0
 const reader = ref(null)
 const readerLoading = ref(false)
 const readerPageIndex = ref(0)
@@ -271,7 +274,7 @@ async function loadMoreLibrary() {
   if (loadingMore.value || items.value.length >= totalItems.value) return
   loadingMore.value = true
   try {
-    const payload = await api.localLibrary(LIBRARY_PAGE_SIZE, items.value.length)
+    const payload = await api.localLibrary(LIBRARY_PAGE_SIZE, items.value.length, true)
     const next = payload.items || []
     if (next.length) items.value = [...items.value, ...next]
     totalItems.value = Number(payload.total ?? totalItems.value)
@@ -284,7 +287,7 @@ async function loadMoreLibrary() {
 
 function handleLibraryScroll() {
   const element = scrollContainer
-  if (!element || loadingMore.value || items.value.length >= totalItems.value) return
+  if (active.value || !element || loadingMore.value || items.value.length >= totalItems.value) return
   if (element.scrollTop + element.clientHeight >= element.scrollHeight - 400) loadMoreLibrary()
 }
 
@@ -292,7 +295,7 @@ async function load() {
   loading.value = true
   try {
     const [payload, sourcePayload] = await Promise.all([
-      api.localLibrary(LIBRARY_PAGE_SIZE, 0),
+      api.localLibrary(LIBRARY_PAGE_SIZE, 0, true),
       api.sources().catch(() => ({ items: [] })),
     ])
     items.value = payload.items || []
@@ -465,9 +468,12 @@ function chapterName(file) {
 }
 
 function chapterCount(item) {
-  return Number(item.files?.length || item.totalFiles || 0)
+  return Number(item.chapterCount ?? item.files?.length ?? item.totalFiles ?? 0)
 }
 
+function chapterThumbnail(file) {
+  return file.ext === 'cbz' || file.ext === 'zip' ? api.localChapterThumbnailUrl(file) : ''
+}
 
 function extractTint(url) {
   try {
@@ -511,7 +517,9 @@ function onChapterSortChange({ mode, desc }) {
 }
 
 async function openDetail(item) {
+  const generation = ++detailGeneration
   active.value = item
+  detailLoading.value = true
   await nextTick()
   const scroller = document.querySelector('.content-scroll')
   if (scroller) scroller.scrollTop = 0
@@ -521,19 +529,21 @@ async function openDetail(item) {
   chapterApplied.value = ''
   chapterSortMode.value = 'title'
   chapterSortDesc.value = false
-  for (const file of item.files || []) {
-    if ((file.ext !== 'cbz' && file.ext !== 'zip') || file.thumbnail) continue
-    try {
-      const payload = await api.localCBZ(file.path)
-      const first = (payload.items || []).find((entry) => entry.name && !entry.name.endsWith('/'))
-      if (first) file.thumbnail = api.localCBZFileUrl(file.path, first.name)
-    } catch {
-      file.thumbnail = ''
+  try {
+    const payload = await api.localItem(item.path)
+    if (generation === detailGeneration && active.value) {
+      active.value = { ...item, ...payload.item }
     }
+  } catch (err) {
+    if (generation === detailGeneration) notify(`章节加载失败：${err.message}`, true)
+  } finally {
+    if (generation === detailGeneration) detailLoading.value = false
   }
 }
 
 function closeDetail() {
+  detailGeneration += 1
+  detailLoading.value = false
   active.value = null
 }
 
@@ -707,22 +717,23 @@ function downloadReaderFile() {
         />
       </div>
 
-      <div v-if="!activeChapterFiles.length" class="empty">没有可阅读的章节</div>
-      <div v-else class="local-chapter-poster-grid">
+      <div v-if="detailLoading" class="empty"><Loader2 :size="20" class="spin" /></div>
+      <div v-else-if="!activeChapterFiles.length" class="empty">没有可阅读的章节</div>
+      <WindowedGrid v-else class="local-chapter-poster-grid" :items="activeChapterFiles">
+        <template #default="{ item: file }">
         <button
-          v-for="file in activeChapterFiles"
-          :key="file.path"
           class="local-chapter-poster"
           type="button"
           :title="file.name"
           @click="openReader(file)"
         >
           <span class="local-chapter-poster-cover">
-            <img v-if="file.thumbnail" :src="file.thumbnail" :alt="file.name" loading="lazy" decoding="async" />
+            <img v-if="chapterThumbnail(file)" :src="chapterThumbnail(file)" :alt="file.name" loading="lazy" decoding="async" />
           </span>
           <span class="local-chapter-poster-name">{{ chapterName(file) }}</span>
         </button>
-      </div>
+        </template>
+      </WindowedGrid>
     </section>
   </div>
 
@@ -805,10 +816,9 @@ function downloadReaderFile() {
       <Search :size="26" />
       <p>没有匹配的作品。</p>
     </div>
-    <div v-else class="local-library-grid">
+    <WindowedGrid v-else class="local-library-grid" :items="filtered" @near-end="loadMoreLibrary">
+      <template #default="{ item, index }">
       <button
-        v-for="(item, index) in filtered"
-        :key="keyOf(item)"
         class="card local-library-card"
         :class="{ selected: isSelected(item), selecting: selectionMode }"
         type="button"
@@ -832,13 +842,11 @@ function downloadReaderFile() {
           </span>
         </span>
       </button>
-    </div>
+      </template>
+    </WindowedGrid>
     <div v-if="items.length < totalItems" class="download-load-more">
-      <button class="btn secondary small" type="button" :disabled="loadingMore" @click="loadMoreLibrary">
-        <Loader2 v-if="loadingMore" :size="14" class="spin" />
-        <ArrowDown v-else :size="14" />
-        加载更多（已加载 {{ items.length }} / {{ totalItems }}）
-      </button>
+      <Loader2 v-if="loadingMore" :size="14" class="spin" />
+      <span class="muted small">共 {{ totalItems }} 部作品</span>
     </div>
     <div v-if="selectionMode" class="local-selection-bar">
       <span class="local-selection-count"><ListChecks :size="16" /> 已选 {{ selectedCount }} 项</span>
@@ -968,3 +976,21 @@ function downloadReaderFile() {
     </div>
   </div>
 </template>
+
+<style scoped>
+@media (max-width: 600px) {
+  .local-detail-hero {
+    grid-template-columns: 110px minmax(0, 1fr);
+    gap: 16px;
+  }
+  .local-detail-hero .detail-cover-wrap,
+  .local-detail-hero .detail-cover { width: 110px; min-width: 0; }
+  .local-detail-hero .detail-info { min-width: 0; }
+  .local-detail-hero::before { left: 0; right: 0; }
+  .local-detail-hero h2 { font-size: 24px; overflow-wrap: anywhere; }
+  .detail-chapter-head { flex-wrap: wrap; gap: 10px; }
+  .detail-chapter-head .chapter-search { min-width: 0; width: auto; flex: 1 1 150px; }
+  .detail-chapter-head .chapter-search .input { width: 100%; min-width: 0; }
+  .detail-chapter-head .spacer { display: none; }
+}
+</style>

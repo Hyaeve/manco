@@ -16,10 +16,10 @@ const history = ref([])
 
 const hasQuery = computed(() => query.value.trim().length > 0)
 
-function loadHistory() {
+async function loadHistory() {
   try {
-    const value = JSON.parse(localStorage.getItem('manco.search.history.v1') || '[]')
-    history.value = Array.isArray(value) ? value.slice(0, 3) : []
+    const payload = await api.searchHistory()
+    history.value = Array.isArray(payload.items) ? payload.items.slice(0, 5) : []
   } catch {
     history.value = []
   }
@@ -39,9 +39,11 @@ async function runSearch(value = query.value) {
     const payload = await api.globalSearch(keyword)
     items.value = payload.items || []
     errors.value = payload.errors || []
+    if (Array.isArray(payload.history)) history.value = payload.history.slice(0, 5)
   } catch (err) {
     items.value = []
     errors.value = [err.message]
+    void loadHistory()
   } finally {
     loading.value = false
   }

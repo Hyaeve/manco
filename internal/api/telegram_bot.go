@@ -33,6 +33,11 @@ func (s *Server) BotSources(ctx context.Context) ([]telegram.BotSource, error) {
 	return result, nil
 }
 
+func (s *Server) BotRememberGlobalSearch(ctx context.Context, query string) error {
+	_, err := s.recordGlobalSearch(ctx, query)
+	return err
+}
+
 // NotifyDownloadRetry groups retry metadata into one Telegram notice per work.
 // The downloader invokes this after automatic, scheduled, or manual retries are
 // actually re-queued.

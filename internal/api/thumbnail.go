@@ -88,7 +88,19 @@ func buildThumbnail(path string, width int) ([]byte, error) {
 // buildThumbnailFromReader 就地把一张图缩成 JPEG；原图本来就不宽时返回错误，
 // 让调用方继续按原图发送。
 func buildThumbnailFromReader(reader io.Reader, width int) ([]byte, error) {
-	source, _, err := image.Decode(reader)
+	var prefix bytes.Buffer
+	configuration, _, err := image.DecodeConfig(io.TeeReader(io.LimitReader(reader, 1<<20), &prefix))
+	if err != nil {
+		return nil, err
+	}
+	if configuration.Width <= 0 || configuration.Height <= 0 ||
+		int64(configuration.Width)*int64(configuration.Height) > 24_000_000 {
+		return nil, fmt.Errorf("image too large for thumbnail decoding")
+	}
+	if configuration.Width <= width {
+		return nil, fmt.Errorf("already small")
+	}
+	source, _, err := image.Decode(io.MultiReader(bytes.NewReader(prefix.Bytes()), reader))
 	if err != nil {
 		return nil, err
 	}

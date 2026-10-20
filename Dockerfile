@@ -92,7 +92,7 @@ RUN gradle --no-daemon --configure-on-demand \
 
 # --- Stage 6: minimal runtime -------------------------------------------------
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates tzdata openjdk21-jre-headless
+RUN apk add --no-cache ca-certificates tzdata openjdk21-jre-headless ffmpeg
 ENV TZ=Asia/Shanghai \
     MANCO_ADDR=:15600 \
     MANCO_DATA_DIR=/app/data \
