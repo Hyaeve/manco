@@ -22,8 +22,10 @@ func (f stubRoundTripper) RoundTrip(request *http.Request) (*http.Response, erro
 func TestConfigureStartsPollingWhenEnabledAfterBoot(t *testing.T) {
 	service := New(log.New(io.Discard, "", 0))
 	var calls int32
-	service.client = &http.Client{Transport: stubRoundTripper(func(*http.Request) (*http.Response, error) {
-		atomic.AddInt32(&calls, 1)
+	service.client = &http.Client{Transport: stubRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/getUpdates") {
+			atomic.AddInt32(&calls, 1)
+		}
 		// 返回错误让 loop 进入 5 秒退避，测试只需观察是否真的开始轮询。
 		return nil, errors.New("stub")
 	})}
