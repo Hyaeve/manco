@@ -36,6 +36,35 @@ func downloadSearchClause(query string) (string, []any) {
 	return ` AND (instr(lower(comic_title), lower(?)) > 0 OR instr(lower(chapter_title), lower(?)) > 0 OR instr(lower(comic_author), lower(?)) > 0)`, []any{query, query, query}
 }
 
+// ListQueuedJobRefsPage scans queue order without reading the large serialized
+// chapter, page, description, and tag payloads for work that is not starting.
+func (s *Store) ListQueuedJobRefsPage(ctx context.Context, offset, limit int) ([]model.QueuedJobRef, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 1 {
+		limit = 64
+	}
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT id, source_id FROM download_jobs
+		WHERE status = 'queued'
+		ORDER BY queue_priority DESC, id ASC
+		LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	refs := make([]model.QueuedJobRef, 0, limit)
+	for rows.Next() {
+		var ref model.QueuedJobRef
+		if err := rows.Scan(&ref.ID, &ref.SourceID); err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
+
 func (s *Store) QueryDownloadJobPage(ctx context.Context, options DownloadJobQuery, limit, offset int) ([]model.DownloadJob, int, error) {
 	if limit <= 0 {
 		limit = 200

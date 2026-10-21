@@ -5,9 +5,67 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hyaeve/manco/internal/model"
 )
+
+func BenchmarkQueuedJobScan(b *testing.B) {
+	repository, err := Open(filepath.Join(b.TempDir(), "queue.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer repository.Close()
+	ctx := context.Background()
+	_, err = repository.db.ExecContext(ctx, `
+		WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x < 1000)
+		INSERT INTO download_jobs(source_id, comic_id, comic_title, chapter_id, chapter_title, comic_description)
+		SELECT 'source', 'work', 'Work', CAST(x AS TEXT) || ?, 'Chapter ' || x, ? FROM seq`,
+		strings.Repeat("runtime-payload ", 2048), strings.Repeat("metadata ", 1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Run("full", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			if _, err := repository.ListQueuedJobsPage(ctx, 0, 64); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("refs", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			if _, err := repository.ListQueuedJobRefsPage(ctx, 0, 64); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func TestRetryNotificationQueryOmitsHeavyPayload(t *testing.T) {
+	repository := openTestStore(t)
+	ctx := context.Background()
+	_, err := repository.db.ExecContext(ctx, `
+		INSERT INTO download_jobs(source_id, comic_id, comic_title, chapter_id, chapter_title,
+			status, next_retry_at, comic_tags_json, merge_chapters_json, comic_description)
+		VALUES ('source','work','Work','chapter','Chapter','failed',?, ?, ?, ?)`,
+		time.Now().Add(-time.Hour).UTC(), "invalid JSON", "invalid JSON", strings.Repeat("description", 10000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := repository.DueRetryJobs(ctx, time.Now())
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("retry summary=%v err=%v", jobs, err)
+	}
+	if jobs[0].ChapterTitle != "Chapter" || jobs[0].ChapterID != "" || jobs[0].ComicDescription != "" {
+		t.Fatalf("retry contains heavy fields: %+v", jobs[0])
+	}
+	jobs, err = repository.FailedDownloadJobsByComic(ctx, "source", "work")
+	if err != nil || len(jobs) != 1 || jobs[0].ChapterID != "" || jobs[0].ComicDescription != "" {
+		t.Fatalf("scheduled retry contains heavy fields: %+v err=%v", jobs, err)
+	}
+}
 
 func BenchmarkDownloadTaskPage(b *testing.B) {
 	repository, err := Open(filepath.Join(b.TempDir(), "tasks.db"))

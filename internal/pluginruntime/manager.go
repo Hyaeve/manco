@@ -6,6 +6,7 @@ package pluginruntime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -103,6 +104,7 @@ type Manager struct {
 	proxyURL        string
 	proxyUsername   string
 	proxyPassword   string
+	idleTimeout     time.Duration
 }
 
 func New(options Options) (*Manager, error) {
@@ -135,6 +137,7 @@ func New(options Options) (*Manager, error) {
 		client:          options.Client,
 		logger:          options.Logger,
 		runtimeBySource: make(map[string]string),
+		idleTimeout:     5 * time.Minute,
 	}
 	if manager.binary == "" {
 		manager.binary = strings.TrimSpace(os.Getenv("MANCO_KOTOTORO_HOST"))
@@ -687,6 +690,7 @@ func (m *Manager) CallWithProxy(ctx context.Context, operation string, fields ma
 	operation = runtimeOperation(runtimeType, operation)
 	process := m.processForRuntimeLocked(runtimeType)
 	if process != nil && process.isClosed() {
+		process.close()
 		m.setProcessForRuntimeLocked(runtimeType, nil)
 		process = nil
 	}
@@ -697,7 +701,20 @@ func (m *Manager) CallWithProxy(ctx context.Context, operation string, fields ma
 		}
 		process = m.processForRuntimeLockedMust(runtimeType)
 	}
+	process.inFlight++
+	process.idleGeneration++
+	if process.idleTimer != nil {
+		process.idleTimer.Stop()
+	}
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		process.inFlight--
+		if m.processForRuntimeLocked(runtimeType) == process && !m.closed {
+			m.scheduleIdleStopLocked(runtimeType, process)
+		}
+	}()
 
 	// The sidecar multiplexes requests by requestId, so the wait must happen
 	// outside the manager lock; otherwise every call is globally serialized.
@@ -910,6 +927,7 @@ func (m *Manager) callRuntimeLocked(ctx context.Context, runtimeType, operation 
 	operation = runtimeOperation(runtimeType, operation)
 	process := m.processForRuntimeLocked(runtimeType)
 	if process != nil && process.isClosed() {
+		process.close()
 		m.setProcessForRuntimeLocked(runtimeType, nil)
 		process = nil
 	}
@@ -919,6 +937,7 @@ func (m *Manager) callRuntimeLocked(ctx context.Context, runtimeType, operation 
 		}
 		process = m.processForRuntimeLockedMust(runtimeType)
 	}
+	defer m.scheduleIdleStopLocked(runtimeType, process)
 	call := map[string]any{"operation": operation}
 	for key, value := range fields {
 		call[key] = value
@@ -944,7 +963,32 @@ func (m *Manager) startLocked(runtimeType string) error {
 		return err
 	}
 	m.setProcessForRuntimeLocked(runtimeType, process)
+	m.scheduleIdleStopLocked(runtimeType, process)
 	return nil
+}
+
+// Direct calls hold m.mu; multiplexed calls track inFlight under that lock.
+func (m *Manager) scheduleIdleStopLocked(runtimeType string, process *hostProcess) {
+	if process == nil || m.idleTimeout <= 0 || process.inFlight > 0 {
+		return
+	}
+	if process.idleTimer != nil {
+		process.idleTimer.Stop()
+	}
+	process.idleGeneration++
+	generation := process.idleGeneration
+	process.idleTimer = time.AfterFunc(m.idleTimeout, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.closed || m.processForRuntimeLocked(runtimeType) != process || process.idleGeneration != generation || process.inFlight > 0 {
+			return
+		}
+		process.close()
+		m.setProcessForRuntimeLocked(runtimeType, nil)
+		if m.logger != nil {
+			m.logger.Printf("pluginruntime: %s 空闲运行时已释放，下次调用自动启动", runtimeLabel(runtimeType))
+		}
+	})
 }
 
 func (m *Manager) restartLocked(runtimeType string) error {
@@ -1287,15 +1331,18 @@ func decodeSources(result map[string]any) ([]Source, error) {
 }
 
 type hostProcess struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  *bufio.Reader
-	logger  *log.Logger
-	pending map[string]chan hostResponse
-	writeMu sync.Mutex
-	stateMu sync.Mutex
-	closed  bool
-	nextID  atomic.Uint64
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	stdout         *bufio.Reader
+	logger         *log.Logger
+	pending        map[string]chan hostResponse
+	writeMu        sync.Mutex
+	stateMu        sync.Mutex
+	closed         bool
+	nextID         atomic.Uint64
+	idleTimer      *time.Timer
+	idleGeneration uint64
+	inFlight       int
 }
 
 type hostResponse struct {
@@ -1394,11 +1441,14 @@ func (p *hostProcess) request(ctx context.Context, call map[string]any) (map[str
 }
 
 func (p *hostProcess) readLoop() {
-	scanner := bufio.NewScanner(p.stdout)
-	scanner.Buffer(make([]byte, 64*1024), 32<<20)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+	for {
+		line, err := readHostResponseLine(p.stdout, 32<<20)
+		if err != nil {
+			p.fail(fmt.Errorf("读取 Kototoro 解析器响应: %w", err))
+			return
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
 		var envelope struct {
@@ -1409,7 +1459,7 @@ func (p *hostProcess) readLoop() {
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
+		if err := json.Unmarshal(line, &envelope); err != nil {
 			if p.logger != nil {
 				p.logger.Printf("kototoro-host: invalid response: %v", err)
 			}
@@ -1427,11 +1477,28 @@ func (p *hostProcess) readLoop() {
 			receiver <- hostResponse{value: envelope.Result}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		p.fail(fmt.Errorf("读取 Kototoro 解析器响应: %w", err))
-		return
+}
+
+// Unlike Scanner, oversized response buffers live only for one message.
+func readHostResponseLine(reader *bufio.Reader, limit int) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > limit {
+			return nil, errors.New("插件响应超过大小限制")
+		}
+		if len(line) == 0 && err == nil {
+			return fragment, nil
+		}
+		line = append(line, fragment...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if errors.Is(err, io.EOF) && len(line) > 0 {
+			return line, nil
+		}
+		return line, err
 	}
-	p.fail(errors.New("Kototoro 解析器运行时已停止"))
 }
 
 func (p *hostProcess) fail(err error) {
@@ -1451,6 +1518,14 @@ func (p *hostProcess) fail(err error) {
 }
 
 func (p *hostProcess) close() {
+	if p.idleTimer != nil {
+		p.idleTimer.Stop()
+	}
+	defer func() {
+		if p.cmd != nil && p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+		}
+	}()
 	p.stateMu.Lock()
 	if p.closed {
 		p.stateMu.Unlock()
@@ -1464,9 +1539,6 @@ func (p *hostProcess) close() {
 		receiver <- hostResponse{err: errors.New("Kototoro 解析器运行时已重启")}
 	}
 	_ = p.stdin.Close()
-	if p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
 }
 
 func (p *hostProcess) isClosed() bool {

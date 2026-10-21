@@ -3,6 +3,7 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/hyaeve/manco/internal/model"
 )
@@ -44,6 +46,8 @@ type SubscriptionArchiveNotice struct {
 }
 
 type DownloadRetryNotice struct {
+	SourceID  string
+	ComicID   string
 	Title     string
 	Source    string
 	Author    string
@@ -52,6 +56,27 @@ type DownloadRetryNotice struct {
 	CoverBlur bool
 	Chapters  []string
 }
+
+type retryAttempt struct {
+	At       time.Time
+	Count    int
+	Chapters []string
+}
+
+type dailyRetryNotice struct {
+	Day       string
+	MessageID int64
+	Rounds    int
+	Chapters  int
+	Recent    []retryAttempt
+}
+
+type retryNoticeStateStore interface {
+	BotRetryNoticeState(context.Context) (string, error)
+	BotSetRetryNoticeState(context.Context, string) error
+}
+
+var retryNoticeLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // notifyPhotoAll 给每个配置的会话发一条带图通知；封面取不到就退回纯文字。
 func (s *Service) notifyPhotoAll(ctx context.Context, photo, text string, coverBlur bool) {
@@ -245,20 +270,70 @@ func chapterCountNoticeLabel(count int) string {
 // DownloadRetryScheduled sends one work-level notification after failed
 // chapters have been put back into the queue.
 func (s *Service) DownloadRetryScheduled(ctx context.Context, notice DownloadRetryNotice) {
+	s.downloadRetryScheduledAt(ctx, notice, time.Now())
+}
+
+func (s *Service) downloadRetryScheduledAt(ctx context.Context, notice DownloadRetryNotice, now time.Time) {
 	if !s.Enabled() || len(notice.Chapters) == 0 {
 		return
 	}
-	caption := renderDownloadRetryNotice(notice)
-	s.mu.RLock()
-	chats := append([]string(nil), s.cfg.ChatIDs...)
-	s.mu.RUnlock()
-	for _, chat := range chats {
-		if path := strings.TrimSpace(notice.CoverFile); path != "" {
-			if err := s.sendPhotoFile(ctx, chat, path, caption, notice.CoverBlur); err == nil {
-				continue
+	// Serialize replacements so overlapping chapter completions cannot leave
+	// multiple "latest" notifications for one work.
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	day := now.In(retryNoticeLocation).Format("2006-01-02")
+	if s.retryNotices == nil {
+		s.retryNotices = make(map[string]*dailyRetryNotice)
+	}
+	if !s.retryLoaded {
+		s.retryLoaded = true
+		s.mu.RLock()
+		app := s.app
+		s.mu.RUnlock()
+		if stateStore, ok := app.(retryNoticeStateStore); ok {
+			if raw, err := stateStore.BotRetryNoticeState(ctx); err == nil && strings.TrimSpace(raw) != "" {
+				_ = json.Unmarshal([]byte(raw), &s.retryNotices)
 			}
 		}
-		if photo := strings.TrimSpace(notice.CoverURL); photo != "" {
+		if s.retryNotices == nil {
+			s.retryNotices = make(map[string]*dailyRetryNotice)
+		}
+	}
+	for key, entry := range s.retryNotices {
+		if entry == nil || entry.Day != day {
+			delete(s.retryNotices, key)
+		}
+	}
+	s.mu.RLock()
+	chats := append([]string(nil), s.cfg.ChatIDs...)
+	botID := fmt.Sprintf("%x", sha256.Sum256([]byte(s.cfg.Token)))
+	s.mu.RUnlock()
+	workKey := notice.SourceID + "\x00" + notice.ComicID
+	if notice.SourceID == "" || notice.ComicID == "" {
+		workKey = notice.Source + "\x00" + notice.Title
+	}
+	for _, chat := range chats {
+		key := botID + "\x00" + chat + "\x00" + workKey
+		state := s.retryNotices[key]
+		if state == nil {
+			state = &dailyRetryNotice{Day: day}
+			s.retryNotices[key] = state
+		}
+		state.Rounds++
+		state.Chapters += len(notice.Chapters)
+		state.Recent = append(state.Recent, retryAttempt{
+			At: now, Count: len(notice.Chapters),
+			Chapters: append([]string(nil), notice.Chapters[:min(3, len(notice.Chapters))]...),
+		})
+		if len(state.Recent) > 3 {
+			state.Recent = append([]retryAttempt(nil), state.Recent[len(state.Recent)-3:]...)
+		}
+		caption := renderDailyRetryNotice(notice, *state)
+		messageID := int64(0)
+		if path := strings.TrimSpace(notice.CoverFile); path != "" {
+			messageID, _ = s.sendPhotoFileWithKeyboard(ctx, chat, path, caption, notice.CoverBlur, nil)
+		}
+		if photo := strings.TrimSpace(notice.CoverURL); messageID == 0 && photo != "" {
 			payload := map[string]any{
 				"chat_id":    chat,
 				"photo":      photo,
@@ -268,12 +343,50 @@ func (s *Service) DownloadRetryScheduled(ctx context.Context, notice DownloadRet
 			if notice.CoverBlur {
 				payload["has_spoiler"] = true
 			}
-			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
-				continue
+			messageID, _ = s.callMethod(ctx, "sendPhoto", payload)
+		}
+		if messageID == 0 {
+			messageID = s.sendPersistentMessage(ctx, chat, caption, nil)
+		}
+		if messageID != 0 {
+			s.deleteMessage(ctx, chat, state.MessageID)
+			state.MessageID = messageID
+		}
+	}
+	s.mu.RLock()
+	app := s.app
+	s.mu.RUnlock()
+	if stateStore, ok := app.(retryNoticeStateStore); ok {
+		if raw, err := json.Marshal(s.retryNotices); err == nil {
+			if err := stateStore.BotSetRetryNoticeState(ctx, string(raw)); err != nil {
+				s.logger.Printf("telegram: save daily retry notices: %v", err)
 			}
 		}
-		s.sendPersistentMessage(ctx, chat, caption, nil)
 	}
+}
+
+func renderDailyRetryNotice(notice DownloadRetryNotice, state dailyRetryNotice) string {
+	lines := []string{
+		notificationWorkTitle(notice.Title, notice.Source),
+		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
+		fmt.Sprintf("今日失败重试 · %d 次，累计 %d 章次", state.Rounds, state.Chapters),
+	}
+	for index := len(state.Recent) - 1; index >= 0; index-- {
+		attempt := state.Recent[index]
+		titles := make([]string, 0, len(attempt.Chapters))
+		for _, title := range attempt.Chapters {
+			titles = append(titles, truncate(strings.TrimSpace(title), 45))
+		}
+		line := fmt.Sprintf("· %s · %d 章：%s", attempt.At.In(retryNoticeLocation).Format("15:04"), attempt.Count, strings.Join(titles, "、"))
+		if attempt.Count > len(titles) {
+			line += fmt.Sprintf(" … 其余 %d 章", attempt.Count-len(titles))
+		}
+		lines = append(lines, html.EscapeString(line))
+	}
+	if state.Rounds > len(state.Recent) {
+		lines = append(lines, fmt.Sprintf("… 省略更早 %d 次重试", state.Rounds-len(state.Recent)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderDownloadRetryNotice(notice DownloadRetryNotice) string {

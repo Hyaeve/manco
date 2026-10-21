@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -396,6 +397,24 @@ func TestListQueuedJobsPageReturnsBoundedRows(t *testing.T) {
 	}
 	if first[0].ID == second[0].ID || first[1].ID == second[1].ID {
 		t.Fatalf("pages overlap: first=%v second=%v", first, second)
+	}
+}
+
+func TestListQueuedJobRefsPageAvoidsLoadingSerializedJobPayloads(t *testing.T) {
+	ctx := context.Background()
+	repository := openTestStore(t)
+	job := createJob(t, repository, "payload")
+	if _, err := repository.db.ExecContext(ctx, `
+		UPDATE download_jobs SET comic_description = ?, comic_tags_json = ?, merge_chapters_json = ?
+		WHERE id = ?`, strings.Repeat("d", 1<<20), strings.Repeat("tag", 1<<18), strings.Repeat("chapter", 1<<18), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := repository.ListQueuedJobRefsPage(ctx, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].ID != job.ID || refs[0].SourceID != job.SourceID {
+		t.Fatalf("queued refs = %+v", refs)
 	}
 }
 

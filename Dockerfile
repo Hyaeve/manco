@@ -90,9 +90,17 @@ RUN gradle --no-daemon --configure-on-demand \
         --init-script /build/host/skip-runtime-pin-verification.init.gradle \
         :manco-mihon-host:installDist
 
-# --- Stage 6: minimal runtime -------------------------------------------------
+# --- Stage 6: stream-copy-only FFmpeg -----------------------------------------
+FROM alpine:3.22 AS media
+RUN apk add --no-cache build-base nasm pkgconf curl tar \
+    openssl-dev libxml2-dev zlib-dev ffmpeg
+WORKDIR /build
+COPY runtime/ffmpeg/build.sh /build/build.sh
+RUN sh /build/build.sh
+
+# --- Stage 7: minimal runtime -------------------------------------------------
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates tzdata openjdk21-jre-headless ffmpeg
+RUN apk add --no-cache ca-certificates tzdata openjdk21-jre-headless libxml2 libssl3 libcrypto3 zlib
 ENV TZ=Asia/Shanghai \
     MANCO_ADDR=:15600 \
     MANCO_DATA_DIR=/app/data \
@@ -104,6 +112,8 @@ ENV TZ=Asia/Shanghai \
     JAVA_TOOL_OPTIONS=-Djava.awt.headless=true
 WORKDIR /app
 COPY --from=backend /out/manco /usr/local/bin/manco
+COPY --from=media /out/bin/ffmpeg /usr/local/bin/ffmpeg
+COPY --from=media /out/licenses /usr/share/licenses/manco/ffmpeg
 COPY --from=kototoro /build/host/build/install/manco-kototoro-host /usr/local/lib/manco/kototoro-host
 COPY --from=mihon /build/upstream/manco-mihon-host/build/install/manco-mihon-host /usr/local/lib/manco/mihon-host
 COPY --from=kototoro /build/upstream/LICENSE /usr/share/licenses/manco/kototoro/LICENSE

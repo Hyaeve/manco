@@ -261,7 +261,53 @@ func (s *Service) replySubscriptions(ctx context.Context, chat, directory string
 		}
 		items = filtered
 	}
-	s.sendMessage(ctx, chat, renderSubscriptionList(items, directory), nil)
+	chatID, _ := strconv.ParseInt(chat, 10, 64)
+	sessionID := s.allocateSession(chatID, &session{subscriptionList: &subscriptionListPager{
+		Directory: directory, Items: items, Page: 1,
+	}})
+	s.showSubscriptionListPage(ctx, chatID, chat, sessionID, 1, 0)
+}
+
+const subscriptionPageSize = 15
+
+func (s *Service) showSubscriptionListPage(ctx context.Context, chatID int64, chat, sessionID string, page int, previousID int64) {
+	s.mu.RLock()
+	current := s.sessions[sessionID]
+	if current == nil || current.ChatID != chatID || current.subscriptionList == nil {
+		s.mu.RUnlock()
+		s.sendMessage(ctx, chat, "订阅计划会话已过期，请重新查看。", nil)
+		return
+	}
+	pager := *current.subscriptionList
+	s.mu.RUnlock()
+	pages := (len(pager.Items) + subscriptionPageSize - 1) / subscriptionPageSize
+	if page < 1 || page > pages {
+		return
+	}
+	start := (page - 1) * subscriptionPageSize
+	end := min(start+subscriptionPageSize, len(pager.Items))
+	text := renderSubscriptionListPage(pager.Items[start:end], pager.Directory, len(pager.Items), start)
+	text += fmt.Sprintf("\n\n第 %d/%d 页", page, pages)
+	row := make([]map[string]string, 0, 2)
+	if page > 1 {
+		row = append(row, map[string]string{"text": "上一页", "callback_data": fmt.Sprintf("sublist:%s:%d", sessionID, page-1)})
+	}
+	if page < pages {
+		row = append(row, map[string]string{"text": "下一页", "callback_data": fmt.Sprintf("sublist:%s:%d", sessionID, page+1)})
+	}
+	var keyboard any
+	if len(row) > 0 {
+		keyboard = map[string]any{"inline_keyboard": []any{row}}
+	}
+	messageID := s.sendMessage(ctx, chat, text, keyboard)
+	if messageID == 0 {
+		return
+	}
+	s.mutateSession(chatID, sessionID, func(current *session) {
+		current.subscriptionList.Page = page
+		current.resultsMessageID = messageID
+	})
+	s.deleteMessage(ctx, chat, previousID)
 }
 
 func subscriptionsInDownloadDirectory(items []BotSubscription, directory string) []BotSubscription {
@@ -1378,6 +1424,16 @@ func (s *Service) handleCallback(ctx context.Context, query *CallbackQuery) {
 	s.refreshTransientChat(chatID)
 	data := strings.TrimSpace(query.Data)
 	switch {
+	case strings.HasPrefix(data, "sublist:"):
+		parts := strings.Split(data, ":")
+		if len(parts) != 3 {
+			return
+		}
+		page, err := strconv.Atoi(parts[2])
+		if err != nil {
+			return
+		}
+		s.showSubscriptionListPage(ctx, chatID, chat, parts[1], page, query.Message.MessageID)
 	case strings.HasPrefix(data, "open:"):
 		sessionID, index, ok := parseIndexCallback(data, "open:")
 		if !ok || s.session(chatID, sessionID) == nil {
@@ -1897,12 +1953,20 @@ func renderGlobalSearchResults(query string, page globalSearchPage, pageNumber, 
 }
 
 func renderSubscriptionList(items []BotSubscription, directory ...string) string {
-	header := fmt.Sprintf("<b>订阅清单（%d）</b>", len(items))
-	if len(directory) > 0 && strings.TrimSpace(directory[0]) != "" {
+	scope := ""
+	if len(directory) > 0 {
+		scope = directory[0]
+	}
+	return renderSubscriptionListPage(items, scope, len(items), 0)
+}
+
+func renderSubscriptionListPage(items []BotSubscription, directory string, total, offset int) string {
+	header := fmt.Sprintf("<b>订阅清单（%d）</b>", total)
+	if strings.TrimSpace(directory) != "" {
 		header = fmt.Sprintf(
 			"<b>订阅清单 · %s（%d）</b>",
-			html.EscapeString(strings.TrimSpace(directory[0])),
-			len(items),
+			html.EscapeString(strings.TrimSpace(directory)),
+			total,
 		)
 	}
 	lines := []string{header}
@@ -1913,7 +1977,7 @@ func renderSubscriptionList(items []BotSubscription, directory ...string) string
 		}
 		lines = append(lines, fmt.Sprintf(
 			"%d. %s（%s）%s",
-			index+1,
+			offset+index+1,
 			html.EscapeString(truncate(item.Title, titleLimit)),
 			html.EscapeString(shortSourceName(item.Source)),
 			subscriptionStateDot(item.Enabled),

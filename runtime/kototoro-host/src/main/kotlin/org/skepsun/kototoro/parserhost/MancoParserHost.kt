@@ -513,7 +513,7 @@ private class MancoParserPlatform(
     override val preferredLocales: List<Locale> get() = listOf(Locale.SIMPLIFIED_CHINESE, Locale.US)
 
     override fun createBitmap(width: Int, height: Int): Bitmap =
-        AwtBitmap(BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB))
+        AwtBitmap.create(width, height)
 
     override fun redrawImageResponse(response: Response, redraw: (Bitmap) -> Bitmap): Response =
         AwtBitmap.redraw(response, redraw)
@@ -619,27 +619,53 @@ private class AwtBitmap(private val image: BufferedImage) : Bitmap {
 
     companion object {
         private const val MAXIMUM_BYTES = 64L * 1024 * 1024
+        private const val MAXIMUM_PIXELS = 40_000_000L
+
+        fun create(width: Int, height: Int): AwtBitmap {
+            checkDimensions(width, height)
+            return AwtBitmap(BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB))
+        }
+
+        private fun checkDimensions(width: Int, height: Int) {
+            if (width <= 0 || height <= 0 || width.toLong() * height > MAXIMUM_PIXELS) {
+                throw IOException("Image dimensions exceed configured limit")
+            }
+        }
 
         fun redraw(response: Response, redraw: (Bitmap) -> Bitmap): Response {
             val bytes = response.use { source ->
                 val body = source.body
                 if (body.contentLength() > MAXIMUM_BYTES) throw IOException("Image exceeds configured limit")
-                body.bytes().also { if (it.size > MAXIMUM_BYTES) throw IOException("Image exceeds configured limit") }
+                body.byteStream().use { it.readNBytes((MAXIMUM_BYTES + 1).toInt()) }
+                    .also { if (it.size > MAXIMUM_BYTES) throw IOException("Image exceeds configured limit") }
             }
-            val decoded = ImageIO.read(ByteArrayInputStream(bytes)) ?: throw IOException("Unsupported image format")
-            val mutable = BufferedImage(decoded.width, decoded.height, BufferedImage.TYPE_INT_ARGB).also { copy ->
-                copy.createGraphics().apply { drawImage(decoded, 0, 0, null); dispose() }
+            val decoded = ImageIO.createImageInputStream(ByteArrayInputStream(bytes)).use { input ->
+                val reader = ImageIO.getImageReaders(input).asSequence().firstOrNull()
+                    ?: throw IOException("Unsupported image format")
+                try {
+                    reader.input = input
+                    checkDimensions(reader.getWidth(0), reader.getHeight(0))
+                    reader.read(0)
+                } finally {
+                    reader.dispose()
+                }
             }
-            val result = requireNotNull((redraw(AwtBitmap(mutable)) as? AwtBitmap)?.image) {
-                "Image redraw must return a bitmap created by this host"
+            var result: BufferedImage? = null
+            try {
+                result = requireNotNull((redraw(AwtBitmap(decoded)) as? AwtBitmap)?.image) {
+                    "Image redraw must return a bitmap created by this host"
+                }
+                val output = ByteArrayOutputStream()
+                check(ImageIO.write(result, "png", output)) { "PNG encoder unavailable" }
+                return response.newBuilder()
+                    .removeHeader("Content-Length")
+                    .header("Content-Type", "image/png")
+                    .body(output.toByteArray().toResponseBody("image/png".toMediaType()))
+                    .build()
+            } finally {
+                decoded.flush()
+                if (result !== decoded) result?.flush()
             }
-            val output = ByteArrayOutputStream()
-            check(ImageIO.write(result, "png", output)) { "PNG encoder unavailable" }
-            return response.newBuilder()
-                .removeHeader("Content-Length")
-                .header("Content-Type", "image/png")
-                .body(output.toByteArray().toResponseBody("image/png".toMediaType()))
-                .build()
         }
     }
 }

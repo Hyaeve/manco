@@ -51,6 +51,8 @@ func (s *Server) NotifyDownloadRetry(ctx context.Context, jobs []model.DownloadJ
 		sourceName = adapter.Info().Name
 	}
 	notice := telegram.DownloadRetryNotice{
+		SourceID: first.SourceID,
+		ComicID:  first.ComicID,
 		Title:    first.ComicTitle,
 		Source:   sourceName,
 		Author:   first.ComicAuthor,
@@ -245,6 +247,14 @@ func (s *Server) BotSubscriptions(ctx context.Context) ([]telegram.BotSubscripti
 		result = append(result, s.botSubscriptionBase(item))
 	}
 	return result, nil
+}
+
+func (s *Server) BotRetryNoticeState(ctx context.Context) (string, error) {
+	return s.store.Setting(ctx, "telegram_daily_retry_notices")
+}
+
+func (s *Server) BotSetRetryNoticeState(ctx context.Context, value string) error {
+	return s.store.SetSetting(ctx, "telegram_daily_retry_notices", value)
 }
 
 // BotSubscriptionDetail enriches one subscription only when an interactive

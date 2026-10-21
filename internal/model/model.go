@@ -94,6 +94,11 @@ type DownloadJob struct {
 	FinishedAt          *time.Time `json:"finishedAt,omitempty"`
 }
 
+type QueuedJobRef struct {
+	ID       int64
+	SourceID string
+}
+
 const (
 	QueuePriorityNormal = 0
 	QueuePriorityManual = 1

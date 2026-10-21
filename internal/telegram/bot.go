@@ -164,6 +164,9 @@ type Service struct {
 	sessionSeq   atomic.Uint64
 	transient    map[int64]map[int64]*transientMessage
 	transientTTL time.Duration
+	retryMu      sync.Mutex
+	retryNotices map[string]*dailyRetryNotice
+	retryLoaded  bool
 }
 
 type transientMessage struct {
@@ -189,6 +192,13 @@ type session struct {
 	globalSearch       *globalSearchPager
 	search             *sourceSearchPager
 	subscriptionDelete *subscriptionDeletePager
+	subscriptionList   *subscriptionListPager
+}
+
+type subscriptionListPager struct {
+	Directory string
+	Items     []BotSubscription
+	Page      int
 }
 
 type browseSession struct {

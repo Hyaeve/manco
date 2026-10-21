@@ -91,8 +91,9 @@ const (
 	detailCacheTTL      = 5 * time.Minute
 	queuePageSize       = 64
 	queuePagesPerNotify = 8
-	maxHeavyImageLoads  = 2
-	maxDetailCacheSize  = 64
+	maxHeavyImageLoads  = 1
+	maxDetailCacheSize  = 8
+	maxDescramblePixels = int64(40_000_000)
 )
 
 // SetConcurrency applies a settings update. New chapters and page requests
@@ -304,7 +305,7 @@ func (e *Engine) RetryJobs(ctx context.Context, ids []int64) (int, error) {
 			e.logger.Printf("downloader: reset selected job %d: %v", id, err)
 			continue
 		}
-		resetJobs = append(resetJobs, job)
+		resetJobs = append(resetJobs, retryJobSummary(job))
 	}
 	if len(resetJobs) > 0 {
 		e.Notify()
@@ -333,7 +334,7 @@ func (e *Engine) RetryFailedByComic(ctx context.Context, sourceID, comicID strin
 			continue
 		}
 		retried++
-		resetJobs = append(resetJobs, job)
+		resetJobs = append(resetJobs, retryJobSummary(job))
 	}
 	if retried > 0 {
 		e.Notify()
@@ -352,16 +353,28 @@ func (e *Engine) notifyRetries(jobs []model.DownloadJob) {
 	grouped := make(map[string][]model.DownloadJob)
 	for _, job := range jobs {
 		key := job.SourceID + "\x00" + job.ComicID
-		grouped[key] = append(grouped[key], job)
+		grouped[key] = append(grouped[key], retryJobSummary(job))
 	}
 	keys := make([]string, 0, len(grouped))
 	for key := range grouped {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
-		batch := append([]model.DownloadJob(nil), grouped[key]...)
-		go notifier(context.Background(), batch)
+	go func() {
+		for _, key := range keys {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			notifier(ctx, grouped[key])
+			cancel()
+			delete(grouped, key)
+		}
+	}()
+}
+
+func retryJobSummary(job model.DownloadJob) model.DownloadJob {
+	return model.DownloadJob{
+		ID: job.ID, SourceID: job.SourceID, ComicID: job.ComicID,
+		ComicTitle: job.ComicTitle, ComicAuthor: job.ComicAuthor,
+		ComicCover: job.ComicCover, ChapterTitle: job.ChapterTitle,
 	}
 }
 
@@ -442,6 +455,83 @@ func (e *Engine) loop(ctx context.Context) {
 }
 
 func (e *Engine) dispatchQueuedJobs(ctx context.Context) bool {
+	if refs, ok := e.store.(interface {
+		ListQueuedJobRefsPage(context.Context, int, int) ([]model.QueuedJobRef, error)
+	}); ok {
+		return e.dispatchQueuedJobRefs(ctx, refs)
+	}
+	return e.dispatchQueuedJobSnapshots(ctx)
+}
+
+func (e *Engine) dispatchQueuedJobRefs(ctx context.Context, store interface {
+	ListQueuedJobRefsPage(context.Context, int, int) ([]model.QueuedJobRef, error)
+}) bool {
+	for page := 0; page < queuePagesPerNotify; page++ {
+		e.mu.Lock()
+		if e.activeTotal >= e.maxChapterConcurrency {
+			e.mu.Unlock()
+			return ctx.Err() == nil
+		}
+		offset := e.queueCursor
+		e.queueCursor += queuePageSize
+		e.mu.Unlock()
+
+		refs, err := store.ListQueuedJobRefsPage(ctx, offset, queuePageSize)
+		if err != nil {
+			e.logger.Printf("downloader: list queued job refs: %v", err)
+			return true
+		}
+		if len(refs) == 0 {
+			e.mu.Lock()
+			e.queueCursor = 0
+			e.mu.Unlock()
+			if offset == 0 {
+				return true
+			}
+			continue
+		}
+		if len(refs) < queuePageSize {
+			e.mu.Lock()
+			e.queueCursor = 0
+			e.mu.Unlock()
+		}
+		for _, ref := range refs {
+			if e.inCooldown(ref.SourceID) || !e.claimJob(ref.ID, ref.SourceID) {
+				continue
+			}
+			if ctx.Err() != nil {
+				e.release(model.DownloadJob{ID: ref.ID, SourceID: ref.SourceID})
+				return false
+			}
+			job, err := e.store.DownloadJob(ctx, ref.ID)
+			if err != nil {
+				e.release(model.DownloadJob{ID: ref.ID, SourceID: ref.SourceID})
+				e.logger.Printf("downloader: load queued job %d: %v", ref.ID, err)
+				continue
+			}
+			if job.Status != "queued" {
+				e.release(job)
+				continue
+			}
+			go func() {
+				defer func() {
+					e.release(job)
+					e.Notify()
+				}()
+				e.runJob(ctx, job)
+			}()
+			e.mu.Lock()
+			full := e.activeTotal >= e.maxChapterConcurrency
+			e.mu.Unlock()
+			if full {
+				return true
+			}
+		}
+	}
+	return true
+}
+
+func (e *Engine) dispatchQueuedJobSnapshots(ctx context.Context) bool {
 	for page := 0; page < queuePagesPerNotify; page++ {
 		e.mu.Lock()
 		if e.activeTotal >= e.maxChapterConcurrency {
@@ -499,9 +589,13 @@ func (e *Engine) dispatchQueuedJobs(ctx context.Context) bool {
 }
 
 func (e *Engine) claim(job model.DownloadJob) bool {
+	return e.claimJob(job.ID, job.SourceID)
+}
+
+func (e *Engine) claimJob(id int64, sourceID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if _, exists := e.active[job.ID]; exists {
+	if _, exists := e.active[id]; exists {
 		return false
 	}
 	if e.activeTotal >= e.maxChapterConcurrency {
@@ -509,16 +603,16 @@ func (e *Engine) claim(job model.DownloadJob) bool {
 	}
 	// 单个来源的上限：显式覆盖优先，否则用全局默认值。这样即使某个来源
 	// 没有单独配置，也不会把全局并发吃满。
-	limit := e.sourceConcurrency[job.SourceID]
+	limit := e.sourceConcurrency[sourceID]
 	if limit <= 0 {
 		limit = e.defaultSourceConcurrency
 	}
-	if limit > 0 && e.activeBySource[job.SourceID] >= limit {
+	if limit > 0 && e.activeBySource[sourceID] >= limit {
 		return false
 	}
-	e.active[job.ID] = func() {}
+	e.active[id] = func() {}
 	e.activeTotal++
-	e.activeBySource[job.SourceID]++
+	e.activeBySource[sourceID]++
 	return true
 }
 
@@ -2949,12 +3043,22 @@ func downloadPageToFile(engine *Engine, ctx context.Context, client *http.Client
 		return false, writeHTTPImageAtomic(ctx, client, account, page, targetPath)
 	}
 
+	// Acquire before fetching bytes: waiting workers must not each retain a
+	// complete compressed image while another worker decodes a large bitmap.
+	if !imageSource {
+		select {
+		case engine.heavyImageSem <- struct{}{}:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		defer func() { <-engine.heavyImageSem }()
+	}
 	data, materialized, err := fetchPageImage(ctx, client, account, item, comicID, chapter, page)
 	if err != nil {
 		return materialized, err
 	}
 	if page.DescrambleParts > 0 && !materialized {
-		data, err = descramblePage(ctx, engine, data, page.DescrambleParts)
+		data, err = Descramble(data, page.DescrambleParts)
 		if err != nil {
 			return materialized, fmt.Errorf("解扰失败: %w", err)
 		}
@@ -2963,16 +3067,6 @@ func downloadPageToFile(engine *Engine, ctx context.Context, client *http.Client
 		return materialized, errors.New("页面为空")
 	}
 	return materialized, writeFileAtomic(targetPath, data)
-}
-
-func descramblePage(ctx context.Context, engine *Engine, data []byte, parts int) ([]byte, error) {
-	select {
-	case engine.heavyImageSem <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	defer func() { <-engine.heavyImageSem }()
-	return Descramble(data, parts)
 }
 
 func writeHTTPImageAtomic(ctx context.Context, client *http.Client, account source.Account, page model.Page, targetPath string) error {
@@ -3563,6 +3657,13 @@ func detectImageExtension(data []byte) string {
 }
 
 func decodeImage(data []byte) (image.Image, error) {
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxDescramblePixels {
+		return nil, fmt.Errorf("图片像素超过解扰上限 %d MP", maxDescramblePixels/1_000_000)
+	}
 	if detectImageExtension(data) == ".webp" {
 		return webp.Decode(bytes.NewReader(data))
 	}

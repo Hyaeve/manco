@@ -1633,7 +1633,9 @@ func (s *Store) ActivateDueRetries(ctx context.Context, now time.Time) (int64, e
 // DueRetryJobs returns the failed jobs that ActivateDueRetries will requeue on
 // this pass, so the engine can emit one grouped notification per work.
 func (s *Store) DueRetryJobs(ctx context.Context, now time.Time) ([]model.DownloadJob, error) {
-	rows, err := s.reader().QueryContext(ctx, jobSelect+`
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT id, source_id, comic_id, comic_title, comic_author, comic_cover, chapter_title
+		FROM download_jobs
 		WHERE status = 'failed' AND retry_count < 2
 			AND next_retry_at IS NOT NULL AND next_retry_at <= ?
 		ORDER BY source_id ASC, comic_id ASC, chapter_order ASC, id ASC`, now.UTC())
@@ -1643,8 +1645,8 @@ func (s *Store) DueRetryJobs(ctx context.Context, now time.Time) ([]model.Downlo
 	defer rows.Close()
 	var jobs []model.DownloadJob
 	for rows.Next() {
-		job, err := scanJob(rows)
-		if err != nil {
+		var job model.DownloadJob
+		if err := rows.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicAuthor, &job.ComicCover, &job.ChapterTitle); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, job)
@@ -1916,7 +1918,10 @@ func (s *Store) CompletedDownloadJobsByComic(ctx context.Context, sourceID, comi
 // FailedDownloadJobsByComic returns every failed or canceled chapter for a work
 // so the subscription checker can retry them without touching finished files.
 func (s *Store) FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
-	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? AND status IN ('failed', 'canceled') ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT id, source_id, comic_id, comic_title, comic_author, comic_cover, chapter_title
+		FROM download_jobs WHERE source_id = ? AND comic_id = ? AND status IN ('failed', 'canceled')
+		ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
 	if err != nil {
 		return nil, err
 	}
@@ -1924,8 +1929,8 @@ func (s *Store) FailedDownloadJobsByComic(ctx context.Context, sourceID, comicID
 
 	var jobs []model.DownloadJob
 	for rows.Next() {
-		job, err := scanJob(rows)
-		if err != nil {
+		var job model.DownloadJob
+		if err := rows.Scan(&job.ID, &job.SourceID, &job.ComicID, &job.ComicTitle, &job.ComicAuthor, &job.ComicCover, &job.ChapterTitle); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, job)
