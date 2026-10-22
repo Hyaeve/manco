@@ -28,6 +28,7 @@ import ContentLink from '../components/ContentLink.vue'
 import FunctionOption from '../components/FunctionOption.vue'
 import SortMenu from '../components/SortMenu.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
+import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
@@ -856,7 +857,7 @@ function batchDelete() {
         全部源 <span class="segmented-count">{{ kindCount('all') }}</span>
       </button>
       <button type="button" :class="{ active: kindFilter === 'comic' }" @click="kindFilter = 'comic'">
-        <BookOpen :size="16" />
+        <ComicSourceIcon :size="16" />
         漫画源 <span class="segmented-count">{{ kindCount('comic') }}</span>
       </button>
       <button type="button" :class="{ active: kindFilter === 'book' }" @click="kindFilter = 'book'">

@@ -34,7 +34,7 @@ import { paginateTextPages } from '../utils/reader'
 import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
 const items = ref([])
-const sourceKinds = ref({})
+const libraryCounts = ref({ all: 0, comic: 0, book: 0, other: 0 })
 const loading = ref(true)
 const query = ref('')
 const kind = ref('all')
@@ -49,6 +49,7 @@ const readerCBZDocumentLoading = ref(false)
 let readerCBZRequestSeq = 0
 const selectionMode = ref(false)
 const selectedPaths = ref([])
+const selectedSnapshots = ref(new Map())
 const selectionAnchor = ref(-1)
 const batchWorking = ref(false)
 const chapterQuery = ref('')
@@ -95,40 +96,8 @@ function onSortChange({ mode, desc }) {
   sortDesc.value = desc
 }
 
-const sortedItems = computed(() => {
-  const direction = sortDesc.value ? -1 : 1
-  const rows = [...items.value]
-  rows.sort((a, b) => {
-    let left
-    let right
-    if (sortMode.value === 'title') {
-      left = String(a.title || a.path || '')
-      right = String(b.title || b.path || '')
-    } else if (sortMode.value === 'created') {
-      left = String(a.createdAt || a.updatedAt || '')
-      right = String(b.createdAt || b.updatedAt || '')
-    } else {
-      left = String(a.title || a.path || '')
-      right = String(b.title || b.path || '')
-    }
-    if (left === right) return 0
-    return (left > right ? 1 : -1) * direction
-  })
-  return rows
-})
-
-const filtered = computed(() => {
-  const keyword = query.value.trim().toLowerCase()
-  return sortedItems.value.filter((item) => {
-    if (kind.value !== 'all' && itemKind(item) !== kind.value) return false
-    if (activeRoot.value && rootOf(item) !== activeRoot.value) return false
-    if (!keyword) return true
-    return (
-      (item.title || '').toLowerCase().includes(keyword) ||
-      (item.author || '').toLowerCase().includes(keyword)
-    )
-  })
-})
+// 服务端按当前筛选和排序返回一个数据窗口，前端不再累积全部作品。
+const filtered = computed(() => items.value)
 
 // 本地仓库目录栏目：按订阅（添加订阅的先后）顺序展示作品父目录。
 function rootOf(item) {
@@ -139,33 +108,11 @@ function rootLabel(root) {
   return dirBasename(root) || root || '下载目录'
 }
 
-const libraryRoots = computed(() => {
-  const used = new Set(items.value.map((item) => rootOf(item)))
-  const ordered = []
-  const seen = new Set()
-  for (const root of rootOrder.value) {
-    if (!root || !used.has(root) || seen.has(root)) continue
-    seen.add(root)
-    ordered.push(root)
-  }
-  for (const item of items.value) {
-    const root = rootOf(item)
-    if (!root || seen.has(root)) continue
-    seen.add(root)
-    ordered.push(root)
-  }
-  return ordered
-})
+const libraryRoots = computed(() => rootOrder.value.filter(Boolean))
 
-function itemKind(item) {
-  const sourceKind = sourceKinds.value[item.sourceId]
-  if (sourceKind === 'book' || sourceKind === 'other') return sourceKind
-  return item.kind === 'book' || item.kind === 'other' ? item.kind : 'comic'
-}
-
-const comicCount = computed(() => items.value.filter((item) => itemKind(item) === 'comic').length)
-const bookCount = computed(() => items.value.filter((item) => itemKind(item) === 'book').length)
-const otherCount = computed(() => items.value.filter((item) => itemKind(item) === 'other').length)
+const comicCount = computed(() => libraryCounts.value.comic || 0)
+const bookCount = computed(() => libraryCounts.value.book || 0)
+const otherCount = computed(() => libraryCounts.value.other || 0)
 
 const activeFiles = computed(() => active.value?.files || [])
 const activeAuthors = computed(() => splitAuthors(active.value?.author))
@@ -227,7 +174,9 @@ const currentReaderImage = computed(() => {
 })
 const currentReaderEpubChapter = computed(() => readerEpubChapters.value[readerPageIndex.value] || null)
 const currentReaderText = computed(() => readerTextPages.value[readerPageIndex.value] || '')
-const selectedItems = computed(() => items.value.filter((item) => selectedPaths.value.includes(keyOf(item))))
+const selectedItems = computed(() =>
+  selectedPaths.value.map((path) => selectedSnapshots.value.get(path)).filter(Boolean),
+)
 const selectedCount = computed(() => selectedItems.value.length)
 const selectedFileCount = computed(() =>
   selectedItems.value
@@ -239,80 +188,120 @@ onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
-  scrollContainer = document.querySelector('.content-scroll')
-  scrollContainer?.addEventListener('scroll', handleLibraryScroll, { passive: true })
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
-  scrollContainer?.removeEventListener('scroll', handleLibraryScroll)
-  scrollContainer = null
+  if (queryTimer) window.clearTimeout(queryTimer)
+  libraryController?.abort()
 })
 
 async function refreshSourceKinds() {
-  try {
-    const payload = await api.sources()
-    sourceKinds.value = Object.fromEntries((payload.items || []).map((source) => [source.id, source.kind || 'comic']))
-  } catch {
-    // 保留现有类型映射，等待下一次页面加载。
-  }
+  await load()
 }
 
 // 切走页面时退出多选。
 onDeactivated(() => {
   clearSelection()
+  libraryController?.abort()
 })
 
-// 本地仓库分页：首屏只取一页，滚到末尾或点按钮再补下一页。
-const LIBRARY_PAGE_SIZE = 60
+// 本地仓库数据窗口：只保留可视区域及上下各一行，离开窗口的数据直接释放。
 const totalItems = ref(0)
-const loadingMore = ref(false)
-let scrollContainer = null
+const libraryOffset = ref(0)
+const libraryWindowLoading = ref(false)
+let libraryRequestGeneration = 0
+let libraryController = null
+let queryTimer = 0
 
-async function loadMoreLibrary() {
-  if (loadingMore.value || items.value.length >= totalItems.value) return
-  loadingMore.value = true
-  try {
-    const payload = await api.localLibrary(LIBRARY_PAGE_SIZE, items.value.length, true)
-    const next = payload.items || []
-    if (next.length) items.value = [...items.value, ...next]
-    totalItems.value = Number(payload.total ?? totalItems.value)
-  } catch (err) {
-    notify(`加载更多失败：${err.message}`, true)
-  } finally {
-    loadingMore.value = false
+function estimatedLibraryColumns() {
+  if (window.innerWidth <= 760) return 2
+  if (window.innerWidth <= 1100) return 4
+  if (window.innerWidth <= 1400) return 5
+  return 7
+}
+
+function initialLibraryLimit() {
+  const viewport = document.querySelector('.content-scroll')?.clientHeight || Math.max(320, window.innerHeight - 180)
+  const columns = estimatedLibraryColumns()
+  const rowHeight = columns <= 2 ? 360 : columns <= 4 ? 300 : 220
+  const rows = Math.max(2, Math.ceil(viewport / rowHeight) + 1)
+  return rows * columns
+}
+
+function libraryRequestOptions() {
+  return {
+    query: query.value.trim(),
+    kind: kind.value,
+    root: activeRoot.value,
+    sort: sortMode.value,
+    desc: sortDesc.value,
   }
 }
 
-function handleLibraryScroll() {
-  const element = scrollContainer
-  if (active.value || !element || loadingMore.value || items.value.length >= totalItems.value) return
-  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 400) loadMoreLibrary()
+async function fetchLibraryWindow(start = 0, limit = initialLibraryLimit(), initial = false) {
+  const generation = ++libraryRequestGeneration
+  libraryController?.abort()
+  libraryController = new AbortController()
+  if (initial) loading.value = true
+  else libraryWindowLoading.value = true
+  try {
+    const payload = await api.localLibrary(Math.max(1, limit), Math.max(0, start), true, {
+      ...libraryRequestOptions(),
+      signal: libraryController.signal,
+    })
+    if (generation !== libraryRequestGeneration) return
+    items.value = payload.items || []
+    for (const item of items.value) {
+      const path = keyOf(item)
+      if (selectedPaths.value.includes(path)) selectedSnapshots.value.set(path, item)
+    }
+    libraryOffset.value = Math.max(0, start)
+    totalItems.value = Number(payload.total || 0)
+    libraryCounts.value = payload.counts || { all: totalItems.value, comic: 0, book: 0, other: 0 }
+    rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : rootOrder.value
+    if (activeRoot.value && !rootOrder.value.includes(activeRoot.value)) activeRoot.value = ''
+  } catch (err) {
+    if (err.name !== 'AbortError' && generation === libraryRequestGeneration) {
+      notify(`加载本地仓库失败：${err.message}`, true)
+    }
+  } finally {
+    if (generation === libraryRequestGeneration) {
+      loading.value = false
+      libraryWindowLoading.value = false
+    }
+  }
+}
+
+function onLibraryWindowChange({ start, limit }) {
+  if (active.value || libraryWindowLoading.value) return
+  if (start === libraryOffset.value && limit === items.value.length) return
+  fetchLibraryWindow(start, limit)
 }
 
 async function load() {
   loading.value = true
   try {
-    const [payload, sourcePayload] = await Promise.all([
-      api.localLibrary(LIBRARY_PAGE_SIZE, 0, true),
-      api.sources().catch(() => ({ items: [] })),
-    ])
-    items.value = payload.items || []
-    totalItems.value = Number(payload.total || items.value.length)
-    sourceKinds.value = Object.fromEntries((sourcePayload.items || []).map((source) => [source.id, source.kind || 'comic']))
-    rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : []
-    const availableRoots = new Set(rootOrder.value)
-    if (activeRoot.value && !availableRoots.has(activeRoot.value)) activeRoot.value = ''
-    const available = new Set(items.value.map(keyOf))
-    selectedPaths.value = selectedPaths.value.filter((path) => available.has(path))
-    if (!selectedPaths.value.length) selectionMode.value = false
+    await fetchLibraryWindow(0, initialLibraryLimit(), true)
   } catch (err) {
     notify(`本地仓库加载失败：${err.message}`, true)
-  } finally {
     loading.value = false
   }
 }
+
+function reloadCurrentWindow() {
+  clearSelection()
+  const scroller = document.querySelector('.content-scroll')
+  if (scroller) scroller.scrollTop = 0
+  load()
+}
+
+watch([kind, activeRoot, sortMode, sortDesc], reloadCurrentWindow)
+watch(query, () => {
+  if (queryTimer) window.clearTimeout(queryTimer)
+  queryTimer = window.setTimeout(reloadCurrentWindow, 260)
+})
 
 function keyOf(item) {
   return item.path || item.title
@@ -322,11 +311,20 @@ function isSelected(item) {
   return selectedPaths.value.includes(keyOf(item))
 }
 
+function itemAtGlobalIndex(index) {
+  return items.value[index - libraryOffset.value] || null
+}
+
+function rememberSelection(item) {
+  const path = keyOf(item)
+  if (!selectedPaths.value.includes(path)) selectedPaths.value = [...selectedPaths.value, path]
+  selectedSnapshots.value.set(path, item)
+}
+
 function enterSelection(item, index, event) {
   event?.preventDefault()
-  const path = keyOf(item)
   selectionMode.value = true
-  if (!selectedPaths.value.includes(path)) selectedPaths.value = [...selectedPaths.value, path]
+  rememberSelection(item)
   selectionAnchor.value = index
 }
 
@@ -339,7 +337,12 @@ function handleCardClick(item, index, event) {
     const start = Math.min(selectionAnchor.value, index)
     const end = Math.max(selectionAnchor.value, index)
     const next = new Set(selectedPaths.value)
-    filtered.value.slice(start, end + 1).forEach((entry) => next.add(keyOf(entry)))
+    for (let cursor = start; cursor <= end; cursor += 1) {
+      const entry = itemAtGlobalIndex(cursor)
+      if (!entry) continue
+      next.add(keyOf(entry))
+      selectedSnapshots.value.set(keyOf(entry), entry)
+    }
     selectedPaths.value = [...next]
     selectionAnchor.value = index
     return
@@ -352,13 +355,15 @@ function toggleSelection(item) {
   const path = keyOf(item)
   if (selectedPaths.value.includes(path)) {
     selectedPaths.value = selectedPaths.value.filter((value) => value !== path)
+    selectedSnapshots.value.delete(path)
   } else {
-    selectedPaths.value = [...selectedPaths.value, path]
+    rememberSelection(item)
   }
 }
 
 function selectAll() {
   selectedPaths.value = filtered.value.map(keyOf)
+  selectedSnapshots.value = new Map(filtered.value.map((item) => [keyOf(item), item]))
   selectionMode.value = selectedPaths.value.length > 0
   selectionAnchor.value = selectedPaths.value.length ? 0 : -1
 }
@@ -366,6 +371,7 @@ function selectAll() {
 function clearSelection() {
   selectionMode.value = false
   selectedPaths.value = []
+  selectedSnapshots.value = new Map()
   selectionAnchor.value = -1
 }
 
@@ -743,7 +749,7 @@ function downloadReaderFile() {
         <button type="button" :class="{ active: kind === 'all' }" @click="kind = 'all'">
           <Layers3 :size="16" />
           全部
-          <span class="segmented-count">{{ items.length }}</span>
+          <span class="segmented-count">{{ libraryCounts.all || 0 }}</span>
         </button>
         <button type="button" :class="{ active: kind === 'comic' }" @click="kind = 'comic'">
           <BookOpen :size="16" />
@@ -805,18 +811,25 @@ function downloadReaderFile() {
       <span>正在读取本地仓库</span>
     </div>
     <CollectionEmptyState
-      v-else-if="!items.length"
+      v-else-if="!totalItems && !query.trim() && !activeRoot && kind === 'all'"
       class="page-empty-state"
       variant="local"
       window-title="本地书架"
       heading="本地书架还是空的"
       description="下载完成的漫画、书籍和其他资源会收进这里。先让猫咪帮你守着一格空书架。"
     />
-    <div v-else-if="!filtered.length" class="card empty">
+    <div v-else-if="!items.length" class="card empty">
       <Search :size="26" />
       <p>没有匹配的作品。</p>
     </div>
-    <WindowedGrid v-else class="local-library-grid" :items="filtered" @near-end="loadMoreLibrary">
+    <WindowedGrid
+      v-else
+      class="local-library-grid"
+      :items="filtered"
+      :total="totalItems"
+      :offset="libraryOffset"
+      @window-change="onLibraryWindowChange"
+    >
       <template #default="{ item, index }">
       <button
         class="card local-library-card"
@@ -844,10 +857,6 @@ function downloadReaderFile() {
       </button>
       </template>
     </WindowedGrid>
-    <div v-if="items.length < totalItems" class="download-load-more">
-      <Loader2 v-if="loadingMore" :size="14" class="spin" />
-      <span class="muted small">共 {{ totalItems }} 部作品</span>
-    </div>
     <div v-if="selectionMode" class="local-selection-bar">
       <span class="local-selection-count"><ListChecks :size="16" /> 已选 {{ selectedCount }} 项</span>
       <button class="btn secondary small" type="button" :disabled="batchWorking" @click="selectAll">全选</button>

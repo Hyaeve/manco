@@ -4,8 +4,10 @@ import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted,
 const props = defineProps({
   items: { type: Array, required: true },
   itemKey: { type: String, default: 'path' },
+  total: { type: Number, default: -1 },
+  offset: { type: Number, default: 0 },
 })
-const emit = defineEmits(['near-end'])
+const emit = defineEmits(['near-end', 'window-change'])
 const grid = ref(null)
 const columns = ref(1)
 const rowHeight = ref(320)
@@ -13,17 +15,25 @@ const gap = ref(14)
 const scrollOffset = ref(0)
 const viewportHeight = ref(720)
 const step = computed(() => rowHeight.value + gap.value)
-const rows = computed(() => Math.ceil(props.items.length / columns.value))
+const totalCount = computed(() => (props.total >= 0 ? props.total : props.items.length))
+const rows = computed(() => Math.ceil(totalCount.value / columns.value))
+const loadedStartRow = computed(() => Math.floor(Math.max(0, props.offset) / columns.value))
+const loadedEndRow = computed(() => Math.min(rows.value, loadedStartRow.value + Math.ceil(props.items.length / columns.value)))
 const startRow = computed(() => Math.min(Math.max(0, rows.value - 1), Math.max(0, Math.floor(scrollOffset.value / step.value) - 2)))
 const endRow = computed(() => Math.min(rows.value, startRow.value + Math.ceil(viewportHeight.value / step.value) + 5))
-const entries = computed(() => props.items.slice(startRow.value * columns.value, endRow.value * columns.value)
-  .map((item, offset) => ({ item, index: startRow.value * columns.value + offset })))
-const before = computed(() => Math.max(0, startRow.value * step.value - gap.value))
-const after = computed(() => Math.max(0, (rows.value - endRow.value) * step.value - gap.value))
+const renderStartRow = computed(() => Math.max(startRow.value, loadedStartRow.value))
+const renderEndRow = computed(() => Math.min(endRow.value, loadedEndRow.value))
+const localStart = computed(() => Math.max(0, (renderStartRow.value - loadedStartRow.value) * columns.value))
+const localEnd = computed(() => Math.min(props.items.length, (renderEndRow.value - loadedStartRow.value) * columns.value))
+const entries = computed(() => props.items.slice(localStart.value, localEnd.value)
+  .map((item, offset) => ({ item, index: Math.max(0, props.offset) + localStart.value + offset })))
+const before = computed(() => Math.max(0, renderStartRow.value * step.value - gap.value))
+const after = computed(() => Math.max(0, (rows.value - renderEndRow.value) * step.value - gap.value))
 let container = null
 let observer = null
 let frame = 0
 let active = true
+let lastWindowRequest = ''
 
 function measure() {
   if (!active || !grid.value) return
@@ -36,6 +46,19 @@ function measure() {
   scrollOffset.value = Math.max(0, -top)
   viewportHeight.value = container?.clientHeight || window.innerHeight
   if (endRow.value >= rows.value - 2) emit('near-end')
+  if (props.total >= 0 && columns.value > 0) {
+    const firstVisible = Math.floor(scrollOffset.value / step.value)
+    const lastVisible = Math.ceil((scrollOffset.value + viewportHeight.value) / step.value)
+    const wantedStart = Math.max(0, firstVisible - 1)
+    const wantedEnd = Math.min(rows.value, Math.max(wantedStart + 1, lastVisible + 1))
+    const start = wantedStart * columns.value
+    const limit = Math.max(0, wantedEnd * columns.value - start)
+    const signature = `${start}:${limit}:${totalCount.value}:${columns.value}`
+    if (signature !== lastWindowRequest) {
+      lastWindowRequest = signature
+      emit('window-change', { start, limit, row: wantedStart, columns: columns.value })
+    }
+  }
 }
 
 function scheduleMeasure() {
@@ -65,7 +88,7 @@ onUnmounted(() => {
   observer?.disconnect()
   if (frame) cancelAnimationFrame(frame)
 })
-watch(() => props.items, () => nextTick(scheduleMeasure))
+watch(() => [props.items, props.total, props.offset], () => nextTick(scheduleMeasure))
 </script>
 
 <template>

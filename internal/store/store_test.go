@@ -29,6 +29,7 @@ func createJob(t *testing.T, repository *Store, chapterID string) model.Download
 		SourceID:     "jmcomic",
 		ComicID:      "123",
 		ComicTitle:   "测试作品",
+		ComicCover:   "https://images.example/cover.jpg",
 		ChapterID:    chapterID,
 		ChapterTitle: "第" + chapterID + "话",
 	})
@@ -64,7 +65,8 @@ func TestDownloadJobActivityAggregatesPerWork(t *testing.T) {
 		t.Fatalf("groups = %+v, want a single work", groups)
 	}
 	group := groups[0]
-	if group.SourceID != "jmcomic" || group.ComicID != "123" || group.Title != "测试作品" {
+	if group.SourceID != "jmcomic" || group.ComicID != "123" || group.Title != "测试作品" ||
+		group.Cover != "https://images.example/cover.jpg" {
 		t.Fatalf("group identity = %+v", group)
 	}
 	if group.Succeeded != 1 || group.Failed != 1 || group.Pending != 1 {

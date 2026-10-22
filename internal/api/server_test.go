@@ -296,6 +296,72 @@ func TestSubscriptionCoversPreferLocalThenDiscoverCache(t *testing.T) {
 	}
 }
 
+func TestActivityReturnsWorkSourceCoverFallback(t *testing.T) {
+	repository, err := store.Open(filepath.Join(t.TempDir(), "activity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	job, err := repository.CreateDownloadJob(context.Background(), model.DownloadJob{
+		SourceID: "demo", ComicID: "work", ComicTitle: "测试作品",
+		ComicCover: "https://images.example/work.jpg", ChapterID: "1", ChapterTitle: "第1话",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateDownloadJob(context.Background(), job.ID, "completed", 1, 1, "/downloads/测试作品/第1话.cbz", ""); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: repository}
+	recorder := httptest.NewRecorder()
+	server.handleActivity(recorder, httptest.NewRequest(http.MethodGet, "/api/activity", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("activity status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Items []struct {
+			Cover       string `json:"cover"`
+			SourceCover string `json:"sourceCover"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].Cover != "" ||
+		payload.Items[0].SourceCover != "https://images.example/work.jpg" {
+		t.Fatalf("activity cover fallback = %+v", payload.Items)
+	}
+}
+
+func TestLocalLibraryWindowFiltersSortsAndReturnsCounts(t *testing.T) {
+	items := []localItemEntry{
+		{Title: "Beta", Path: "/downloads|Beta", Kind: "comic", Author: "甲", UpdatedAt: time.Unix(2, 0)},
+		{Title: "Alpha", Path: "/downloads|Alpha", Kind: "book", Author: "乙", UpdatedAt: time.Unix(3, 0)},
+		{Title: "Gamma", Path: "/other|Gamma", Kind: "book", Author: "丙", UpdatedAt: time.Unix(1, 0)},
+	}
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/local?limit=1&offset=0&kind=book&root=%2Fdownloads&sort=title", nil)
+	server.writeLocalLibrary(recorder, request, items, []string{"/downloads", "/other"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("local library status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Items  []localItemEntry `json:"items"`
+		Total  int              `json:"total"`
+		Counts map[string]int   `json:"counts"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 || payload.Items[0].Title != "Alpha" {
+		t.Fatalf("filtered window = %+v total=%d", payload.Items, payload.Total)
+	}
+	if payload.Counts["all"] != 2 || payload.Counts["comic"] != 1 || payload.Counts["book"] != 1 || payload.Counts["other"] != 0 {
+		t.Fatalf("root counts = %+v", payload.Counts)
+	}
+}
+
 func TestLocalizeCustomSourceIconCreatesLocalFallbackWhenDownloadFails(t *testing.T) {
 	iconServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

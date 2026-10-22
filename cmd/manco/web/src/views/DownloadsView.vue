@@ -16,9 +16,10 @@ import { api } from '../api'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import ContentLink from '../components/ContentLink.vue'
 import { askConfirm } from '../stores/confirm'
-import { refreshTaskRows } from '../utils/taskPages'
 
 const items = shallowRef([])
+const loadedStart = ref(0)
+const selectedSnapshots = ref(new Map())
 const loading = ref(true)
 const error = ref('')
 const busy = ref(0)
@@ -33,18 +34,15 @@ const TASK_ROW_HEIGHT = 76
 const TASK_ROW_GAP = 8
 const TASK_ROW_STEP = TASK_ROW_HEIGHT + TASK_ROW_GAP
 const TASK_VIRTUAL_OVERSCAN = 4
-// 每次从服务端取多少条；滚动到已加载末尾时继续追加。
-const TASK_PAGE_SIZE = 100
+const TASK_WINDOW_RELEASE_ROWS = 4
 const virtualViewport = ref(null)
 const virtualScrollTop = ref(0)
 const virtualViewportHeight = ref(720)
 const totalTasks = ref(0)
 const loadingMore = ref(false)
 let scrollContainer = null
-let firstPageIDs = new Set()
 let requestGeneration = 0
 let loadController = null
-let pollLoading = false
 let viewActive = true
 let scrollFrame = 0
 const serverCounts = ref({ all: 0, active: 0, queued: 0, failed: 0 })
@@ -71,7 +69,7 @@ const counts = computed(() => serverCounts.value)
 const visible = computed(() => items.value)
 
 const virtualRange = computed(() => {
-  const total = visible.value.length
+  const total = totalTasks.value
   if (!total) return { start: 0, end: 0 }
   const start = Math.max(0, Math.floor(virtualScrollTop.value / TASK_ROW_STEP) - TASK_VIRTUAL_OVERSCAN)
   const visibleCount = Math.ceil(virtualViewportHeight.value / TASK_ROW_STEP)
@@ -79,15 +77,17 @@ const virtualRange = computed(() => {
   return { start, end }
 })
 
-const virtualRows = computed(() =>
-  visible.value.slice(virtualRange.value.start, virtualRange.value.end).map((item, offset) => ({
-    item,
-    index: virtualRange.value.start + offset,
-  })),
-)
+const virtualRows = computed(() => {
+  const rows = []
+  for (let index = virtualRange.value.start; index < virtualRange.value.end; index += 1) {
+    const item = visible.value[index - loadedStart.value]
+    if (item) rows.push({ item, index })
+  }
+  return rows
+})
 
 const virtualInnerHeight = computed(() =>
-  visible.value.length ? visible.value.length * TASK_ROW_STEP - TASK_ROW_GAP : 0,
+  totalTasks.value ? totalTasks.value * TASK_ROW_STEP - TASK_ROW_GAP : 0,
 )
 
 watch(
@@ -116,8 +116,12 @@ function retryable(status) {
 }
 
 const retryableVisible = computed(() => visible.value.filter((item) => retryable(item.status)))
-const selectedRetryable = computed(() => retryableVisible.value.filter((item) => selected.value.has(item.id)))
-const allSelected = computed(() => retryableVisible.value.length > 0 && selectedRetryable.value.length === retryableVisible.value.length)
+const selectedRetryable = computed(() =>
+  [...selectedSnapshots.value.values()].filter((item) => selected.value.has(item.id) && retryable(item.status)),
+)
+const allSelected = computed(() =>
+  retryableVisible.value.length > 0 && retryableVisible.value.every((item) => selected.value.has(item.id)),
+)
 
 function rowSelected(id) {
   return selected.value.has(id)
@@ -130,6 +134,7 @@ function enterSelect(item) {
     next.add(item.id)
     selected.value = next
   }
+  selectedSnapshots.value.set(item.id, item)
 }
 
 function onContextMenu(item, index, event) {
@@ -139,8 +144,11 @@ function onContextMenu(item, index, event) {
     const from = Math.min(lastIndex, index)
     const to = Math.max(lastIndex, index)
     for (let cursor = from; cursor <= to; cursor += 1) {
-      const row = visible.value[cursor]
-      if (row) next.add(row.id)
+      const row = visible.value[cursor - loadedStart.value]
+      if (row) {
+        next.add(row.id)
+        selectedSnapshots.value.set(row.id, row)
+      }
     }
     selected.value = next
     selecting.value = true
@@ -157,13 +165,18 @@ function toggleRow(item, index, event) {
     const from = Math.min(lastIndex, index)
     const to = Math.max(lastIndex, index)
     for (let cursor = from; cursor <= to; cursor += 1) {
-      const row = visible.value[cursor]
-      if (row) next.add(row.id)
+      const row = visible.value[cursor - loadedStart.value]
+      if (row) {
+        next.add(row.id)
+        selectedSnapshots.value.set(row.id, row)
+      }
     }
   } else if (next.has(item.id)) {
     next.delete(item.id)
+    selectedSnapshots.value.delete(item.id)
   } else {
     next.add(item.id)
+    selectedSnapshots.value.set(item.id, item)
   }
   selected.value = next
   selecting.value = next.size > 0
@@ -173,9 +186,15 @@ function toggleRow(item, index, event) {
 function toggleSelectAll() {
   const next = new Set(selected.value)
   if (allSelected.value) {
-    for (const item of retryableVisible.value) next.delete(item.id)
+    for (const item of retryableVisible.value) {
+      next.delete(item.id)
+      selectedSnapshots.value.delete(item.id)
+    }
   } else {
-    for (const item of retryableVisible.value) next.add(item.id)
+    for (const item of retryableVisible.value) {
+      next.add(item.id)
+      selectedSnapshots.value.set(item.id, item)
+    }
   }
   selected.value = next
   selecting.value = next.size > 0
@@ -183,6 +202,7 @@ function toggleSelectAll() {
 
 function clearSelection() {
   selected.value = new Set()
+  selectedSnapshots.value = new Map()
   selecting.value = false
   lastIndex = -1
 }
@@ -197,10 +217,7 @@ function measureVirtual() {
   virtualScrollTop.value = Math.max(0, scrollTop - top)
   const height = scrollContainer ? scrollContainer.clientHeight : window.innerHeight
   virtualViewportHeight.value = Math.max(320, height || 720)
-  // 默认视图（无筛选）滚到已加载末尾时静默补下一页。
-  if (items.value.length < totalTasks.value) {
-    if (virtualRange.value.end >= visible.value.length - TASK_VIRTUAL_OVERSCAN * 2) loadMoreTasks()
-  }
+  ensureTaskWindow()
 }
 
 function onPageScroll() {
@@ -250,10 +267,11 @@ function startPolling() {
 }
 
 onMounted(async () => {
-  await load()
-  scrollContainer = virtualViewport.value?.closest('.content-scroll') || null
+  scrollContainer = document.querySelector('.content-scroll')
+  virtualViewportHeight.value = Math.max(320, scrollContainer?.clientHeight || window.innerHeight - 220)
   scrollContainer?.addEventListener('scroll', onPageScroll, { passive: true })
   window.addEventListener('resize', onPageResize)
+  await load()
   await nextTick()
   measureVirtual()
   window.addEventListener('keydown', onKeydown)
@@ -282,72 +300,68 @@ onDeactivated(() => {
 
 onActivated(() => {
   viewActive = true
-  if (!items.value.length && !pollLoading) load()
+  if (!items.value.length && !loading.value) load()
   measureVirtual()
   startPolling()
 })
 
-async function load(silent = false) {
-  if (silent && pollLoading) return
+function taskWindowLimit() {
+  const height = scrollContainer?.clientHeight || virtualViewportHeight.value
+  return Math.max(4, Math.ceil(height / TASK_ROW_STEP) + 2)
+}
+
+function ensureTaskWindow() {
+  if (!viewActive || loading.value || loadingMore.value) return
+  const visibleStart = Math.max(0, Math.min(totalTasks.value, Math.floor(virtualScrollTop.value / TASK_ROW_STEP)))
+  const visibleRows = Math.max(1, Math.ceil(virtualViewportHeight.value / TASK_ROW_STEP))
+  const requiredEnd = Math.min(totalTasks.value, visibleStart + visibleRows + 2)
+  const loadedEnd = loadedStart.value + items.value.length
+  const needsWindow =
+    visibleStart < loadedStart.value ||
+    requiredEnd > loadedEnd ||
+    visibleStart > loadedStart.value + TASK_WINDOW_RELEASE_ROWS
+  if (needsWindow) loadTaskWindow(visibleStart, taskWindowLimit(), true)
+}
+
+async function loadTaskWindow(start, limit, silent = false) {
   const generation = ++requestGeneration
   loadController?.abort()
   loadController = new AbortController()
   const signal = loadController.signal
-  pollLoading = true
-  if (!silent) loading.value = true
+  if (silent) loadingMore.value = true
+  else loading.value = true
   try {
-    const refreshIDs = silent ? virtualRows.value.map(({ item }) => item.id).filter((id) => !firstPageIDs.has(id)) : []
     const options = { filter: filter.value, query: keyword.value, compact: true, signal }
-    const [payload, snapshot] = await Promise.all([
-      api.downloads(TASK_PAGE_SIZE, 0, 'active', options),
-      refreshIDs.length ? api.downloads(200, 0, 'active', { ...options, ids: refreshIDs }) : Promise.resolve({ items: [] }),
-    ])
+    const payload = await api.downloads(Math.max(1, limit), Math.max(0, start), 'active', options)
     if (signal.aborted || generation !== requestGeneration) return
     const pageItems = payload.items || []
-    if (silent && items.value.length) {
-      items.value = refreshTaskRows(items.value, pageItems, firstPageIDs, refreshIDs, snapshot.items || [])
-    } else {
-      items.value = pageItems
-    }
-    firstPageIDs = new Set(pageItems.map((item) => item.id))
-    totalTasks.value = Number(payload.total ?? items.value.length)
+    items.value = pageItems
+    loadedStart.value = Math.max(0, start)
+    totalTasks.value = Number(payload.total || 0)
     serverCounts.value = payload.counts || { all: totalTasks.value, active: 0, queued: 0, failed: 0 }
-    const available = new Set(items.value.map((item) => item.id))
-    selected.value = new Set([...selected.value].filter((id) => available.has(id)))
-    if (!selected.value.size) selecting.value = false
+    for (const item of pageItems) {
+      if (selected.value.has(item.id)) selectedSnapshots.value.set(item.id, item)
+    }
     if (silent) error.value = ''
   } catch (err) {
     if (!signal.aborted && generation === requestGeneration && !silent) error.value = err.message
   } finally {
     if (generation === requestGeneration) {
       loading.value = false
-      pollLoading = false
+      loadingMore.value = false
       await nextTick()
       measureVirtual()
     }
   }
 }
 
-// 虚拟列表滚到已加载数据末尾时再取下一页。
-async function loadMoreTasks() {
-  if (loading.value || loadingMore.value || items.value.length >= totalTasks.value) return
-  const generation = requestGeneration
-  loadingMore.value = true
-  try {
-    const payload = await api.downloads(TASK_PAGE_SIZE, items.value.length, 'active', {
-      filter: filter.value, query: keyword.value, compact: true, signal: loadController?.signal,
-    })
-    if (generation !== requestGeneration || !viewActive) return
-    const next = payload.items || []
-    const existing = new Set(items.value.map((item) => item.id))
-    if (next.length) items.value = [...items.value, ...next.filter((item) => !existing.has(item.id))]
-    totalTasks.value = Number(payload.total ?? totalTasks.value)
-    error.value = ''
-  } catch (err) {
-    if (generation === requestGeneration && err.name !== 'AbortError') error.value = err.message
-  } finally {
-    loadingMore.value = false
+async function load(silent = false) {
+  if (silent && items.value.length) {
+    const limit = Math.max(items.value.length, taskWindowLimit())
+    await loadTaskWindow(loadedStart.value, limit, true)
+    return
   }
+  await loadTaskWindow(0, taskWindowLimit(), false)
 }
 
 function setFilter(value) {
@@ -466,7 +480,7 @@ async function removeSelected() {
     }
     if (failed) error.value = `有 ${failed} 个任务删除失败，请查看运行日志`
     if (failed < ids.length) clearSelection()
-    await load()
+    await load(true)
   } finally {
     busy.value = 0
   }
@@ -487,7 +501,7 @@ async function remove(item, removeFile) {
   error.value = ''
   try {
     await api.deleteDownload(item.id, removeFile)
-    await load()
+    await load(true)
     const next = new Set(selected.value)
     next.delete(item.id)
     selected.value = next
@@ -545,7 +559,7 @@ async function remove(item, removeFile) {
     <span>加载任务列表</span>
   </div>
   <CollectionEmptyState
-    v-else-if="!items.length"
+    v-else-if="!totalTasks && !keyword"
     class="page-empty-state"
     variant="tasks"
     window-title="任务列表"
@@ -560,7 +574,7 @@ async function remove(item, removeFile) {
     </template>
   </CollectionEmptyState>
   <div v-else>
-    <div v-if="!visible.length" class="card empty">
+    <div v-if="!items.length" class="card empty">
       <CircleCheck :size="26" />
       <p>当前筛选条件下没有任务。</p>
     </div>
@@ -640,7 +654,7 @@ async function remove(item, removeFile) {
 
   </div>
 
-  <div v-if="selecting" class="selection-pill">
+  <div v-if="selecting" class="selection-pill task-selection-pill">
     <span class="selection-count">已选 {{ selected.size }} 项</span>
     <button class="btn secondary small" type="button" @click="toggleSelectAll">
       {{ allSelected ? '取消全选' : '全选' }}

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { BookOpen, Boxes, Newspaper } from 'lucide-vue-next'
+import { BookOpenText, Clapperboard } from 'lucide-vue-next'
+import ComicSourceIcon from './ComicSourceIcon.vue'
 
 const props = defineProps({
   src: { type: String, default: '' },
@@ -19,9 +20,9 @@ watch(
 
 // 图标下载失败时按内容源类型回退，绝不显示图裂。
 const fallbackIcon = computed(() => {
-  if (props.kind === 'book') return BookOpen
-  if (props.kind === 'other') return Boxes
-  return Newspaper
+  if (props.kind === 'book') return BookOpenText
+  if (props.kind === 'other') return Clapperboard
+  return ComicSourceIcon
 })
 </script>
 

@@ -1703,6 +1703,7 @@ type ActivityGroup struct {
 	SourceID  string
 	ComicID   string
 	Title     string
+	Cover     string
 	Succeeded int
 	Failed    int
 	Pending   int
@@ -1722,6 +1723,7 @@ func (s *Store) DownloadJobActivity(ctx context.Context, limit int) ([]ActivityG
 	since := time.Now().Add(-30 * 24 * time.Hour).UTC().Format("2006-01-02 15:04:05")
 	rows, err := s.reader().QueryContext(ctx, `
 		SELECT source_id, comic_id, MAX(comic_title) AS title,
+			MAX(NULLIF(TRIM(comic_cover), '')) AS comic_cover,
 			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS succeeded,
 			SUM(CASE WHEN status IN ('failed', 'canceled') THEN 1 ELSE 0 END) AS failed,
 			SUM(CASE WHEN status IN ('queued', 'running', 'waiting', 'paused') THEN 1 ELSE 0 END) AS pending,
@@ -1745,7 +1747,7 @@ func (s *Store) DownloadJobActivity(ctx context.Context, limit int) ([]ActivityG
 			pending   sql.NullInt64
 			lastAt    sql.NullString
 		)
-		if err := rows.Scan(&item.SourceID, &item.ComicID, &item.Title, &succeeded, &failed, &pending, &lastAt); err != nil {
+		if err := rows.Scan(&item.SourceID, &item.ComicID, &item.Title, &item.Cover, &succeeded, &failed, &pending, &lastAt); err != nil {
 			return nil, err
 		}
 		item.Succeeded = int(succeeded.Int64)

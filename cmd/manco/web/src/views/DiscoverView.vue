@@ -19,6 +19,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
+import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
@@ -708,7 +709,7 @@ function latestLabel(item) {
       <div class="inline discover-head-left">
         <div class="segmented" role="tablist" aria-label="资源类型">
           <button type="button" :class="{ active: activeKind === 'comic' }" @click="switchKind('comic')">
-            <BookOpen :size="18" />
+            <ComicSourceIcon :size="18" />
             漫画源 <span class="segmented-count">{{ kindCount('comic') }}</span>
           </button>
           <button type="button" :class="{ active: activeKind === 'book' }" @click="switchKind('book')">

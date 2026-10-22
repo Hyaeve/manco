@@ -4,13 +4,13 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import {
   Activity,
   Bell,
+  BookOpen,
   CircleCheck,
   UserRound,
   Compass,
   HardDrive,
   Info,
   LayoutDashboard,
-  LoaderCircle,
   LogOut,
   Menu,
   Monitor,
@@ -361,10 +361,11 @@ function goSection(section) {
   router.push({ name: 'settings', query: { section } })
 }
 
-function activityIcon(level) {
-  if (level === 'success') return CircleCheck
-  if (level === 'error') return Activity
-  return LoaderCircle
+function activityCover(entry) {
+  if (!entry) return ''
+  if (entry.cover) return entry.cover
+  if (entry.sourceCover) return api.imageUrl(entry.sourceCover, entry.sourceId, '', 120)
+  return ''
 }
 </script>
 
@@ -460,16 +461,12 @@ function activityIcon(level) {
               </header>
               <p v-if="activityLoading" class="small-empty">加载中…</p>
               <p v-else-if="!activityItems.length" class="small-empty">暂无活动记录</p>
-      <ul v-else ref="activityListRef" class="notification-list" @scroll="handleActivityScroll">
-        <li v-for="entry in visibleActivity" :key="entry.id || entry.time">
-          <!-- 作品相关的通知用封面，不再用图标 -->
-          <img v-if="entry.cover" class="notification-cover" :src="entry.cover" :alt="entry.comicTitle" loading="lazy" decoding="async" />
-          <component
-            v-else
-            :is="activityIcon(entry.level)"
-            :size="16"
-            :class="entry.ongoing && !entry.total ? 'spin' : entry.level === 'success' ? 'success-text' : entry.level === 'error' ? 'danger-text' : ''"
-          />
+              <ul v-else ref="activityListRef" class="notification-list" @scroll="handleActivityScroll">
+                <li v-for="entry in visibleActivity" :key="entry.id || entry.time">
+                  <img v-if="activityCover(entry)" class="notification-cover" :src="activityCover(entry)" :alt="entry.comicTitle" loading="lazy" decoding="async" />
+                  <span v-else class="notification-cover notification-cover-empty" aria-hidden="true">
+                    <BookOpen :size="20" />
+                  </span>
                   <span>
                     <strong>{{ entry.comicTitle || '未命名作品' }}</strong>
                     <span class="notification-summary">

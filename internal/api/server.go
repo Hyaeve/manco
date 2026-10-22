@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.7.4"
+	appVersion    = "v0.7.5"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -4662,18 +4662,19 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type activityItem struct {
-		ID         string    `json:"id"`
-		ComicTitle string    `json:"comicTitle"`
-		Succeeded  int       `json:"succeeded"`
-		Failed     int       `json:"failed"`
-		Total      int       `json:"total"`
-		Level      string    `json:"level"`
-		Time       time.Time `json:"time"`
-		Ongoing    bool      `json:"ongoing,omitempty"`
-		SourceID   string    `json:"sourceId,omitempty"`
-		ComicID    string    `json:"comicId,omitempty"`
-		Pending    int       `json:"pending,omitempty"`
-		Cover      string    `json:"cover,omitempty"`
+		ID          string    `json:"id"`
+		ComicTitle  string    `json:"comicTitle"`
+		Succeeded   int       `json:"succeeded"`
+		Failed      int       `json:"failed"`
+		Total       int       `json:"total"`
+		Level       string    `json:"level"`
+		Time        time.Time `json:"time"`
+		Ongoing     bool      `json:"ongoing,omitempty"`
+		SourceID    string    `json:"sourceId,omitempty"`
+		ComicID     string    `json:"comicId,omitempty"`
+		Pending     int       `json:"pending,omitempty"`
+		Cover       string    `json:"cover,omitempty"`
+		SourceCover string    `json:"sourceCover,omitempty"`
 	}
 	// 通知按作品聚合：一章一条太碎，改为每个作品一条汇总。聚合下推到
 	// SQLite，开销只跟作品数相关，不再把整张任务表读进内存。
@@ -4686,19 +4687,21 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		case group.Succeeded > 0:
 			level = "success"
 		}
+		s.allowImageURL(group.SourceID, group.Cover)
 		result = append(result, activityItem{
-			ID:         group.SourceID + "\x00" + group.ComicID,
-			ComicTitle: group.Title,
-			Succeeded:  group.Succeeded,
-			Failed:     group.Failed,
-			Pending:    group.Pending,
-			Total:      group.Succeeded + group.Failed,
-			Level:      level,
-			Time:       group.LastAt,
-			Ongoing:    group.Pending > 0,
-			SourceID:   group.SourceID,
-			ComicID:    group.ComicID,
-			Cover:      s.cachedCoverURL(group.SourceID, group.ComicID),
+			ID:          group.SourceID + "\x00" + group.ComicID,
+			ComicTitle:  group.Title,
+			Succeeded:   group.Succeeded,
+			Failed:      group.Failed,
+			Pending:     group.Pending,
+			Total:       group.Succeeded + group.Failed,
+			Level:       level,
+			Time:        group.LastAt,
+			Ongoing:     group.Pending > 0,
+			SourceID:    group.SourceID,
+			ComicID:     group.ComicID,
+			Cover:       s.activityCoverURL(group.SourceID, group.ComicID),
+			SourceCover: group.Cover,
 		})
 	}
 	raw, err := json.Marshal(map[string]any{"items": result})
@@ -4713,6 +4716,18 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
+}
+
+func (s *Server) activityCoverURL(sourceID, comicID string) string {
+	if s.subscriptionCovers != nil {
+		if _, ok := s.subscriptionCovers.Lookup(sourceID, comicID); ok {
+			values := url.Values{}
+			values.Set("sourceId", sourceID)
+			values.Set("comicId", comicID)
+			return "/api/subscription-cover?" + values.Encode()
+		}
+	}
+	return s.cachedCoverURL(sourceID, comicID)
 }
 
 func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
@@ -5694,6 +5709,47 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 
 // writeLocalLibrary 按 limit/offset 切页并输出；扫描结果由 handleLocalLibrary 缓存 60 秒。
 func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items []localItemEntry, roots []string) {
+	rootFilter := strings.TrimSpace(r.URL.Query().Get("root"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	kindFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	filtered := make([]localItemEntry, 0, len(items))
+	counts := map[string]int{"all": 0, "comic": 0, "book": 0, "other": 0}
+	for _, item := range items {
+		if rootFilter != "" && localItemRoot(item.Path) != rootFilter {
+			continue
+		}
+		kind := s.localItemKind(item)
+		counts["all"]++
+		counts[kind]++
+		if query != "" && !strings.Contains(strings.ToLower(item.Title), query) &&
+			!strings.Contains(strings.ToLower(item.Author), query) {
+			continue
+		}
+		if kindFilter != "" && kindFilter != "all" && kind != kindFilter {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	items = filtered
+	sortMode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sort")))
+	desc := r.URL.Query().Get("desc") == "1"
+	sort.SliceStable(items, func(i, j int) bool {
+		var compare int
+		if sortMode == "created" {
+			switch {
+			case items[i].UpdatedAt.Before(items[j].UpdatedAt):
+				compare = -1
+			case items[i].UpdatedAt.After(items[j].UpdatedAt):
+				compare = 1
+			}
+		} else {
+			compare = strings.Compare(strings.ToLower(items[i].Title), strings.ToLower(items[j].Title))
+		}
+		if desc {
+			return compare > 0
+		}
+		return compare < 0
+	})
 	total := len(items)
 	if limit := intParam(r, "limit", 0); limit > 0 {
 		offset := intParam(r, "offset", 0)
@@ -5716,7 +5772,31 @@ func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items
 			items[index].Files = nil
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "downloadDir": s.cfg.DownloadDir, "downloadDirs": roots})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "counts": counts,
+		"downloadDir": s.cfg.DownloadDir, "downloadDirs": roots,
+	})
+}
+
+func localItemRoot(path string) string {
+	root, _, _ := strings.Cut(strings.TrimSpace(path), "|")
+	return root
+}
+
+func (s *Server) localItemKind(item localItemEntry) string {
+	if item.SourceID != "" && s.registry != nil {
+		if adapter, err := s.registry.Get(item.SourceID); err == nil {
+			kind := source.KindOf(adapter.Info())
+			if kind == "book" || kind == "other" {
+				return kind
+			}
+			return "comic"
+		}
+	}
+	if item.Kind == "book" || item.Kind == "other" {
+		return item.Kind
+	}
+	return "comic"
 }
 
 func (s *Server) scanLocalDir(root, name string) localItemEntry {

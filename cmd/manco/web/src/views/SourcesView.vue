@@ -2,6 +2,7 @@
 import { computed, nextTick, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   Activity,
+  BookOpenText,
   Boxes,
   Check,
   ChevronDown,
@@ -11,6 +12,7 @@ import {
   Eye,
   EyeOff,
   ExternalLink,
+  Film,
   KeyRound,
   Loader2,
   MoreVertical,
@@ -34,6 +36,7 @@ import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import PasswordInput from '../components/PasswordInput.vue'
 import DirectoryPicker from '../components/DirectoryPicker.vue'
+import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import SitePicker from '../components/SitePicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { emitSourcesChanged } from '../utils/sourceEvents'
@@ -1516,18 +1519,22 @@ function onDragEnd() {
   <div class="toolbar repository-toolbar">
     <div class="segmented" role="tablist" aria-label="资源类型">
       <button type="button" :class="{ active: activeKind === 'comic' }" @click="activeKind = 'comic'">
+        <ComicSourceIcon :size="18" />
         漫画源
         <span class="segmented-count">{{ comicSources.length }}</span>
       </button>
       <button type="button" :class="{ active: activeKind === 'book' }" @click="activeKind = 'book'">
+        <BookOpenText :size="18" />
         书籍源
         <span class="segmented-count">{{ bookSources.length }}</span>
       </button>
       <button type="button" :class="{ active: activeKind === 'other' }" @click="activeKind = 'other'">
+        <Film :size="18" />
         视频源
         <span class="segmented-count">{{ otherSources.length }}</span>
       </button>
       <button type="button" :class="{ active: activeKind === 'repository' }" @click="activeKind = 'repository'">
+        <Boxes :size="18" />
         拓展仓库
         <span class="segmented-count">{{ repositories.length }}</span>
       </button>

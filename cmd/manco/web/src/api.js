@@ -179,13 +179,18 @@ export const api = {
     request(`/api/downloads/${id}?removeFile=${removeFile}`, { method: 'DELETE' }),
 
   library: () => request('/api/library'),
-  localLibrary: (limit = 0, offset = 0, summary = false) => {
+  localLibrary: (limit = 0, offset = 0, summary = false, options = {}) => {
     const params = new URLSearchParams()
     if (limit) params.set('limit', String(limit))
     if (offset) params.set('offset', String(offset))
     if (summary) params.set('summary', '1')
+    if (options.query) params.set('q', options.query)
+    if (options.kind && options.kind !== 'all') params.set('kind', options.kind)
+    if (options.root) params.set('root', options.root)
+    if (options.sort) params.set('sort', options.sort)
+    if (options.desc) params.set('desc', '1')
     const query = params.toString()
-    return request(`/api/local${query ? `?${query}` : ''}`)
+    return request(`/api/local${query ? `?${query}` : ''}`, { signal: options.signal })
   },
   localItem: (path) => request(`/api/local/item?${new URLSearchParams({ path })}`),
   localChapterThumbnailUrl: (file) =>
