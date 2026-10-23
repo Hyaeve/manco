@@ -362,6 +362,45 @@ func TestLocalLibraryWindowFiltersSortsAndReturnsCounts(t *testing.T) {
 	}
 }
 
+func TestLocalSubscriptionRootsExcludeArchivedAndJobOnlyDirectories(t *testing.T) {
+	root := t.TempDir()
+	repository, err := store.Open(filepath.Join(root, "roots.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	ctx := context.Background()
+	activeDir := filepath.Join(root, "active")
+	archivedDir := filepath.Join(root, "archived")
+	jobOnlyDir := filepath.Join(root, "job-only")
+	_, err = repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID: "demo", ComicID: "active", Title: "启用订阅", DownloadDir: activeDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID: "demo", ComicID: "archived", Title: "归档订阅", DownloadDir: archivedDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ArchiveSubscription(ctx, archived.ID, "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.CreateDownloadJob(ctx, model.DownloadJob{
+		SourceID: "demo", ComicID: "job-only", ComicTitle: "仅任务目录",
+		DownloadDir: jobOnlyDir, ChapterID: "1", ChapterTitle: "第1话",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: repository, cfg: config.Config{DownloadDir: root}}
+	roots := server.localSubscriptionRoots(ctx)
+	if len(roots) != 1 || roots[0] != activeDir {
+		t.Fatalf("subscription roots = %v, want only %s", roots, activeDir)
+	}
+}
+
 func TestLocalizeCustomSourceIconCreatesLocalFallbackWhenDownloadFails(t *testing.T) {
 	iconServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)

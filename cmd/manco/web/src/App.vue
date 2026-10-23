@@ -68,19 +68,38 @@ const activityItems = ref([])
 // 切页面时给内容区加一次浮入动画的类（KeepAlive 缓存下动画不会自动重播）。
 const pageAnimating = ref(false)
 let pageAnimTimer = 0
-// 通知列表分片渲染：先 12 条，滚到底再追加，避免一次性铺满 DOM。
-const ACTIVITY_PAGE_SIZE = 12
-const activityRenderLimit = ref(ACTIVITY_PAGE_SIZE)
+const ACTIVITY_ROW_HEIGHT = 82
+const ACTIVITY_OVERSCAN = 3
 const activityListRef = ref(null)
-const visibleActivity = computed(() => activityItems.value.slice(0, activityRenderLimit.value))
+const activityScrollTop = ref(0)
+const activityViewportHeight = ref(360)
+const activityVirtualHeight = computed(() => activityItems.value.length * ACTIVITY_ROW_HEIGHT)
+const activityVirtualRows = computed(() => {
+  const total = activityItems.value.length
+  if (!total) return []
+  const start = Math.max(0, Math.floor(activityScrollTop.value / ACTIVITY_ROW_HEIGHT) - ACTIVITY_OVERSCAN)
+  const end = Math.min(
+    total,
+    Math.ceil((activityScrollTop.value + activityViewportHeight.value) / ACTIVITY_ROW_HEIGHT) + ACTIVITY_OVERSCAN,
+  )
+  return activityItems.value.slice(start, end).map((item, offset) => ({
+    item,
+    index: start + offset,
+  }))
+})
 
 function handleActivityScroll() {
   const element = activityListRef.value
   if (!element) return
-  if (activityRenderLimit.value >= activityItems.value.length) return
-  if (element.scrollTop + element.clientHeight >= element.scrollHeight - 80) {
-    activityRenderLimit.value += ACTIVITY_PAGE_SIZE
-  }
+  activityScrollTop.value = element.scrollTop
+  activityViewportHeight.value = Math.max(1, element.clientHeight)
+}
+
+function syncActivityViewport() {
+  const element = activityListRef.value
+  if (!element) return
+  activityScrollTop.value = element.scrollTop
+  activityViewportHeight.value = Math.max(1, element.clientHeight)
 }
 const activityLoading = ref(false)
 const searchQuery = ref('')
@@ -231,6 +250,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeys)
   window.addEventListener('focus', checkSession)
   window.addEventListener('manco:unauthorized', handleUnauthorized)
+  window.addEventListener('resize', syncActivityViewport)
   document.addEventListener('visibilitychange', checkSessionOnVisible)
   sessionCheckTimer = window.setInterval(checkSession, 30000)
   activityTimer = window.setInterval(() => {
@@ -255,6 +275,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeys)
   window.removeEventListener('focus', checkSession)
   window.removeEventListener('manco:unauthorized', handleUnauthorized)
+  window.removeEventListener('resize', syncActivityViewport)
   document.removeEventListener('visibilitychange', checkSessionOnVisible)
   if (sessionCheckTimer) window.clearInterval(sessionCheckTimer)
   if (activityTimer) window.clearInterval(activityTimer)
@@ -304,6 +325,15 @@ async function loadActivity(silent = false) {
   try {
     const payload = await api.activity()
     activityItems.value = payload.items || []
+    if (activityOpen.value) {
+      await nextTick()
+      const element = activityListRef.value
+      if (element) {
+        const maxScroll = Math.max(0, activityVirtualHeight.value - element.clientHeight)
+        if (element.scrollTop > maxScroll) element.scrollTop = maxScroll
+      }
+      syncActivityViewport()
+    }
   } catch {
     if (!silent) activityItems.value = []
   } finally {
@@ -311,13 +341,15 @@ async function loadActivity(silent = false) {
   }
 }
 
-function toggleActivity(event) {
+async function toggleActivity(event) {
   event.stopPropagation()
   activityOpen.value = !activityOpen.value
   openMenu.value = ''
   if (activityOpen.value) {
-    // 每次打开都从第一页开始渲染。
-    activityRenderLimit.value = ACTIVITY_PAGE_SIZE
+    activityScrollTop.value = 0
+    await nextTick()
+    if (activityListRef.value) activityListRef.value.scrollTop = 0
+    syncActivityViewport()
     loadActivity()
   }
 }
@@ -461,23 +493,31 @@ function activityCover(entry) {
               </header>
               <p v-if="activityLoading" class="small-empty">加载中…</p>
               <p v-else-if="!activityItems.length" class="small-empty">暂无活动记录</p>
-              <ul v-else ref="activityListRef" class="notification-list" @scroll="handleActivityScroll">
-                <li v-for="entry in visibleActivity" :key="entry.id || entry.time">
-                  <img v-if="activityCover(entry)" class="notification-cover" :src="activityCover(entry)" :alt="entry.comicTitle" loading="lazy" decoding="async" />
-                  <span v-else class="notification-cover notification-cover-empty" aria-hidden="true">
-                    <BookOpen :size="20" />
-                  </span>
-                  <span>
-                    <strong>{{ entry.comicTitle || '未命名作品' }}</strong>
-                    <span class="notification-summary">
-                      成功 {{ entry.succeeded || 0 }}
-                      <template v-if="entry.failed"> · 失败 {{ entry.failed }}</template>
-                      <template v-if="entry.pending"> · 待处理 {{ entry.pending }}</template>
+              <div v-else ref="activityListRef" class="notification-list" role="list" @scroll="handleActivityScroll">
+                <div class="notification-virtual-inner" :style="{ height: `${activityVirtualHeight}px` }">
+                  <article
+                    v-for="entry in activityVirtualRows"
+                    :key="entry.item.id || entry.item.time"
+                    class="notification-item"
+                    role="listitem"
+                    :style="{ transform: `translateY(${entry.index * ACTIVITY_ROW_HEIGHT}px)` }"
+                  >
+                    <img v-if="activityCover(entry.item)" class="notification-cover" :src="activityCover(entry.item)" :alt="entry.item.comicTitle" loading="lazy" decoding="async" />
+                    <span v-else class="notification-cover notification-cover-empty" aria-hidden="true">
+                      <BookOpen :size="20" />
                     </span>
-                    <small>{{ entry.time ? new Date(entry.time).toLocaleString() : '' }}</small>
-                  </span>
-                </li>
-              </ul>
+                    <span class="notification-copy">
+                      <strong>{{ entry.item.comicTitle || '未命名作品' }}</strong>
+                      <span class="notification-summary">
+                        成功 {{ entry.item.succeeded || 0 }}
+                        <template v-if="entry.item.failed"> · 失败 {{ entry.item.failed }}</template>
+                        <template v-if="entry.item.pending"> · 待处理 {{ entry.item.pending }}</template>
+                      </span>
+                      <small>{{ entry.item.time ? new Date(entry.item.time).toLocaleString() : '' }}</small>
+                    </span>
+                  </article>
+                </div>
+              </div>
             </section>
           </div>
           <div class="topbar-menu account-control" @click.stop>

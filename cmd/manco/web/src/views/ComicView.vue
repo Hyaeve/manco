@@ -631,7 +631,7 @@ async function downloadSelected() {
           <span>全选</span>
         </button>
         <button class="btn ghost small sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
-          <img class="chapter-time-sort-icon" :src="sortDesc ? timeSortDesc : timeSortAsc" alt="" />
+          <img class="chapter-time-sort-icon" :src="sortDesc ? timeSortAsc : timeSortDesc" alt="" />
         </button>
         <span v-if="archiveMode" class="muted small">已下载 {{ downloadedCount }} / 共 {{ chapters.length }} 章</span>
         <span v-else class="muted small">

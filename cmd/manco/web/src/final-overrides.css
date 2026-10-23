@@ -5775,11 +5775,27 @@ svg.source-editor-icon {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  margin-bottom: 14px;
 }
 
 .local-root-row .local-root-strip {
   flex: 1 1 auto;
   min-width: 0;
+  margin: 0;
+  padding-block: 0;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.local-root-row .local-root-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.local-root-row .local-root-strip button {
+  display: inline-flex;
+  height: 34px;
+  align-items: center;
+  box-sizing: border-box;
 }
 
 .local-root-row .local-library-sort {

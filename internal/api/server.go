@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.7.5"
+	appVersion    = "v0.7.6"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -127,7 +127,6 @@ type Server struct {
 	// 本地仓库扫描结果短缓存：NAS 目录扫描很慢，刷新页面不应该重扫一遍。
 	libraryMu    sync.Mutex
 	libraryItems []localItemEntry
-	libraryRoots []string
 	libraryKey   string
 	libraryAt    time.Time
 }
@@ -5631,6 +5630,24 @@ func (s *Server) localRoots(ctx context.Context) []string {
 	return roots
 }
 
+func (s *Server) localSubscriptionRoots(ctx context.Context) []string {
+	seen := map[string]bool{}
+	roots := make([]string, 0, 4)
+	subscriptions, err := s.store.ListSubscriptions(ctx)
+	if err != nil {
+		return roots
+	}
+	for _, item := range subscriptions {
+		cleaned, cleanErr := s.cleanDownloadDir(item.DownloadDir)
+		if cleanErr != nil || seen[cleaned] {
+			continue
+		}
+		seen[cleaned] = true
+		roots = append(roots, cleaned)
+	}
+	return roots
+}
+
 func localPath(root, rel string) string {
 	return strings.TrimRight(root, "/") + "|" + filepath.ToSlash(rel)
 }
@@ -5640,6 +5657,7 @@ func localPath(root, rel string) string {
 // produced by a recorded download job.
 func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 	roots := s.localRoots(r.Context())
+	subscriptionRoots := s.localSubscriptionRoots(r.Context())
 	subscriptions, _ := s.store.ListAllSubscriptions(r.Context())
 	coverBlurByComic := make(map[string]bool, len(subscriptions))
 	blurSignature := make([]string, 0, len(subscriptions))
@@ -5656,9 +5674,8 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 	s.libraryMu.Lock()
 	if s.libraryItems != nil && s.libraryKey == cacheKey && time.Since(s.libraryAt) < 60*time.Second {
 		items := s.libraryItems
-		cachedRoots := s.libraryRoots
 		s.libraryMu.Unlock()
-		s.writeLocalLibrary(w, r, items, cachedRoots)
+		s.writeLocalLibrary(w, r, items, subscriptionRoots)
 		return
 	}
 	s.libraryMu.Unlock()
@@ -5700,11 +5717,10 @@ func (s *Server) handleLocalLibrary(w http.ResponseWriter, r *http.Request) {
 	sort.SliceStable(items, func(i, j int) bool { return items[i].UpdatedAt.After(items[j].UpdatedAt) })
 	s.libraryMu.Lock()
 	s.libraryItems = items
-	s.libraryRoots = roots
 	s.libraryKey = cacheKey
 	s.libraryAt = time.Now()
 	s.libraryMu.Unlock()
-	s.writeLocalLibrary(w, r, items, roots)
+	s.writeLocalLibrary(w, r, items, subscriptionRoots)
 }
 
 // writeLocalLibrary 按 limit/offset 切页并输出；扫描结果由 handleLocalLibrary 缓存 60 秒。

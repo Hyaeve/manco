@@ -220,37 +220,53 @@ body,
 }
 
 .notification-list {
-  display: flex;
-  flex-direction: column;
+  position: relative;
   max-height: 360px;
   margin: 0;
   padding: 0;
   overflow-y: auto;
-  list-style: none;
 }
 
-.notification-list li {
+.notification-virtual-inner {
+  position: relative;
+  width: 100%;
+}
+
+.notification-list .notification-item {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
   display: flex;
+  box-sizing: border-box;
+  height: 82px;
   gap: 9px;
   padding: 10px 2px;
+  overflow: hidden;
   border-bottom: 1px solid var(--border);
 }
 
-.notification-list li > span {
+.notification-list .notification-copy {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
 .notification-list strong {
+  display: block;
+  overflow: hidden;
   font-size: 13px;
   font-weight: 500;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .notification-list small {
+  overflow: hidden;
   margin-top: 3px;
   color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .account-dropdown {
