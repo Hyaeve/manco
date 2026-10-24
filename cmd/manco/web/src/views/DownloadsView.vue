@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -15,10 +15,10 @@ import {
 import { api } from '../api'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
 import ContentLink from '../components/ContentLink.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import { askConfirm } from '../stores/confirm'
 
 const items = shallowRef([])
-const loadedStart = ref(0)
 const selectedSnapshots = ref(new Map())
 const loading = ref(true)
 const error = ref('')
@@ -30,21 +30,14 @@ const router = useRouter()
 let lastIndex = -1
 let timer = 0
 
-const TASK_ROW_HEIGHT = 76
-const TASK_ROW_GAP = 8
-const TASK_ROW_STEP = TASK_ROW_HEIGHT + TASK_ROW_GAP
-const TASK_VIRTUAL_OVERSCAN = 4
-const TASK_WINDOW_RELEASE_ROWS = 4
-const virtualViewport = ref(null)
-const virtualScrollTop = ref(0)
-const virtualViewportHeight = ref(720)
+const TASK_PAGE_SIZE = 30
+const taskPage = ref(1)
+const taskPageLoading = ref(false)
+const taskRefreshing = ref(false)
 const totalTasks = ref(0)
-const loadingMore = ref(false)
-let scrollContainer = null
 let requestGeneration = 0
 let loadController = null
 let viewActive = true
-let scrollFrame = 0
 const serverCounts = ref({ all: 0, active: 0, queued: 0, failed: 0 })
 
 const filters = [
@@ -67,28 +60,7 @@ const searchInput = ref(keyword.value)
 
 const counts = computed(() => serverCounts.value)
 const visible = computed(() => items.value)
-
-const virtualRange = computed(() => {
-  const total = totalTasks.value
-  if (!total) return { start: 0, end: 0 }
-  const start = Math.max(0, Math.floor(virtualScrollTop.value / TASK_ROW_STEP) - TASK_VIRTUAL_OVERSCAN)
-  const visibleCount = Math.ceil(virtualViewportHeight.value / TASK_ROW_STEP)
-  const end = Math.min(total, start + visibleCount + TASK_VIRTUAL_OVERSCAN * 2)
-  return { start, end }
-})
-
-const virtualRows = computed(() => {
-  const rows = []
-  for (let index = virtualRange.value.start; index < virtualRange.value.end; index += 1) {
-    const item = visible.value[index - loadedStart.value]
-    if (item) rows.push({ item, index })
-  }
-  return rows
-})
-
-const virtualInnerHeight = computed(() =>
-  totalTasks.value ? totalTasks.value * TASK_ROW_STEP - TASK_ROW_GAP : 0,
-)
+const taskOffset = computed(() => (taskPage.value - 1) * TASK_PAGE_SIZE)
 
 watch(
   () => route.query.filter,
@@ -144,7 +116,7 @@ function onContextMenu(item, index, event) {
     const from = Math.min(lastIndex, index)
     const to = Math.max(lastIndex, index)
     for (let cursor = from; cursor <= to; cursor += 1) {
-      const row = visible.value[cursor - loadedStart.value]
+      const row = visible.value[cursor - taskOffset.value]
       if (row) {
         next.add(row.id)
         selectedSnapshots.value.set(row.id, row)
@@ -165,7 +137,7 @@ function toggleRow(item, index, event) {
     const from = Math.min(lastIndex, index)
     const to = Math.max(lastIndex, index)
     for (let cursor = from; cursor <= to; cursor += 1) {
-      const row = visible.value[cursor - loadedStart.value]
+      const row = visible.value[cursor - taskOffset.value]
       if (row) {
         next.add(row.id)
         selectedSnapshots.value.set(row.id, row)
@@ -207,45 +179,15 @@ function clearSelection() {
   lastIndex = -1
 }
 
-// 虚拟列表跟随页面滚动：用页面滚动位置换算相对列表顶部的偏移。
-function measureVirtual() {
-  if (!viewActive) return
-  const viewport = virtualViewport.value
-  if (!viewport) return
-  const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0
-  const top = viewport.getBoundingClientRect().top + scrollTop - (scrollContainer ? scrollContainer.getBoundingClientRect().top : 0)
-  virtualScrollTop.value = Math.max(0, scrollTop - top)
-  const height = scrollContainer ? scrollContainer.clientHeight : window.innerHeight
-  virtualViewportHeight.value = Math.max(320, height || 720)
-  ensureTaskWindow()
-}
-
-function onPageScroll() {
-  if (!viewActive || scrollFrame) return
-  scrollFrame = requestAnimationFrame(() => {
-    scrollFrame = 0
-    measureVirtual()
-  })
-}
-
-function onPageResize() {
-  measureVirtual()
-}
-
-function resetVirtualScroll() {
-  if (scrollContainer && virtualViewport.value) {
-    const top = virtualViewport.value.getBoundingClientRect().top + scrollContainer.scrollTop - scrollContainer.getBoundingClientRect().top
-    scrollContainer.scrollTop = Math.max(0, top - 12)
-  } else if (scrollContainer) {
-    scrollContainer.scrollTop = 0
-  }
-  virtualScrollTop.value = 0
+function scrollTasksToTop() {
+  const scroller = document.querySelector('.content-scroll')
+  if (scroller) scroller.scrollTop = 0
 }
 
 watch([filter, keyword], () => {
-  resetVirtualScroll()
   clearSelection()
-  load()
+  scrollTasksToTop()
+  load(false, true)
 })
 
 function onKeydown(event) {
@@ -262,18 +204,12 @@ function stopPolling() {
 function startPolling() {
   stopPolling()
   timer = window.setInterval(() => {
-    if (viewActive && !document.hidden && !loading.value && !loadingMore.value) load(true)
+    if (viewActive && !document.hidden && !loading.value && !taskPageLoading.value && !taskRefreshing.value) load(true)
   }, 4000)
 }
 
 onMounted(async () => {
-  scrollContainer = document.querySelector('.content-scroll')
-  virtualViewportHeight.value = Math.max(320, scrollContainer?.clientHeight || window.innerHeight - 220)
-  scrollContainer?.addEventListener('scroll', onPageScroll, { passive: true })
-  window.addEventListener('resize', onPageResize)
   await load()
-  await nextTick()
-  measureVirtual()
   window.addEventListener('keydown', onKeydown)
   startPolling()
 })
@@ -281,10 +217,7 @@ onMounted(async () => {
 onUnmounted(() => {
   viewActive = false
   loadController?.abort()
-  if (scrollFrame) cancelAnimationFrame(scrollFrame)
   stopPolling()
-  scrollContainer?.removeEventListener('scroll', onPageScroll)
-  window.removeEventListener('resize', onPageResize)
   window.removeEventListener('keydown', onKeydown)
 })
 
@@ -292,8 +225,6 @@ onUnmounted(() => {
 onDeactivated(() => {
   viewActive = false
   loadController?.abort()
-  if (scrollFrame) cancelAnimationFrame(scrollFrame)
-  scrollFrame = 0
   clearSelection()
   stopPolling()
 })
@@ -301,43 +232,33 @@ onDeactivated(() => {
 onActivated(() => {
   viewActive = true
   if (!items.value.length && !loading.value) load()
-  measureVirtual()
   startPolling()
 })
 
-function taskWindowLimit() {
-  const height = scrollContainer?.clientHeight || virtualViewportHeight.value
-  return Math.max(4, Math.ceil(height / TASK_ROW_STEP) + 2)
-}
-
-function ensureTaskWindow() {
-  if (!viewActive || loading.value || loadingMore.value) return
-  const visibleStart = Math.max(0, Math.min(totalTasks.value, Math.floor(virtualScrollTop.value / TASK_ROW_STEP)))
-  const visibleRows = Math.max(1, Math.ceil(virtualViewportHeight.value / TASK_ROW_STEP))
-  const requiredEnd = Math.min(totalTasks.value, visibleStart + visibleRows + 2)
-  const loadedEnd = loadedStart.value + items.value.length
-  const needsWindow =
-    visibleStart < loadedStart.value ||
-    requiredEnd > loadedEnd ||
-    visibleStart > loadedStart.value + TASK_WINDOW_RELEASE_ROWS
-  if (needsWindow) loadTaskWindow(visibleStart, taskWindowLimit(), true)
-}
-
-async function loadTaskWindow(start, limit, silent = false) {
+async function loadTaskPage(page = taskPage.value, silent = false) {
   const generation = ++requestGeneration
   loadController?.abort()
   loadController = new AbortController()
   const signal = loadController.signal
-  if (silent) loadingMore.value = true
+  const requestedPage = Math.max(1, Number(page) || 1)
+  const offset = (requestedPage - 1) * TASK_PAGE_SIZE
+  if (silent) taskRefreshing.value = true
+  else if (items.value.length) taskPageLoading.value = true
   else loading.value = true
   try {
     const options = { filter: filter.value, query: keyword.value, compact: true, signal }
-    const payload = await api.downloads(Math.max(1, limit), Math.max(0, start), 'active', options)
+    const payload = await api.downloads(TASK_PAGE_SIZE, offset, 'active', options)
     if (signal.aborted || generation !== requestGeneration) return
     const pageItems = payload.items || []
+    const nextTotal = Number(payload.total || 0)
+    const maxPage = Math.max(1, Math.ceil(nextTotal / TASK_PAGE_SIZE))
+    if (!pageItems.length && requestedPage > maxPage) {
+      await loadTaskPage(maxPage, silent)
+      return
+    }
     items.value = pageItems
-    loadedStart.value = Math.max(0, start)
-    totalTasks.value = Number(payload.total || 0)
+    taskPage.value = requestedPage
+    totalTasks.value = nextTotal
     serverCounts.value = payload.counts || { all: totalTasks.value, active: 0, queued: 0, failed: 0 }
     for (const item of pageItems) {
       if (selected.value.has(item.id)) selectedSnapshots.value.set(item.id, item)
@@ -348,27 +269,30 @@ async function loadTaskWindow(start, limit, silent = false) {
   } finally {
     if (generation === requestGeneration) {
       loading.value = false
-      loadingMore.value = false
-      await nextTick()
-      measureVirtual()
+      taskPageLoading.value = false
+      taskRefreshing.value = false
     }
   }
 }
 
-async function load(silent = false) {
-  if (silent && items.value.length) {
-    const limit = Math.max(items.value.length, taskWindowLimit())
-    await loadTaskWindow(loadedStart.value, limit, true)
-    return
+async function load(silent = false, resetPage = false) {
+  if (resetPage) {
+    taskPage.value = 1
   }
-  await loadTaskWindow(0, taskWindowLimit(), false)
+  await loadTaskPage(resetPage ? 1 : taskPage.value, silent)
+}
+
+function goToTaskPage(page) {
+  if (taskPageLoading.value || page === taskPage.value) return
+  lastIndex = -1
+  scrollTasksToTop()
+  loadTaskPage(page)
 }
 
 function setFilter(value) {
   filter.value = value
   const query = { ...route.query, filter: value }
   router.replace({ name: 'downloads', query })
-  resetVirtualScroll()
 }
 
 function applyKeyword() {
@@ -377,7 +301,6 @@ function applyKeyword() {
   if (keyword.value) query.q = keyword.value
   else delete query.q
   router.replace({ name: 'downloads', query })
-  resetVirtualScroll()
 }
 
 function clearKeyword() {
@@ -534,7 +457,7 @@ async function remove(item, removeFile) {
       </ContentLink>
     </div>
     <span class="spacer" />
-    <button class="btn secondary small" type="button" :disabled="loading" @click="load()">
+    <button class="btn secondary small" type="button" :disabled="loading || taskPageLoading || taskRefreshing" @click="load()">
       <RefreshCw :size="15" :class="{ spin: loading }" />
       刷新
     </button>
@@ -586,78 +509,83 @@ async function remove(item, removeFile) {
         <span>时间</span>
         <span>操作</span>
       </div>
-      <div
-        ref="virtualViewport"
-        class="download-virtual-viewport"
-      >
-        <div class="download-virtual-inner" :style="{ height: `${virtualInnerHeight}px` }">
+      <div class="task-page-rows" :class="{ 'is-page-loading': taskPageLoading }" :aria-busy="taskPageLoading">
           <article
-            v-for="entry in virtualRows"
-            :key="entry.item.id"
+            v-for="(entry, rowIndex) in visible"
+            :key="entry.id"
             class="download-row"
-            :class="{ selected: rowSelected(entry.item.id) }"
-            :style="{ transform: `translateY(${entry.index * TASK_ROW_STEP}px)` }"
-            @contextmenu="onContextMenu(entry.item, entry.index, $event)"
-            @click="selecting ? toggleRow(entry.item, entry.index, $event) : null"
+            :class="{ selected: rowSelected(entry.id) }"
+            @contextmenu="onContextMenu(entry, taskOffset + rowIndex, $event)"
+            @click="selecting ? toggleRow(entry, taskOffset + rowIndex, $event) : null"
           >
             <ContentLink
+              v-if="!selecting"
               class="download-work"
-              :to="{ name: 'comic', params: { sourceId: entry.item.sourceId, comicId: entry.item.comicId } }"
-              :before-navigate="() => !selecting"
-              :title="entry.item.comicTitle"
+              :to="{ name: 'comic', params: { sourceId: entry.sourceId, comicId: entry.comicId } }"
+              :title="entry.comicTitle"
               @click.stop
             >
-              {{ entry.item.comicTitle }}
+              {{ entry.comicTitle }}
             </ContentLink>
-            <span class="download-chapter" :title="entry.item.chapterTitle">{{ entry.item.chapterTitle }}</span>
+            <span v-else class="download-work is-selection-label" :title="entry.comicTitle">
+              {{ entry.comicTitle }}
+            </span>
+            <span class="download-chapter" :title="entry.chapterTitle">{{ entry.chapterTitle }}</span>
             <div class="download-status">
               <div class="download-status-head">
-                <span class="badge" :class="statusClass(entry.item.status)">{{ statusLabel(entry.item.status) }}</span>
+                <span class="badge" :class="statusClass(entry.status)">{{ statusLabel(entry.status) }}</span>
               </div>
               <div
                 class="download-progress"
-                :class="`is-${entry.item.status}`"
+                :class="`is-${entry.status}`"
                 role="progressbar"
-                :aria-valuenow="progressPercent(entry.item)"
+                :aria-valuenow="progressPercent(entry)"
                 aria-valuemin="0"
                 aria-valuemax="100"
               >
-                <span class="download-progress-fill" :style="{ width: `${progressPercent(entry.item)}%` }" />
+                <span class="download-progress-fill" :style="{ width: `${progressPercent(entry)}%` }" />
               </div>
             </div>
-            <div class="download-time">{{ formatTime(entry.item) }}</div>
+            <div class="download-time">{{ formatTime(entry) }}</div>
             <div class="download-actions">
               <button
-                v-if="retryable(entry.item.status)"
+                v-if="retryable(entry.status)"
                 class="icon-btn"
                 type="button"
-                :disabled="busy === entry.item.id"
+                :disabled="busy === entry.id"
                 aria-label="重试"
-                @click.stop="retry(entry.item)"
+                @click.stop="retry(entry)"
               >
                 <RotateCcw :size="15" />
               </button>
               <button
                 class="icon-btn danger"
                 type="button"
-                :disabled="busy === entry.item.id"
+                :disabled="busy === entry.id"
                 aria-label="删除任务记录"
-                @click.stop="remove(entry.item, false)"
+                @click.stop="remove(entry, false)"
               >
                 <Trash2 :size="15" />
               </button>
             </div>
           </article>
-        </div>
       </div>
     </div>
+    <PaginationBar
+      class="task-pagination"
+      :page="taskPage"
+      :page-size="TASK_PAGE_SIZE"
+      :total="totalTasks"
+      :disabled="loading || taskPageLoading"
+      @change="goToTaskPage"
+    />
 
   </div>
 
   <div v-if="selecting" class="selection-pill task-selection-pill">
     <span class="selection-count">已选 {{ selected.size }} 项</span>
     <button class="btn secondary small" type="button" @click="toggleSelectAll">
-      {{ allSelected ? '取消全选' : '全选' }}
+      {{ allSelected ? '取消本页' : '全选本页' }}
     </button>
     <button class="btn secondary small" type="button" @click="clearSelection">
       <X :size="14" />
@@ -685,3 +613,30 @@ async function remove(item, removeFile) {
     </button>
   </div>
 </template>
+
+<style scoped>
+.task-page-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: opacity 0.18s ease;
+}
+
+.task-page-rows.is-page-loading {
+  pointer-events: none;
+  opacity: 0.58;
+}
+
+.download-work.is-selection-label {
+  display: block;
+  cursor: default;
+}
+
+.download-work.is-selection-label:hover {
+  color: var(--text);
+}
+
+.task-pagination {
+  margin-top: 18px;
+}
+</style>

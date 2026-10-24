@@ -25,6 +25,7 @@ import {
 import { api } from '../api'
 import BackArrowIcon from '../components/BackArrowIcon.vue'
 import CollectionEmptyState from '../components/CollectionEmptyState.vue'
+import PaginationBar from '../components/PaginationBar.vue'
 import SortMenu from '../components/SortMenu.vue'
 import WindowedGrid from '../components/WindowedGrid.vue'
 import { askConfirm } from '../stores/confirm'
@@ -187,18 +188,20 @@ const selectedFileCount = computed(() =>
 onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', handleLibraryResize)
   window.addEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', handleLibraryResize)
   window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
   if (queryTimer) window.clearTimeout(queryTimer)
   libraryController?.abort()
 })
 
 async function refreshSourceKinds() {
-  await load()
+  await reloadLibrary()
 }
 
 // 切走页面时退出多选。
@@ -207,29 +210,27 @@ onDeactivated(() => {
   libraryController?.abort()
 })
 
-// 本地仓库数据窗口：只保留可视区域及上下各一行，离开窗口的数据直接释放。
+// 本地仓库分页：每页最多七行，列数随视口变化，翻页时保留多选快照。
+const LIBRARY_ROWS_PER_PAGE = 7
 const totalItems = ref(0)
-const libraryRangeEnd = ref(0)
-const libraryOffset = ref(0)
-const libraryWindowLoading = ref(false)
+const libraryPage = ref(1)
+const libraryColumns = ref(estimatedLibraryColumns())
+const libraryPageLoading = ref(false)
 let libraryRequestGeneration = 0
 let libraryController = null
 let queryTimer = 0
-const libraryHasMore = computed(() => libraryRangeEnd.value < totalItems.value)
+const libraryPageSize = computed(() => Math.max(1, libraryColumns.value * LIBRARY_ROWS_PER_PAGE))
+const libraryTotalPages = computed(() =>
+  Math.max(1, Math.ceil(totalItems.value / libraryPageSize.value)),
+)
+const libraryOffset = computed(() => (libraryPage.value - 1) * libraryPageSize.value)
+const libraryBusy = computed(() => loading.value || libraryPageLoading.value)
 
 function estimatedLibraryColumns() {
   if (window.innerWidth <= 760) return 2
   if (window.innerWidth <= 1100) return 4
   if (window.innerWidth <= 1400) return 5
   return 7
-}
-
-function initialLibraryLimit() {
-  const viewport = document.querySelector('.content-scroll')?.clientHeight || Math.max(320, window.innerHeight - 180)
-  const columns = estimatedLibraryColumns()
-  const rowHeight = columns <= 2 ? 360 : columns <= 4 ? 300 : 220
-  const rows = Math.max(2, Math.ceil(viewport / rowHeight) + 1)
-  return rows * columns
 }
 
 function libraryRequestOptions() {
@@ -242,33 +243,35 @@ function libraryRequestOptions() {
   }
 }
 
-async function fetchLibraryWindow(start = 0, limit = initialLibraryLimit(), initial = false, append = false) {
+async function fetchLibraryPage(page = 1, initial = false) {
+  const requestedPage = Math.min(libraryTotalPages.value, Math.max(1, Number(page) || 1))
+  const limit = libraryPageSize.value
+  const offset = (requestedPage - 1) * limit
   const generation = ++libraryRequestGeneration
   libraryController?.abort()
   libraryController = new AbortController()
   if (initial) loading.value = true
-  else libraryWindowLoading.value = true
+  else libraryPageLoading.value = true
   try {
-    const payload = await api.localLibrary(Math.max(1, limit), Math.max(0, start), true, {
+    const payload = await api.localLibrary(limit, offset, true, {
       ...libraryRequestOptions(),
       signal: libraryController.signal,
     })
     if (generation !== libraryRequestGeneration) return
     const next = payload.items || []
-    if (append) {
-      const existing = new Set(items.value.map(keyOf))
-      items.value = [...items.value, ...next.filter((item) => !existing.has(keyOf(item)))]
-      libraryRangeEnd.value = Math.max(libraryRangeEnd.value, start + next.length)
-    } else {
-      items.value = next
-      libraryOffset.value = Math.max(0, start)
-      libraryRangeEnd.value = Math.max(libraryRangeEnd.value, start + next.length)
+    const nextTotal = Number(payload.total || 0)
+    const maxPage = Math.max(1, Math.ceil(nextTotal / limit))
+    if (!next.length && requestedPage > maxPage) {
+      await fetchLibraryPage(maxPage, initial)
+      return
     }
+    items.value = next
+    libraryPage.value = requestedPage
     for (const item of items.value) {
       const path = keyOf(item)
       if (selectedPaths.value.includes(path)) selectedSnapshots.value.set(path, item)
     }
-    totalItems.value = Number(payload.total || 0)
+    totalItems.value = nextTotal
     libraryCounts.value = payload.counts || { all: totalItems.value, comic: 0, book: 0, other: 0 }
     rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : rootOrder.value
     if (activeRoot.value && !rootOrder.value.includes(activeRoot.value)) activeRoot.value = ''
@@ -279,45 +282,49 @@ async function fetchLibraryWindow(start = 0, limit = initialLibraryLimit(), init
   } finally {
     if (generation === libraryRequestGeneration) {
       loading.value = false
-      libraryWindowLoading.value = false
+      libraryPageLoading.value = false
     }
   }
 }
 
-function onLibraryWindowChange({ start, limit }) {
-  if (active.value || libraryWindowLoading.value) return
-  if (start === libraryOffset.value && limit === items.value.length) return
-  fetchLibraryWindow(start, limit)
+async function load(resetPage = false) {
+  await fetchLibraryPage(resetPage ? 1 : libraryPage.value, !items.value.length)
 }
 
-function loadMoreLibrary() {
-  if (!libraryHasMore.value || libraryWindowLoading.value) return
-  fetchLibraryWindow(libraryRangeEnd.value, initialLibraryLimit(), false, true)
+async function reloadLibrary() {
+  await fetchLibraryPage(libraryPage.value, false)
 }
 
-async function load() {
-  loading.value = true
-  libraryRangeEnd.value = 0
-  try {
-    await fetchLibraryWindow(0, initialLibraryLimit(), true)
-  } catch (err) {
-    notify(`本地仓库加载失败：${err.message}`, true)
-    loading.value = false
-  }
-}
-
-function reloadCurrentWindow() {
+function resetLibrary() {
   clearSelection()
   const scroller = document.querySelector('.content-scroll')
   if (scroller) scroller.scrollTop = 0
-  libraryRangeEnd.value = 0
-  load()
+  fetchLibraryPage(1, true)
 }
 
-watch([kind, activeRoot, sortMode, sortDesc], reloadCurrentWindow)
+function goToLibraryPage(page) {
+  if (libraryPageLoading.value || page === libraryPage.value) return
+  selectionAnchor.value = -1
+  const scroller = document.querySelector('.content-scroll')
+  if (scroller) scroller.scrollTop = 0
+  fetchLibraryPage(page)
+}
+
+function handleLibraryResize() {
+  const nextColumns = estimatedLibraryColumns()
+  if (nextColumns === libraryColumns.value) return
+  const oldPageSize = libraryColumns.value * LIBRARY_ROWS_PER_PAGE
+  const firstItemIndex = (libraryPage.value - 1) * oldPageSize
+  libraryColumns.value = nextColumns
+  if (active.value || loading.value || libraryPageLoading.value) return
+  const nextPage = Math.floor(firstItemIndex / libraryPageSize.value) + 1
+  fetchLibraryPage(Math.min(nextPage, libraryTotalPages.value), false)
+}
+
+watch([kind, activeRoot, sortMode, sortDesc], resetLibrary)
 watch(query, () => {
   if (queryTimer) window.clearTimeout(queryTimer)
-  queryTimer = window.setTimeout(reloadCurrentWindow, 260)
+  queryTimer = window.setTimeout(resetLibrary, 260)
 })
 
 function keyOf(item) {
@@ -379,10 +386,24 @@ function toggleSelection(item) {
 }
 
 function selectAll() {
-  selectedPaths.value = filtered.value.map(keyOf)
-  selectedSnapshots.value = new Map(filtered.value.map((item) => [keyOf(item), item]))
+  const next = new Set(selectedPaths.value)
+  const allCurrentSelected = filtered.value.length > 0 && filtered.value.every((item) => next.has(keyOf(item)))
+  if (allCurrentSelected) {
+    for (const item of filtered.value) {
+      const path = keyOf(item)
+      next.delete(path)
+      selectedSnapshots.value.delete(path)
+    }
+  } else {
+    for (const item of filtered.value) {
+      const path = keyOf(item)
+      next.add(path)
+      selectedSnapshots.value.set(path, item)
+    }
+  }
+  selectedPaths.value = [...next]
   selectionMode.value = selectedPaths.value.length > 0
-  selectionAnchor.value = selectedPaths.value.length ? 0 : -1
+  selectionAnchor.value = selectedPaths.value.length ? libraryOffset.value : -1
 }
 
 function clearSelection() {
@@ -791,7 +812,7 @@ function downloadReaderFile() {
         :disabled="loading"
         aria-label="刷新本地仓库"
         title="刷新本地仓库"
-        @click="load"
+        @click="load()"
       >
         <RefreshCw :size="17" :class="{ spin: loading }" />
       </button>
@@ -839,23 +860,20 @@ function downloadReaderFile() {
       <Search :size="26" />
       <p>没有匹配的作品。</p>
     </div>
-    <WindowedGrid
+    <div
       v-else
       class="local-library-grid"
-      :items="filtered"
-      :total="libraryRangeEnd"
-      :offset="libraryOffset"
-      :loading-row="libraryHasMore"
-      @window-change="onLibraryWindowChange"
-      @near-end="loadMoreLibrary"
+      :class="{ 'is-page-loading': libraryBusy }"
+      :aria-busy="libraryBusy"
     >
-      <template #default="{ item, index }">
       <button
+        v-for="(item, index) in filtered"
+        :key="keyOf(item)"
         class="card local-library-card"
         :class="{ selected: isSelected(item), selecting: selectionMode }"
         type="button"
-        @click="handleCardClick(item, index, $event)"
-        @contextmenu.prevent="enterSelection(item, index, $event)"
+        @click="handleCardClick(item, libraryOffset + index, $event)"
+        @contextmenu.prevent="enterSelection(item, libraryOffset + index, $event)"
       >
         <span v-if="isSelected(item)" class="local-selection-check"><Check :size="16" /></span>
         <span class="local-library-cover">
@@ -874,23 +892,21 @@ function downloadReaderFile() {
           </span>
         </span>
       </button>
-      </template>
-      <template #loading="{ columns }">
-        <div
-          class="local-library-loading-row"
-          :style="{ gridTemplateColumns: `repeat(${Math.max(1, columns || 1)}, minmax(0, 1fr))` }"
-        >
-          <span v-for="index in Math.max(1, columns || 1)" :key="index" class="local-library-skeleton-card">
-            <span class="local-library-skeleton-cover" />
-            <span class="local-library-skeleton-line" />
-            <span class="local-library-skeleton-line short" />
-          </span>
-        </div>
-      </template>
-    </WindowedGrid>
+    </div>
+    <PaginationBar
+      v-if="totalItems"
+      class="library-pagination"
+      :page="libraryPage"
+      :page-size="libraryPageSize"
+      :total="totalItems"
+      :disabled="libraryBusy"
+      @change="goToLibraryPage"
+    />
     <div v-if="selectionMode" class="local-selection-bar">
       <span class="local-selection-count"><ListChecks :size="16" /> 已选 {{ selectedCount }} 项</span>
-      <button class="btn secondary small" type="button" :disabled="batchWorking" @click="selectAll">全选</button>
+      <button class="btn secondary small" type="button" :disabled="batchWorking" @click="selectAll">
+        {{ filtered.length && filtered.every((item) => isSelected(item)) ? '取消本页' : '全选本页' }}
+      </button>
       <button class="btn secondary small" type="button" :disabled="batchWorking" @click="clearSelection">清空</button>
       <button class="btn secondary small" type="button" :disabled="batchWorking || !selectedCount" @click="simplifySelection">
         <Languages :size="15" />
@@ -1018,6 +1034,19 @@ function downloadReaderFile() {
 </template>
 
 <style scoped>
+.local-library-grid {
+  transition: opacity 0.18s ease;
+}
+
+.local-library-grid.is-page-loading {
+  pointer-events: none;
+  opacity: 0.58;
+}
+
+.library-pagination {
+  margin-top: 20px;
+}
+
 @media (max-width: 600px) {
   .local-detail-hero {
     grid-template-columns: 110px minmax(0, 1fr);

@@ -2434,13 +2434,15 @@
 /* 登录页 Bangumi 近期注目背景：无代理或请求失败时不渲染。 */
 .login-page.has-bangumi {
   position: relative;
-  justify-items: end;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr);
+  grid-template-rows: minmax(100vh, auto);
+  place-items: stretch;
   overflow: hidden;
-  padding-right: clamp(28px, 7vw, 120px);
-  background: #e8e1d0;
+  padding: 0;
+  background: color-mix(in srgb, #fffdf7 92%, #f2e5ca);
 }
 
-.login-bangumi-scene,
 .login-bangumi-backdrop,
 .login-bangumi-shade {
   position: absolute;
@@ -2448,27 +2450,35 @@
 }
 
 .login-bangumi-scene {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
   z-index: 0;
+  min-height: 100vh;
   overflow: hidden;
+  background: #d9d0bd;
 }
 
 .login-bangumi-backdrop {
   background-position: center;
   background-size: cover;
-  filter: saturate(0.94) blur(1px);
-  transform: scale(1.025);
+  filter: saturate(1.02);
 }
 
 .login-bangumi-shade {
   background:
-    linear-gradient(90deg, rgba(22, 24, 20, 0.8) 0%, rgba(22, 24, 20, 0.45) 46%, rgba(248, 246, 237, 0.58) 100%),
-    linear-gradient(0deg, rgba(22, 24, 20, 0.46), transparent 58%);
-  backdrop-filter: blur(3px) saturate(1.02);
+    linear-gradient(90deg, rgba(16, 18, 15, 0.48) 0%, rgba(16, 18, 15, 0.12) 58%, rgba(250, 246, 235, 0.18) 100%),
+    linear-gradient(0deg, rgba(16, 18, 15, 0.54), transparent 62%);
 }
 
 .login-page.has-bangumi .login-card {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
+  justify-self: center;
   z-index: 2;
-  background: color-mix(in srgb, #fffdf6 88%, transparent);
+  width: min(390px, calc(100% - 48px));
+  background: color-mix(in srgb, #fffdf6 92%, transparent);
   backdrop-filter: blur(18px) saturate(1.08);
   -webkit-backdrop-filter: blur(18px) saturate(1.08);
 }
@@ -2476,10 +2486,10 @@
 .login-bangumi-feature {
   position: absolute;
   bottom: clamp(28px, 6vh, 72px);
-  left: clamp(24px, 5vw, 84px);
+  left: clamp(28px, 4vw, 72px);
   z-index: 1;
   display: flex;
-  width: min(520px, 43vw);
+  width: min(620px, calc(66.666vw - 96px));
   flex-direction: column;
   gap: 10px;
   color: #fffdf6;
@@ -2542,8 +2552,23 @@
 
 @media (max-width: 900px) {
   .login-page.has-bangumi {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(100vh, auto);
     justify-items: center;
     padding: 96px 20px 24px;
+  }
+
+  .login-bangumi-scene {
+    position: absolute;
+    inset: 0;
+    min-height: 100vh;
+  }
+
+  .login-page.has-bangumi .login-card {
+    grid-column: 1;
+    grid-row: 1;
+    width: min(390px, 100%);
   }
 
   .login-bangumi-shade {
@@ -5061,7 +5086,7 @@ svg.source-editor-icon {
   color: var(--text);
 }
 
-/* v0.1.30：任务列表使用固定行高虚拟滚动；作品与章节拆成独立栏目。 */
+/* 任务列表分页：作品与章节拆成独立栏目，每页由前端固定为 30 条。 */
 .download-head,
 .download-row {
   grid-template-columns:
@@ -5074,16 +5099,6 @@ svg.source-editor-icon {
 
 .download-head {
   gap: 14px;
-}
-
-.download-virtual-viewport {
-  min-height: 0;
-  padding-right: 2px;
-}
-
-.download-virtual-inner {
-  position: relative;
-  width: 100%;
 }
 
 /* 任务列表：Shift 多选不选中文本，选中态整行高亮，操作按钮留出呼吸感。 */
@@ -5110,15 +5125,6 @@ svg.source-editor-icon {
   background: color-mix(in srgb, var(--primary-soft) 42%, var(--surface));
 }
 
-.download-virtual-inner .download-row {
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  box-sizing: border-box;
-  height: 76px;
-}
-
 .download-work {
   min-width: 0;
   overflow: hidden;
@@ -5134,11 +5140,11 @@ svg.source-editor-icon {
   color: var(--primary-strong);
 }
 
-.download-virtual-inner .download-chapter {
+.download-chapter {
   min-width: 0;
 }
 
-.download-virtual-inner .download-status-head {
+.download-status-head {
   justify-content: flex-start;
 }
 
@@ -5166,8 +5172,8 @@ svg.source-editor-icon {
 
   .download-head span:nth-child(4),
   .download-head span:nth-child(5),
-  .download-virtual-inner .download-time,
-  .download-virtual-inner .download-actions {
+  .download-time,
+  .download-actions {
     display: none;
   }
 }

@@ -194,9 +194,9 @@ func parseBangumiCalendar(raw []byte, now time.Time) ([]bangumiLoginItem, error)
 			if title == "" {
 				title = strings.TrimSpace(subject.Name)
 			}
-			cover := strings.TrimSpace(subject.Images.Common)
+			cover := strings.TrimSpace(subject.Images.Large)
 			if cover == "" {
-				cover = strings.TrimSpace(subject.Images.Large)
+				cover = strings.TrimSpace(subject.Images.Common)
 			}
 			cover, validCover := normalizeBangumiImageURL(cover)
 			summary := strings.TrimSpace(subject.Summary)
@@ -290,9 +290,9 @@ func (s *Server) enrichBangumiItems(ctx context.Context, client *http.Client, it
 				enriched[index].Title = title
 			}
 			enriched[index].Summary = strings.TrimSpace(payload.Summary)
-			cover := strings.TrimSpace(payload.Images.Common)
+			cover := strings.TrimSpace(payload.Images.Large)
 			if cover == "" {
-				cover = strings.TrimSpace(payload.Images.Large)
+				cover = strings.TrimSpace(payload.Images.Common)
 			}
 			if normalized, ok := normalizeBangumiImageURL(cover); ok {
 				enriched[index].Cover = normalized

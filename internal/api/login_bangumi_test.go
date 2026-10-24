@@ -12,7 +12,7 @@ func TestParseBangumiCalendarPrefersTodayAndFiltersIncompleteSubjects(t *testing
 	  ]},
 	  {"weekday":{"id":2},"items":[
 	    {"id":2,"type":2,"name":"Today low","summary":"Today summary","images":{"common":"https://lain.bgm.tv/2.jpg"},"collection":{"doing":1}},
-	    {"id":3,"type":2,"url":"javascript:alert(1)","name":"Today high","summary":"Today summary","images":{"common":"https://lain.bgm.tv/3.jpg"},"collection":{"doing":20}},
+	    {"id":3,"type":2,"url":"javascript:alert(1)","name":"Today high","summary":"Today summary","images":{"large":"https://lain.bgm.tv/3-large.jpg","common":"https://lain.bgm.tv/3-common.jpg"},"collection":{"doing":20}},
 	    {"id":4,"type":1,"name":"Book","summary":"Book summary","images":{"common":"https://lain.bgm.tv/4.jpg"}},
 	    {"id":5,"type":2,"name":"No image","summary":"No image summary"}
 	  ]}
@@ -27,6 +27,9 @@ func TestParseBangumiCalendarPrefersTodayAndFiltersIncompleteSubjects(t *testing
 	}
 	if items[0].ID != 3 || items[1].ID != 2 || items[2].ID != 1 {
 		t.Fatalf("calendar ordering = %+v", items)
+	}
+	if items[0].Cover != "https://lain.bgm.tv/3-large.jpg" {
+		t.Fatalf("preferred cover = %q", items[0].Cover)
 	}
 	if items[2].URL != "https://bgm.tv/subject/1" {
 		t.Fatalf("fallback subject URL = %q", items[2].URL)
