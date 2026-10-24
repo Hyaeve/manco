@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Loader2, LogIn, UserPlus } from 'lucide-vue-next'
 import { api } from '../api'
@@ -16,8 +16,18 @@ const confirm = ref('')
 const error = ref('')
 const loading = ref(false)
 const setupRequired = ref(false)
+const bangumiItems = ref([])
+const bangumiIndex = ref(0)
+const bangumiDirection = ref('next')
+let bangumiTimer = 0
+
+const activeBangumi = computed(() => bangumiItems.value[bangumiIndex.value] || null)
+const bangumiBackground = computed(() => activeBangumi.value?.cover
+  ? { backgroundImage: `url("${activeBangumi.value.cover}")` }
+  : {})
 
 onMounted(async () => {
+  loadBangumiBackground()
   try {
     const payload = await api.setup()
     setupRequired.value = Boolean(payload.setupRequired)
@@ -25,6 +35,43 @@ onMounted(async () => {
     setupRequired.value = false
   }
 })
+
+onUnmounted(() => {
+  if (bangumiTimer) window.clearInterval(bangumiTimer)
+})
+
+async function loadBangumiBackground() {
+  try {
+    const payload = await api.loginBangumi()
+    bangumiItems.value = Array.isArray(payload.items) ? payload.items : []
+    bangumiIndex.value = 0
+    preloadBangumiCover(0)
+    preloadBangumiCover(1)
+    startBangumiRotation()
+  } catch {
+    bangumiItems.value = []
+  }
+}
+
+function startBangumiRotation() {
+  if (bangumiTimer) window.clearInterval(bangumiTimer)
+  bangumiTimer = 0
+  if (bangumiItems.value.length <= 1) return
+  bangumiTimer = window.setInterval(() => {
+    bangumiDirection.value = 'next'
+    const nextIndex = (bangumiIndex.value + 1) % bangumiItems.value.length
+    preloadBangumiCover(nextIndex + 1)
+    bangumiIndex.value = nextIndex
+  }, 12000)
+}
+
+function preloadBangumiCover(index) {
+  const cover = bangumiItems.value[index % bangumiItems.value.length]?.cover
+  if (!cover) return
+  const image = new window.Image()
+  image.decoding = 'async'
+  image.src = cover
+}
 
 async function submit() {
   error.value = ''
@@ -53,7 +100,24 @@ async function submit() {
 </script>
 
 <template>
-  <div class="login-page">
+  <div class="login-page" :class="{ 'has-bangumi': activeBangumi }">
+    <div v-if="activeBangumi" class="login-bangumi-scene" aria-hidden="true">
+      <Transition :name="`login-bangumi-${bangumiDirection}`">
+        <div :key="activeBangumi.id" class="login-bangumi-backdrop" :style="bangumiBackground" />
+      </Transition>
+      <div class="login-bangumi-shade" />
+    </div>
+    <a
+      v-if="activeBangumi"
+      class="login-bangumi-feature"
+      :href="activeBangumi.url"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      <span>Bangumi · 近期注目</span>
+      <strong>{{ activeBangumi.title }}</strong>
+      <p>{{ activeBangumi.summary }}</p>
+    </a>
     <div class="login-card">
       <MancoLogo class="login-logo" :size="54" />
       <div class="login-title">

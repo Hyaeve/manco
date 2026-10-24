@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.7.9"
+	appVersion    = "v0.8.0"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -123,6 +123,12 @@ type Server struct {
 	activityMu  sync.Mutex
 	activityRaw []byte
 	activityAt  time.Time
+
+	loginBangumiMu          sync.Mutex
+	loginBangumiCacheItems  []bangumiLoginItem
+	loginBangumiCovers      map[int]string
+	loginBangumiCoversCache map[int]bangumiCoverCacheEntry
+	loginBangumiAt          time.Time
 
 	// 本地仓库扫描结果短缓存：NAS 目录扫描很慢，刷新页面不应该重扫一遍。
 	libraryMu    sync.Mutex
@@ -352,6 +358,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
+	mux.HandleFunc("GET /api/login/bangumi", s.handleLoginBangumi)
+	mux.HandleFunc("GET /api/login/bangumi/cover", s.handleLoginBangumiCover)
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
 	mux.HandleFunc("GET /api/icons", s.requireAuth(s.handleListIcons))
