@@ -77,6 +77,7 @@ let lastJobsSignature = ''
 let selectAnchor = -1
 let timer = 0
 let scrollFrame = 0
+let lastScrollTop = 0
 let loadGeneration = 0
 let viewSwitchGeneration = 0
 const viewSwitching = ref(false)
@@ -188,6 +189,12 @@ function handlePageScroll() {
   if (!scrollEl || scrollFrame) return
   scrollFrame = window.requestAnimationFrame(() => {
     scrollFrame = 0
+    const current = scrollEl.scrollTop
+    if ((loading.value || loadingMoreSubscriptions.value) && current > lastScrollTop) {
+      scrollEl.scrollTop = lastScrollTop
+      return
+    }
+    lastScrollTop = current
     updateVirtualWindow()
     if (scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 360 && items.value.length < totalSubscriptions.value) {
       loadMoreSubscriptions()
@@ -217,6 +224,7 @@ async function replaySubscriptionReveal() {
 
 function reloadSubscriptionList() {
   if (scrollEl) scrollEl.scrollTop = 0
+  lastScrollTop = 0
   viewSwitching.value = true
   const switchGeneration = ++viewSwitchGeneration
   const pending = load(false, true)
@@ -362,6 +370,7 @@ onMounted(async () => {
   updateGridColumns()
   await load()
   scrollEl = document.querySelector('.content-scroll')
+  lastScrollTop = scrollEl?.scrollTop || 0
   scrollEl?.addEventListener('scroll', handlePageScroll, { passive: true })
   window.addEventListener('resize', onWindowResize)
   startPolling()
@@ -410,6 +419,7 @@ function onWindowResize() {
 watch([kindFilter, activeDir], () => {
   selectionMenuOpen.value = false
   if (scrollEl) scrollEl.scrollTop = 0
+  lastScrollTop = 0
   nextTick(updateVirtualWindow)
   reloadSubscriptionList()
 })

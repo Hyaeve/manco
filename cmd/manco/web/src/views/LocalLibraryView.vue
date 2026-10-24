@@ -188,11 +188,16 @@ onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
+  libraryScrollContainer = document.querySelector('.content-scroll')
+  libraryLastScrollTop = libraryScrollContainer?.scrollTop || 0
+  libraryScrollContainer?.addEventListener('scroll', handleLibraryScrollLock)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
+  libraryScrollContainer?.removeEventListener('scroll', handleLibraryScrollLock)
+  libraryScrollContainer = null
   if (queryTimer) window.clearTimeout(queryTimer)
   libraryController?.abort()
 })
@@ -214,6 +219,8 @@ const libraryWindowLoading = ref(false)
 let libraryRequestGeneration = 0
 let libraryController = null
 let queryTimer = 0
+let libraryScrollContainer = null
+let libraryLastScrollTop = 0
 
 function estimatedLibraryColumns() {
   if (window.innerWidth <= 760) return 2
@@ -294,7 +301,19 @@ function reloadCurrentWindow() {
   clearSelection()
   const scroller = document.querySelector('.content-scroll')
   if (scroller) scroller.scrollTop = 0
+  libraryLastScrollTop = 0
   load()
+}
+
+function handleLibraryScrollLock() {
+  const element = libraryScrollContainer
+  if (!element) return
+  const current = element.scrollTop
+  if ((loading.value || libraryWindowLoading.value) && current > libraryLastScrollTop) {
+    element.scrollTop = libraryLastScrollTop
+    return
+  }
+  libraryLastScrollTop = current
 }
 
 watch([kind, activeRoot, sortMode, sortDesc], reloadCurrentWindow)
