@@ -6,6 +6,7 @@ const props = defineProps({
   itemKey: { type: String, default: 'path' },
   total: { type: Number, default: -1 },
   offset: { type: Number, default: 0 },
+  loadingRow: { type: Boolean, default: false },
 })
 const emit = defineEmits(['near-end', 'window-change'])
 const grid = ref(null)
@@ -16,19 +17,24 @@ const scrollOffset = ref(0)
 const viewportHeight = ref(720)
 const step = computed(() => rowHeight.value + gap.value)
 const totalCount = computed(() => (props.total >= 0 ? props.total : props.items.length))
-const rows = computed(() => Math.ceil(totalCount.value / columns.value))
+const contentRows = computed(() => Math.ceil(totalCount.value / columns.value))
+const gridRows = computed(() => contentRows.value + (props.loadingRow && totalCount.value > 0 ? 1 : 0))
 const loadedStartRow = computed(() => Math.floor(Math.max(0, props.offset) / columns.value))
-const loadedEndRow = computed(() => Math.min(rows.value, loadedStartRow.value + Math.ceil(props.items.length / columns.value)))
-const startRow = computed(() => Math.min(Math.max(0, rows.value - 1), Math.max(0, Math.floor(scrollOffset.value / step.value) - 2)))
-const endRow = computed(() => Math.min(rows.value, startRow.value + Math.ceil(viewportHeight.value / step.value) + 5))
-const renderStartRow = computed(() => Math.max(startRow.value, loadedStartRow.value))
+const loadedEndRow = computed(() => Math.min(contentRows.value, loadedStartRow.value + Math.ceil(props.items.length / columns.value)))
+const startRow = computed(() => Math.min(Math.max(0, gridRows.value - 1), Math.max(0, Math.floor(scrollOffset.value / step.value) - 2)))
+const endRow = computed(() => Math.min(gridRows.value, startRow.value + Math.ceil(viewportHeight.value / step.value) + 5))
+const showLoadingRow = computed(() => props.loadingRow && props.items.length > 0 && endRow.value >= gridRows.value)
+const renderStartRow = computed(() => Math.min(contentRows.value, Math.max(startRow.value, loadedStartRow.value)))
 const renderEndRow = computed(() => Math.min(endRow.value, loadedEndRow.value))
 const localStart = computed(() => Math.max(0, (renderStartRow.value - loadedStartRow.value) * columns.value))
 const localEnd = computed(() => Math.min(props.items.length, (renderEndRow.value - loadedStartRow.value) * columns.value))
 const entries = computed(() => props.items.slice(localStart.value, localEnd.value)
   .map((item, offset) => ({ item, index: Math.max(0, props.offset) + localStart.value + offset })))
 const before = computed(() => Math.max(0, renderStartRow.value * step.value - gap.value))
-const after = computed(() => Math.max(0, (rows.value - renderEndRow.value) * step.value - gap.value))
+const after = computed(() => {
+  if (showLoadingRow.value) return 0
+  return Math.max(0, (gridRows.value - renderEndRow.value) * step.value - gap.value)
+})
 let container = null
 let observer = null
 let frame = 0
@@ -45,12 +51,12 @@ function measure() {
   const top = grid.value.getBoundingClientRect().top - (container?.getBoundingClientRect().top || 0)
   scrollOffset.value = Math.max(0, -top)
   viewportHeight.value = container?.clientHeight || window.innerHeight
-  if (endRow.value >= rows.value - 2) emit('near-end')
+  if (endRow.value >= gridRows.value - 1) emit('near-end')
   if (props.total >= 0 && columns.value > 0) {
     const firstVisible = Math.floor(scrollOffset.value / step.value)
     const lastVisible = Math.ceil((scrollOffset.value + viewportHeight.value) / step.value)
     const wantedStart = Math.max(0, firstVisible - 1)
-    const wantedEnd = Math.min(rows.value, Math.max(wantedStart + 1, lastVisible + 1))
+    const wantedEnd = Math.min(contentRows.value, Math.max(wantedStart + 1, lastVisible + 1))
     const start = wantedStart * columns.value
     const limit = Math.max(0, wantedEnd * columns.value - start)
     const signature = `${start}:${limit}:${totalCount.value}:${columns.value}`
@@ -88,7 +94,7 @@ onUnmounted(() => {
   observer?.disconnect()
   if (frame) cancelAnimationFrame(frame)
 })
-watch(() => [props.items, props.total, props.offset], () => nextTick(scheduleMeasure))
+watch(() => [props.items, props.total, props.offset, props.loadingRow], () => nextTick(scheduleMeasure))
 </script>
 
 <template>
@@ -96,6 +102,9 @@ watch(() => [props.items, props.total, props.offset], () => nextTick(scheduleMea
     <div v-if="before" aria-hidden="true" class="windowed-grid-spacer" :style="{ height: `${before}px` }" />
     <div v-for="entry in entries" :key="entry.item[itemKey] || entry.index" class="windowed-grid-cell">
       <slot :item="entry.item" :index="entry.index" />
+    </div>
+    <div v-if="showLoadingRow" class="windowed-grid-loading-row">
+      <slot name="loading" :columns="columns" />
     </div>
     <div v-if="after" aria-hidden="true" class="windowed-grid-spacer" :style="{ height: `${after}px` }" />
   </div>
@@ -105,4 +114,5 @@ watch(() => [props.items, props.total, props.offset], () => nextTick(scheduleMea
 .windowed-grid-spacer { grid-column: 1 / -1; pointer-events: none; }
 .windowed-grid-cell { min-width: 0; }
 .windowed-grid-cell > :deep(*) { width: 100%; }
+.windowed-grid-loading-row { grid-column: 1 / -1; min-width: 0; }
 </style>

@@ -293,6 +293,63 @@
   padding-bottom: 50px;
 }
 
+.subscription-loading-row {
+  display: grid;
+  grid-column: 1 / -1;
+  width: 100%;
+  gap: 16px;
+}
+
+.subscription-skeleton-card {
+  display: flex;
+  min-width: 0;
+  min-height: 286px;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.subscription-skeleton-cover {
+  flex: 0 0 156px;
+  width: 156px;
+  aspect-ratio: 2 / 3;
+  border-radius: 10px;
+  background:
+    linear-gradient(105deg, transparent 36%, color-mix(in srgb, var(--surface) 72%, transparent) 48%, transparent 60%)
+      0 0 / 220% 100%,
+    var(--surface-muted);
+  animation: subscription-skeleton 1.25s ease-in-out infinite;
+}
+
+.subscription-skeleton-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subscription-skeleton-line {
+  width: min(72%, 260px);
+  height: 12px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+}
+
+.subscription-skeleton-line.short {
+  width: min(42%, 170px);
+  height: 10px;
+}
+
+@keyframes subscription-skeleton {
+  from { background-position: 120% 0, 0 0; }
+  to { background-position: -120% 0, 0 0; }
+}
+
 .subscription-job-stats {
   display: flex;
   gap: 10px;
@@ -2329,6 +2386,49 @@
 .local-library-card:focus-visible .local-library-cover img {
   transform: scale(1.06);
   filter: brightness(1.09) saturate(1.03);
+}
+
+.local-library-loading-row {
+  display: grid;
+  width: 100%;
+  gap: 16px 14px;
+}
+
+.local-library-skeleton-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.local-library-skeleton-cover {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: 10px;
+  background:
+    linear-gradient(105deg, transparent 36%, color-mix(in srgb, var(--surface) 72%, transparent) 48%, transparent 60%)
+      0 0 / 220% 100%,
+    var(--surface-muted);
+  animation: local-library-skeleton 1.25s ease-in-out infinite;
+}
+
+.local-library-skeleton-line {
+  display: block;
+  width: 78%;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+}
+
+.local-library-skeleton-line.short {
+  width: 48%;
+  height: 9px;
+}
+
+@keyframes local-library-skeleton {
+  from { background-position: 120% 0, 0 0; }
+  to { background-position: -120% 0, 0 0; }
 }
 
 /* 本地库右上角搜索框收窄。 */

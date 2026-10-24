@@ -188,16 +188,11 @@ onMounted(() => {
   load()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
-  libraryScrollContainer = document.querySelector('.content-scroll')
-  libraryLastScrollTop = libraryScrollContainer?.scrollTop || 0
-  libraryScrollContainer?.addEventListener('scroll', handleLibraryScrollLock)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSourceKinds)
-  libraryScrollContainer?.removeEventListener('scroll', handleLibraryScrollLock)
-  libraryScrollContainer = null
   if (queryTimer) window.clearTimeout(queryTimer)
   libraryController?.abort()
 })
@@ -214,13 +209,13 @@ onDeactivated(() => {
 
 // 本地仓库数据窗口：只保留可视区域及上下各一行，离开窗口的数据直接释放。
 const totalItems = ref(0)
+const libraryRangeEnd = ref(0)
 const libraryOffset = ref(0)
 const libraryWindowLoading = ref(false)
 let libraryRequestGeneration = 0
 let libraryController = null
 let queryTimer = 0
-let libraryScrollContainer = null
-let libraryLastScrollTop = 0
+const libraryHasMore = computed(() => libraryRangeEnd.value < totalItems.value)
 
 function estimatedLibraryColumns() {
   if (window.innerWidth <= 760) return 2
@@ -247,7 +242,7 @@ function libraryRequestOptions() {
   }
 }
 
-async function fetchLibraryWindow(start = 0, limit = initialLibraryLimit(), initial = false) {
+async function fetchLibraryWindow(start = 0, limit = initialLibraryLimit(), initial = false, append = false) {
   const generation = ++libraryRequestGeneration
   libraryController?.abort()
   libraryController = new AbortController()
@@ -259,12 +254,20 @@ async function fetchLibraryWindow(start = 0, limit = initialLibraryLimit(), init
       signal: libraryController.signal,
     })
     if (generation !== libraryRequestGeneration) return
-    items.value = payload.items || []
+    const next = payload.items || []
+    if (append) {
+      const existing = new Set(items.value.map(keyOf))
+      items.value = [...items.value, ...next.filter((item) => !existing.has(keyOf(item)))]
+      libraryRangeEnd.value = Math.max(libraryRangeEnd.value, start + next.length)
+    } else {
+      items.value = next
+      libraryOffset.value = Math.max(0, start)
+      libraryRangeEnd.value = Math.max(libraryRangeEnd.value, start + next.length)
+    }
     for (const item of items.value) {
       const path = keyOf(item)
       if (selectedPaths.value.includes(path)) selectedSnapshots.value.set(path, item)
     }
-    libraryOffset.value = Math.max(0, start)
     totalItems.value = Number(payload.total || 0)
     libraryCounts.value = payload.counts || { all: totalItems.value, comic: 0, book: 0, other: 0 }
     rootOrder.value = Array.isArray(payload.downloadDirs) ? payload.downloadDirs : rootOrder.value
@@ -287,8 +290,14 @@ function onLibraryWindowChange({ start, limit }) {
   fetchLibraryWindow(start, limit)
 }
 
+function loadMoreLibrary() {
+  if (!libraryHasMore.value || libraryWindowLoading.value) return
+  fetchLibraryWindow(libraryRangeEnd.value, initialLibraryLimit(), false, true)
+}
+
 async function load() {
   loading.value = true
+  libraryRangeEnd.value = 0
   try {
     await fetchLibraryWindow(0, initialLibraryLimit(), true)
   } catch (err) {
@@ -301,19 +310,8 @@ function reloadCurrentWindow() {
   clearSelection()
   const scroller = document.querySelector('.content-scroll')
   if (scroller) scroller.scrollTop = 0
-  libraryLastScrollTop = 0
+  libraryRangeEnd.value = 0
   load()
-}
-
-function handleLibraryScrollLock() {
-  const element = libraryScrollContainer
-  if (!element) return
-  const current = element.scrollTop
-  if ((loading.value || libraryWindowLoading.value) && current > libraryLastScrollTop) {
-    element.scrollTop = libraryLastScrollTop
-    return
-  }
-  libraryLastScrollTop = current
 }
 
 watch([kind, activeRoot, sortMode, sortDesc], reloadCurrentWindow)
@@ -845,9 +843,11 @@ function downloadReaderFile() {
       v-else
       class="local-library-grid"
       :items="filtered"
-      :total="totalItems"
+      :total="libraryRangeEnd"
       :offset="libraryOffset"
+      :loading-row="libraryHasMore"
       @window-change="onLibraryWindowChange"
+      @near-end="loadMoreLibrary"
     >
       <template #default="{ item, index }">
       <button
@@ -874,6 +874,18 @@ function downloadReaderFile() {
           </span>
         </span>
       </button>
+      </template>
+      <template #loading="{ columns }">
+        <div
+          class="local-library-loading-row"
+          :style="{ gridTemplateColumns: `repeat(${Math.max(1, columns || 1)}, minmax(0, 1fr))` }"
+        >
+          <span v-for="index in Math.max(1, columns || 1)" :key="index" class="local-library-skeleton-card">
+            <span class="local-library-skeleton-cover" />
+            <span class="local-library-skeleton-line" />
+            <span class="local-library-skeleton-line short" />
+          </span>
+        </div>
       </template>
     </WindowedGrid>
     <div v-if="selectionMode" class="local-selection-bar">
