@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.7.6"
+	appVersion    = "v0.7.7"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -3074,6 +3074,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			applyLatestChapterUpdatedAt(&cached)
+			cached.Comic.SourceURL = sourceComicPageURL(item.Info(), cached.Comic.ID)
 			writeJSON(w, http.StatusOK, convertComicDetail(cached, s.loadSettings(r.Context()).ConvertToSimplified))
 			if !refreshNeeded {
 				go s.refreshDiscoverDetail(sourceID, kind, comicID)
@@ -3086,6 +3087,7 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	detail.Comic.SourceURL = sourceComicPageURL(item.Info(), detail.Comic.ID)
 	if s.discover != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -3096,6 +3098,37 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	writeJSON(w, http.StatusOK, convertComicDetail(detail, s.loadSettings(r.Context()).ConvertToSimplified))
+}
+
+func sourceComicPageURL(info model.SourceInfo, comicID string) string {
+	homepage := strings.TrimRight(strings.TrimSpace(info.Homepage), "/")
+	if homepage == "" {
+		return ""
+	}
+	id := strings.Trim(strings.TrimSpace(comicID), "/")
+	if id == "" {
+		return homepage
+	}
+	parts := strings.Split(id, "/")
+	for index := range parts {
+		if parts[index] == "" || parts[index] == "." || parts[index] == ".." {
+			return homepage
+		}
+		parts[index] = url.PathEscape(parts[index])
+	}
+	escapedID := strings.Join(parts, "/")
+	switch strings.ToLower(strings.TrimSpace(info.ID)) {
+	case "baozimh":
+		return homepage + "/comic/" + escapedID
+	case "jmcomic":
+		return homepage + "/album/" + escapedID
+	case "biquge":
+		return homepage + "/" + escapedID + "/"
+	case "picacg":
+		return "https://picacomic.com/comic/" + escapedID
+	default:
+		return homepage
+	}
 }
 
 func (s *Server) loadComicDetail(ctx context.Context, item source.Source, account source.Account, comicID string) (model.ComicDetail, error) {
@@ -5728,6 +5761,7 @@ func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items
 	rootFilter := strings.TrimSpace(r.URL.Query().Get("root"))
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	kindFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	hasCover := r.URL.Query().Get("hasCover") == "1"
 	filtered := make([]localItemEntry, 0, len(items))
 	counts := map[string]int{"all": 0, "comic": 0, "book": 0, "other": 0}
 	for _, item := range items {
@@ -5739,6 +5773,9 @@ func (s *Server) writeLocalLibrary(w http.ResponseWriter, r *http.Request, items
 		counts[kind]++
 		if query != "" && !strings.Contains(strings.ToLower(item.Title), query) &&
 			!strings.Contains(strings.ToLower(item.Author), query) {
+			continue
+		}
+		if hasCover && item.Cover == "" && item.CachedCover == "" && item.SourceCover == "" {
 			continue
 		}
 		if kindFilter != "" && kindFilter != "all" && kind != kindFilter {

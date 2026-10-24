@@ -8,6 +8,7 @@ import {
   CircleCheck,
   Download,
   EyeOff,
+  ExternalLink,
   Languages,
   Loader2,
   Merge,
@@ -94,6 +95,7 @@ const sourceDefaultCoverBlur = computed(() => Boolean(sourceAccounts.value[sourc
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
+const sourcePageUrl = computed(() => String(comic.value?.sourceUrl || '').trim())
 const lastUpdated = computed(() => String(comic.value?.updatedAt || '').trim())
 // 详情页只显示到年月日：2026-10-18。
 const updatedDateLabel = computed(() => {
@@ -569,6 +571,17 @@ async function downloadSelected() {
         <img v-if="comic.cover" :src="cover()" :alt="comic.title" />
         <span v-else class="cover-fallback"><BookOpen :size="28" /></span>
         </div>
+        <a
+          v-if="sourcePageUrl"
+          class="detail-source-link"
+          :href="sourcePageUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+          :title="sourcePageUrl"
+        >
+          <ExternalLink :size="13" />
+          <span>{{ sourcePageUrl }}</span>
+        </a>
       </div>
       <div class="detail-info">
         <div class="detail-info-head">

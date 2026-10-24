@@ -82,7 +82,7 @@ onMounted(async () => {
   try {
     const [statsPayload, localPayload, downloadsPayload, sourcesPayload, upcomingPayload] = await Promise.all([
       api.stats(),
-      api.localLibrary(7, 0, true),
+      api.localLibrary(7, 0, true, { hasCover: true }),
       api.downloads(40, 0, 'active'),
       api.sources(),
       api.dashboardUpcoming(3),

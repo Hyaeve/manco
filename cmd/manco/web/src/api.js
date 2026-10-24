@@ -189,6 +189,7 @@ export const api = {
     if (options.root) params.set('root', options.root)
     if (options.sort) params.set('sort', options.sort)
     if (options.desc) params.set('desc', '1')
+    if (options.hasCover) params.set('hasCover', '1')
     const query = params.toString()
     return request(`/api/local${query ? `?${query}` : ''}`, { signal: options.signal })
   },

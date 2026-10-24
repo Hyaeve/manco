@@ -362,6 +362,44 @@ func TestLocalLibraryWindowFiltersSortsAndReturnsCounts(t *testing.T) {
 	}
 }
 
+func TestLocalLibraryHasCoverFilter(t *testing.T) {
+	items := []localItemEntry{
+		{Title: "有封面", Path: "/downloads|with-cover", Kind: "comic", Cover: "/downloads/with-cover/cover.jpg"},
+		{Title: "无封面", Path: "/downloads|without-cover", Kind: "comic"},
+	}
+	server := &Server{}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/local?limit=7&hasCover=1", nil)
+	server.writeLocalLibrary(recorder, request, items, []string{"/downloads"})
+	var payload struct {
+		Items []localItemEntry `json:"items"`
+		Total int              `json:"total"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 || payload.Items[0].Title != "有封面" {
+		t.Fatalf("cover-filtered items = %+v total=%d", payload.Items, payload.Total)
+	}
+}
+
+func TestSourceComicPageURL(t *testing.T) {
+	for _, test := range []struct {
+		info    model.SourceInfo
+		comicID string
+		want    string
+	}{
+		{model.SourceInfo{ID: "baozimh", Homepage: "https://baozimh.example/"}, "work-1", "https://baozimh.example/comic/work-1"},
+		{model.SourceInfo{ID: "jmcomic", Homepage: "https://jm.example"}, "123", "https://jm.example/album/123"},
+		{model.SourceInfo{ID: "biquge", Homepage: "https://book.example/"}, "123/456", "https://book.example/123/456/"},
+		{model.SourceInfo{ID: "custom", Homepage: "https://source.example/"}, "opaque-id", "https://source.example"},
+	} {
+		if got := sourceComicPageURL(test.info, test.comicID); got != test.want {
+			t.Fatalf("sourceComicPageURL(%s, %s) = %q, want %q", test.info.ID, test.comicID, got, test.want)
+		}
+	}
+}
+
 func TestLocalSubscriptionRootsExcludeArchivedAndJobOnlyDirectories(t *testing.T) {
 	root := t.TempDir()
 	repository, err := store.Open(filepath.Join(root, "roots.db"))

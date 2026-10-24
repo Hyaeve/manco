@@ -2603,6 +2603,41 @@
   gap: 0;
 }
 
+.detail-source-link {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-decoration: none;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease;
+}
+
+.detail-source-link:hover,
+.detail-source-link:focus-visible {
+  background: var(--select-highlight);
+  color: var(--primary-strong);
+}
+
+.detail-source-link svg {
+  flex: 0 0 13px;
+}
+
+.detail-source-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .detail-cover-back {
   position: absolute;
   top: 14px;

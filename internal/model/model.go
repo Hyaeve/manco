@@ -183,6 +183,7 @@ type Comic struct {
 	ID                 string   `json:"id"`
 	Title              string   `json:"title"`
 	Cover              string   `json:"cover"`
+	SourceURL          string   `json:"sourceUrl,omitempty"`
 	CachedCover        string   `json:"cachedCover,omitempty"`
 	Cached             bool     `json:"cached,omitempty"`
 	Author             string   `json:"author,omitempty"`
