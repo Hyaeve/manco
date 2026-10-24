@@ -31,6 +31,36 @@ func TestSourceDownloadSettingsCoverBlur(t *testing.T) {
 	}
 }
 
+func TestSourceBrowseFiltersPersistAcrossReopen(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "browse-filters.db")
+	first, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := first.SetSetting(ctx, "source_browse_filters", `{"baozimh":{"category":"new","sort":"popular"}}`); err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	server := &Server{store: reopened}
+	filters := server.sourceBrowseFilters(ctx)
+	if got := filters["baozimh"]["category"]; got != "new" {
+		t.Fatalf("category = %q, want new", got)
+	}
+	if got := filters["baozimh"]["sort"]; got != "popular" {
+		t.Fatalf("sort = %q, want popular", got)
+	}
+}
+
 type lazyFilterFixture struct {
 	info    model.SourceInfo
 	filters []model.FilterGroup

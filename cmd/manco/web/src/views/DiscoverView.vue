@@ -113,6 +113,28 @@ function persistFilters() {
   localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(savedFilters.value))
 }
 
+function applyServerBrowseFilters(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+  const merged = { ...savedFilters.value }
+  for (const [sourceId, values] of Object.entries(raw)) {
+    if (!values || typeof values !== 'object' || Array.isArray(values)) continue
+    const normalized = {}
+    for (const [key, value] of Object.entries(values)) {
+      const cleanKey = String(key || '').trim()
+      const cleanValue = String(value ?? '').trim()
+      if (cleanKey && cleanValue) normalized[cleanKey] = cleanValue
+    }
+    if (Object.keys(normalized).length) merged[sourceId] = normalized
+  }
+  savedFilters.value = merged
+  persistFilters()
+  for (const source of allSources.value) {
+    if (!(source.filters || []).length) continue
+    const panel = panels.value[source.id]
+    if (panel) panel.filters = sourceFilters(source)
+  }
+}
+
 function persistSourceBrowseFilters(source, filters) {
   if (!source?.id) return
   void api.updateSource(source.id, { browseFilters: { ...filters } }).catch(() => {})
@@ -219,6 +241,7 @@ async function loadSources() {
     const payload = await api.sources()
     allSources.value = payload.items || []
     sourceAccounts.value = payload.accounts || {}
+    applyServerBrowseFilters(payload.browseFilters)
     const requestedKind = ['comic', 'book', 'other'].includes(route.query.kind) ? route.query.kind : ''
     activeKind.value = requestedKind || (['book', 'other'].includes(nav.kind) ? nav.kind : 'comic')
     const preferred = typeof route.query.source === 'string' ? route.query.source : nav.source || ''

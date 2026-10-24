@@ -615,9 +615,10 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    s.filteredSourceList(hidden, s.disabledCategories(r.Context())),
-		"accounts": accounts,
-		"repoUrl":  s.sourceRepo(r.Context()),
+		"items":         s.filteredSourceList(hidden, s.disabledCategories(r.Context())),
+		"accounts":      accounts,
+		"browseFilters": s.sourceBrowseFilters(r.Context()),
+		"repoUrl":       s.sourceRepo(r.Context()),
 	})
 }
 
