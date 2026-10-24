@@ -65,6 +65,14 @@ function startBangumiRotation() {
   }, 12000)
 }
 
+function selectBangumi(index) {
+  if (index === bangumiIndex.value || !bangumiItems.value[index]) return
+  bangumiDirection.value = index < bangumiIndex.value ? 'prev' : 'next'
+  bangumiIndex.value = index
+  preloadBangumiCover(index + 1)
+  startBangumiRotation()
+}
+
 function preloadBangumiCover(index) {
   const cover = bangumiItems.value[index % bangumiItems.value.length]?.cover
   if (!cover) return
@@ -118,8 +126,24 @@ async function submit() {
       <strong>{{ activeBangumi.title }}</strong>
       <p>{{ activeBangumi.summary }}</p>
     </a>
+    <div
+      v-if="activeBangumi && bangumiItems.length > 1"
+      class="login-bangumi-dots"
+      aria-label="Bangumi 近期注目切换"
+    >
+      <button
+        v-for="(item, index) in bangumiItems"
+        :key="item.id"
+        type="button"
+        :class="{ active: index === bangumiIndex }"
+        :aria-label="`切换到 ${item.title}`"
+        @mouseenter="selectBangumi(index)"
+        @focus="selectBangumi(index)"
+        @click="selectBangumi(index)"
+      />
+    </div>
     <div class="login-card">
-      <MancoLogo class="login-logo" :size="54" />
+      <MancoLogo class="login-logo" :size="72" />
       <div class="login-title">
         <h1>{{ setupRequired ? '创建账号' : '登录' }}</h1>
         <span v-if="setupRequired">首次使用</span>

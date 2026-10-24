@@ -2466,7 +2466,7 @@
 .login-page.has-bangumi {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(360px, 1fr);
+  grid-template-columns: minmax(0, 62fr) minmax(420px, 38fr);
   grid-template-rows: minmax(100vh, auto);
   place-items: stretch;
   overflow: hidden;
@@ -2493,7 +2493,6 @@
 .login-bangumi-backdrop {
   background-position: center;
   background-size: cover;
-  filter: saturate(1.02);
 }
 
 .login-bangumi-shade {
@@ -2508,10 +2507,39 @@
   align-self: center;
   justify-self: center;
   z-index: 2;
-  width: min(390px, calc(100% - 48px));
-  background: color-mix(in srgb, #fffdf6 92%, transparent);
-  backdrop-filter: blur(18px) saturate(1.08);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  width: min(460px, calc(100% - 72px));
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.login-page.has-bangumi .login-logo {
+  margin: 0 0 20px;
+}
+
+.login-page.has-bangumi .login-title {
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 0;
+}
+
+.login-page.has-bangumi .login-title h1 {
+  font-size: clamp(28px, 2.4vw, 36px);
+  line-height: 1.12;
+}
+
+.login-page.has-bangumi .login-form {
+  gap: 14px;
+  margin-top: 28px;
+}
+
+.login-page.has-bangumi .login-form .input,
+.login-page.has-bangumi .login-submit {
+  min-height: 48px;
 }
 
 .login-bangumi-feature {
@@ -2520,12 +2548,69 @@
   left: clamp(28px, 4vw, 72px);
   z-index: 1;
   display: flex;
-  width: min(620px, calc(66.666vw - 96px));
+  width: min(620px, calc(62vw - 96px));
   flex-direction: column;
   gap: 10px;
   color: #fffdf6;
   text-decoration: none;
   text-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+}
+
+.login-bangumi-dots {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: end;
+  justify-self: end;
+  z-index: 2;
+  display: flex;
+  gap: 0;
+  margin: 0 24px 22px 0;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: rgba(17, 20, 17, 0.34);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(12px) saturate(1.05);
+  -webkit-backdrop-filter: blur(12px) saturate(1.05);
+}
+
+.login-bangumi-dots button {
+  position: relative;
+  display: grid;
+  width: 22px;
+  height: 18px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.login-bangumi-dots button::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 253, 246, 0.48);
+  content: '';
+  transition:
+    width 0.18s cubic-bezier(0.22, 1.2, 0.36, 1),
+    background-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+  will-change: width, transform;
+}
+
+.login-bangumi-dots button.active::before,
+.login-bangumi-dots button:hover::before,
+.login-bangumi-dots button:focus-visible::before {
+  width: 22px;
+  background: #f4b864;
+  box-shadow: 0 0 0 3px rgba(244, 184, 100, 0.2);
+  transform: scaleY(1.08);
+}
+
+.login-bangumi-dots button:focus-visible {
+  outline: none;
 }
 
 .login-bangumi-feature > span {
@@ -2578,28 +2663,45 @@
 }
 
 [data-theme='dark'] .login-page.has-bangumi .login-card {
-  background: rgba(31, 34, 29, 0.88);
+  background: transparent;
 }
 
 @media (max-width: 900px) {
   .login-page.has-bangumi {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(100vh, auto);
+    grid-template-rows: 44vh auto;
+    min-height: 100vh;
     justify-items: center;
-    padding: 96px 20px 24px;
+    padding: 0;
+    overflow: hidden;
+    background: color-mix(in srgb, #fffdf7 94%, #f2e5ca);
   }
 
   .login-bangumi-scene {
-    position: absolute;
-    inset: 0;
-    min-height: 100vh;
+    position: relative;
+    grid-column: 1;
+    grid-row: 1;
+    inset: auto;
+    width: 100%;
+    height: 44vh;
+    min-height: 44vh;
   }
 
   .login-page.has-bangumi .login-card {
     grid-column: 1;
+    grid-row: 2;
+    align-self: center;
+    width: min(430px, calc(100% - 40px));
+    padding: 34px 0 42px;
+  }
+
+  .login-bangumi-dots {
+    grid-column: 1;
     grid-row: 1;
-    width: min(390px, 100%);
+    align-self: end;
+    justify-self: end;
+    margin: 0 16px 14px 0;
   }
 
   .login-bangumi-shade {
@@ -2608,9 +2710,9 @@
 
   .login-bangumi-feature {
     top: 20px;
-    right: 20px;
+    right: 18px;
     bottom: auto;
-    left: 20px;
+    left: 18px;
     width: auto;
   }
 
