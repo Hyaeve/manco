@@ -392,11 +392,29 @@ func TestSourceComicPageURL(t *testing.T) {
 		{model.SourceInfo{ID: "baozimh", Homepage: "https://baozimh.example/"}, "work-1", "https://baozimh.example/comic/work-1"},
 		{model.SourceInfo{ID: "jmcomic", Homepage: "https://jm.example"}, "123", "https://jm.example/album/123"},
 		{model.SourceInfo{ID: "biquge", Homepage: "https://book.example/"}, "123/456", "https://book.example/123/456/"},
+		{model.SourceInfo{ID: "shencou", Homepage: "https://book.example/"}, "123", "https://book.example/books/read_123.html"},
+		{model.SourceInfo{ID: "gutenberg", Homepage: "https://www.gutenberg.org/"}, "456", "https://www.gutenberg.org/ebooks/456"},
+		{model.SourceInfo{ID: "zlibrary", Homepage: "https://z.example/"}, "789~hash", "https://z.example/book/789/hash"},
+		{model.SourceInfo{ID: "custom", Homepage: "https://source.example/"}, "https://detail.example/work/7", "https://detail.example/work/7"},
 		{model.SourceInfo{ID: "custom", Homepage: "https://source.example/"}, "opaque-id", "https://source.example"},
 	} {
 		if got := sourceComicPageURL(test.info, test.comicID); got != test.want {
 			t.Fatalf("sourceComicPageURL(%s, %s) = %q, want %q", test.info.ID, test.comicID, got, test.want)
 		}
+	}
+	if got := resolvedSourceComicPageURL(
+		model.SourceInfo{ID: "plugin", Homepage: "https://plugin.example/"},
+		model.Comic{ID: "opaque", SourceURL: "https://plugin.example/work/42"},
+		"",
+	); got != "https://plugin.example/work/42" {
+		t.Fatalf("resolvedSourceComicPageURL() = %q", got)
+	}
+	if got := resolvedSourceComicPageURL(
+		model.SourceInfo{ID: "plugin", Homepage: "https://plugin.example/"},
+		model.Comic{ID: "opaque", SourceURL: "https://plugin.example/"},
+		"https://plugin.example/work/43",
+	); got != "https://plugin.example/work/43" {
+		t.Fatalf("resolvedSourceComicPageURL(preferred) = %q", got)
 	}
 }
 

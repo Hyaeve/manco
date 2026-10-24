@@ -146,6 +146,12 @@ type DetailWithChaptersSource interface {
 	DetailWithChapters(ctx context.Context, account Account, comicID string) (model.ComicDetail, error)
 }
 
+// ComicPageURLSource resolves a browser-openable work page from the opaque
+// source item identifier without making another upstream request.
+type ComicPageURLSource interface {
+	ComicPageURL(comicID string) string
+}
+
 type LoginResult struct {
 	Token    string
 	Username string

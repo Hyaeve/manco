@@ -577,7 +577,6 @@ async function downloadSelected() {
           :href="sourcePageUrl"
           target="_blank"
           rel="noopener noreferrer"
-          :title="sourcePageUrl"
         >
           <ExternalLink :size="13" />
           <span>{{ sourcePageUrl }}</span>

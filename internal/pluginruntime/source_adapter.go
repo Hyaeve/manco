@@ -38,6 +38,7 @@ type Adapter struct {
 }
 
 var _ source.ChapterArchiveSource = (*Adapter)(nil)
+var _ source.ComicPageURLSource = (*Adapter)(nil)
 var _ source.DetailWithChaptersSource = (*Adapter)(nil)
 var _ source.PageFileSource = (*Adapter)(nil)
 var _ source.MediaSource = (*Adapter)(nil)
@@ -80,6 +81,14 @@ func NewAdapter(manager *Manager, item model.CustomSource) (*Adapter, error) {
 }
 
 func (a *Adapter) Info() model.SourceInfo { return a.info }
+
+func (a *Adapter) ComicPageURL(comicID string) string {
+	content, err := decodeObject(comicID)
+	if err != nil {
+		return ""
+	}
+	return a.publicContentURL(content)
+}
 
 func (a *Adapter) Search(ctx context.Context, account source.Account, query string, page int) (model.SearchResult, error) {
 	if page < 1 {
@@ -728,6 +737,7 @@ func (a *Adapter) toComic(item map[string]any) model.Comic {
 		ID:                 id,
 		Title:              firstNonEmpty(stringValue(item["title"]), stringValue(item["name"])),
 		Cover:              firstNonEmpty(stringValue(item["largeCoverUrl"]), stringValue(item["coverUrl"])),
+		SourceURL:          a.publicContentURL(item),
 		Description:        stringValue(item["description"]),
 		Status:             stringValue(item["state"]),
 		Author:             joinStrings(item["authors"]),
@@ -739,6 +749,36 @@ func (a *Adapter) toComic(item map[string]any) model.Comic {
 		comic.ChapterCount = len(values)
 	}
 	return comic
+}
+
+func (a *Adapter) publicContentURL(item map[string]any) string {
+	return pluginPublicContentURL(firstNonEmpty(
+		stringValue(item["publicUrl"]),
+		stringValue(item["public_url"]),
+		stringValue(item["url"]),
+	), a.info.Homepage)
+}
+
+func pluginPublicContentURL(raw, homepage string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	target, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if !target.IsAbs() {
+		base, baseErr := url.Parse(strings.TrimSpace(homepage))
+		if baseErr != nil || !base.IsAbs() {
+			return ""
+		}
+		target = base.ResolveReference(target)
+	}
+	if target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
+		return ""
+	}
+	return target.String()
 }
 
 func latestChapterTitle(item map[string]any) string {

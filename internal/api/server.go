@@ -3082,7 +3082,9 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			applyLatestChapterUpdatedAt(&cached)
-			cached.Comic.SourceURL = sourceComicPageURL(item.Info(), cached.Comic.ID)
+			cached.Comic.SourceURL = resolvedSourceComicPageURL(
+				item.Info(), cached.Comic, sourceComicPageURLHint(item, cached.Comic.ID),
+			)
 			writeJSON(w, http.StatusOK, convertComicDetail(cached, s.loadSettings(r.Context()).ConvertToSimplified))
 			if !refreshNeeded {
 				go s.refreshDiscoverDetail(sourceID, kind, comicID)
@@ -3095,7 +3097,9 @@ func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	detail.Comic.SourceURL = sourceComicPageURL(item.Info(), detail.Comic.ID)
+	detail.Comic.SourceURL = resolvedSourceComicPageURL(
+		item.Info(), detail.Comic, sourceComicPageURLHint(item, detail.Comic.ID),
+	)
 	if s.discover != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -3117,6 +3121,10 @@ func sourceComicPageURL(info model.SourceInfo, comicID string) string {
 	if id == "" {
 		return homepage
 	}
+	if parsed, err := url.Parse(id); err == nil && parsed.IsAbs() &&
+		(parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+		return parsed.String()
+	}
 	parts := strings.Split(id, "/")
 	for index := range parts {
 		if parts[index] == "" || parts[index] == "." || parts[index] == ".." {
@@ -3134,9 +3142,39 @@ func sourceComicPageURL(info model.SourceInfo, comicID string) string {
 		return homepage + "/" + escapedID + "/"
 	case "picacg":
 		return "https://picacomic.com/comic/" + escapedID
+	case "shencou":
+		return homepage + "/books/read_" + escapedID + ".html"
+	case "gutenberg":
+		return "https://www.gutenberg.org/ebooks/" + escapedID
+	case "zlibrary":
+		book := strings.SplitN(id, "~", 2)
+		path := homepage + "/book/" + url.PathEscape(book[0])
+		if len(book) == 2 && strings.TrimSpace(book[1]) != "" {
+			path += "/" + url.PathEscape(book[1])
+		}
+		return path
 	default:
 		return homepage
 	}
+}
+
+func sourceComicPageURLHint(item source.Source, comicID string) string {
+	if resolver, ok := item.(source.ComicPageURLSource); ok {
+		return strings.TrimSpace(resolver.ComicPageURL(comicID))
+	}
+	return ""
+}
+
+func resolvedSourceComicPageURL(info model.SourceInfo, comic model.Comic, preferred string) string {
+	direct := strings.TrimSpace(preferred)
+	if direct == "" {
+		direct = strings.TrimSpace(comic.SourceURL)
+	}
+	if parsed, err := url.Parse(direct); err == nil && parsed.IsAbs() &&
+		(parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+		return parsed.String()
+	}
+	return sourceComicPageURL(info, comic.ID)
 }
 
 func (s *Server) loadComicDetail(ctx context.Context, item source.Source, account source.Account, comicID string) (model.ComicDetail, error) {

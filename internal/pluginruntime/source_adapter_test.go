@@ -119,7 +119,8 @@ func TestSortFilterGroups(t *testing.T) {
 func TestToComicExtractsLatestChapterTitleWithoutKeepingChapters(t *testing.T) {
 	adapter := &Adapter{info: model.SourceInfo{ID: "plugin-source"}}
 	comic := adapter.toComic(map[string]any{
-		"title": "示例作品",
+		"title":     "示例作品",
+		"publicUrl": "https://plugin.example/works/42",
 		"chapters": []any{
 			map[string]any{"title": "第2话", "number": float64(2)},
 			map[string]any{
@@ -139,11 +140,35 @@ func TestToComicExtractsLatestChapterTitleWithoutKeepingChapters(t *testing.T) {
 	if comic.UpdatedAt != "2026-10-17T04:00:00Z" {
 		t.Fatalf("updated at = %q, want newest chapter timestamp", comic.UpdatedAt)
 	}
+	if comic.SourceURL != "https://plugin.example/works/42" {
+		t.Fatalf("source URL = %q", comic.SourceURL)
+	}
+	if resolved := adapter.ComicPageURL(comic.ID); resolved != comic.SourceURL {
+		t.Fatalf("ComicPageURL() = %q, want %q", resolved, comic.SourceURL)
+	}
 	identity, err := decodeObject(comic.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := identity["chapters"]; exists {
 		t.Fatal("comic ID retained chapter payloads")
+	}
+}
+
+func TestPluginPublicContentURL(t *testing.T) {
+	for _, test := range []struct {
+		raw      string
+		homepage string
+		want     string
+	}{
+		{"https://plugin.example/work/1", "https://plugin.example/", "https://plugin.example/work/1"},
+		{"/work/2", "https://plugin.example/", "https://plugin.example/work/2"},
+		{"//cdn.plugin.example/work/3", "https://plugin.example/", "https://cdn.plugin.example/work/3"},
+		{"javascript:alert(1)", "https://plugin.example/", ""},
+		{"", "https://plugin.example/", ""},
+	} {
+		if got := pluginPublicContentURL(test.raw, test.homepage); got != test.want {
+			t.Fatalf("pluginPublicContentURL(%q) = %q, want %q", test.raw, got, test.want)
+		}
 	}
 }

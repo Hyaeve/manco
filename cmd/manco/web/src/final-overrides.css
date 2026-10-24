@@ -2301,6 +2301,37 @@
   font-weight: 550;
   cursor: pointer;
   white-space: nowrap;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.author-pill:hover,
+.author-pill:focus-visible {
+  border-color: var(--primary-strong);
+  background: color-mix(in srgb, var(--primary-soft) 74%, var(--surface));
+  color: var(--primary-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-soft) 58%, transparent);
+  transform: translateY(-1px);
+}
+
+.detail-info .tag-pill {
+  cursor: default;
+  transition:
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.detail-info .tag-pill:hover {
+  border-color: color-mix(in srgb, var(--primary-strong) 64%, var(--border));
+  background: color-mix(in srgb, var(--primary-soft) 72%, var(--surface));
+  color: var(--primary-strong);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-soft) 48%, transparent);
 }
 
 .detail-info .description {
