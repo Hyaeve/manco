@@ -97,7 +97,7 @@ async function submit() {
       await api.register({ username: username.value, password: password.value })
     }
     await auth.login(username.value, password.value)
-    const target = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    const target = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     router.push(target)
   } catch (err) {
     error.value = err.message

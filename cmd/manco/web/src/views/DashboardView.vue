@@ -297,33 +297,33 @@ function formatNextRun(value) {
         <div class="overview-stat-grid">
           <div class="overview-stat">
             <Rss :size="30" :stroke-width="1.65" />
-            <strong>{{ stats.subscriptions || 0 }}</strong>
             <span>订阅作品</span>
+            <strong>{{ stats.subscriptions || 0 }}</strong>
           </div>
           <div class="overview-stat">
             <Library :size="30" :stroke-width="1.65" />
-            <strong>{{ libraryTotal }}</strong>
             <span>本地仓库</span>
+            <strong>{{ libraryTotal }}</strong>
           </div>
           <div class="overview-stat is-success">
             <CheckCircle2 :size="30" :stroke-width="1.65" />
-            <strong>{{ stats.completedJobs || 0 }}</strong>
             <span>完成章节</span>
+            <strong>{{ stats.completedJobs || 0 }}</strong>
           </div>
           <div class="overview-stat is-danger">
             <AlertTriangle :size="30" :stroke-width="1.65" />
-            <strong>{{ stats.failedJobs || 0 }}</strong>
             <span>失败章节</span>
+            <strong>{{ stats.failedJobs || 0 }}</strong>
           </div>
           <div class="overview-stat">
             <ArrowDownToLine :size="30" :stroke-width="1.65" />
-            <strong>{{ stats.runningJobs || 0 }}</strong>
             <span>正在下载</span>
+            <strong>{{ stats.runningJobs || 0 }}</strong>
           </div>
           <div class="overview-stat">
             <ListOrdered :size="30" :stroke-width="1.65" />
-            <strong>{{ stats.queuedJobs || 0 }}</strong>
             <span>排队章节</span>
+            <strong>{{ stats.queuedJobs || 0 }}</strong>
           </div>
         </div>
       </section>
@@ -875,7 +875,7 @@ function formatNextRun(value) {
   flex: 1;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   margin-top: 10px;
 }
@@ -883,8 +883,10 @@ function formatNextRun(value) {
 .overview-stat {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
   align-items: center;
-  gap: 2px 10px;
+  gap: 1px 10px;
   min-height: 0;
   padding: 8px 12px 8px 16px;
   border: 1px solid var(--border);
@@ -901,13 +903,14 @@ function formatNextRun(value) {
 }
 
 .overview-stat strong {
-  font-size: 20px;
-  line-height: 1;
+  font-size: 21px;
+  line-height: 1.05;
 }
 
 .overview-stat span {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .overview-stat.is-success svg {

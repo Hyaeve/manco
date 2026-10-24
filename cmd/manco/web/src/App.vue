@@ -119,7 +119,7 @@ const activeTheme = computed(() => themeOptions.find((item) => item.id === theme
 const media = window.matchMedia('(prefers-color-scheme: dark)')
 
 const navItems = [
-  { name: 'dashboard', label: '信息总览', to: '/', icon: LayoutDashboard },
+  { name: 'dashboard', label: '信息总览', to: '/dashboard', icon: LayoutDashboard },
   { name: 'discover', label: '探索发现', to: '/discover', icon: Compass },
   { name: 'subscriptions', label: '订阅计划', to: '/subscriptions', icon: Rss },
   { name: 'downloads', label: '任务列表', to: '/downloads', icon: TaskListIcon },

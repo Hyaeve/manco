@@ -3,7 +3,8 @@ import { useAuthStore } from './stores/auth'
 
 const routes = [
   { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true } },
-  { path: '/', name: 'dashboard', component: () => import('./views/DashboardView.vue') },
+  { path: '/', redirect: { name: 'dashboard' } },
+  { path: '/dashboard', name: 'dashboard', component: () => import('./views/DashboardView.vue') },
   { path: '/discover', name: 'discover', component: () => import('./views/DiscoverView.vue') },
   { path: '/search', name: 'search', component: () => import('./views/SearchView.vue') },
   {
@@ -20,7 +21,7 @@ const routes = [
   { path: '/sources', name: 'sources', component: () => import('./views/SourcesView.vue') },
   { path: '/settings', name: 'settings', component: () => import('./views/SettingsView.vue') },
   { path: '/logs', name: 'logs', component: () => import('./views/LogsView.vue') },
-  { path: '/:pathMatch(.*)*', redirect: '/' },
+  { path: '/:pathMatch(.*)*', redirect: { name: 'dashboard' } },
 ]
 
 export const router = createRouter({
