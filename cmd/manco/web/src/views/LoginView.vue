@@ -108,9 +108,13 @@ async function submit() {
 </script>
 
 <template>
-  <div class="login-page" :class="{ 'has-bangumi': activeBangumi }">
-    <div v-if="activeBangumi" class="login-bangumi-scene" aria-hidden="true">
-      <Transition :name="`login-bangumi-${bangumiDirection}`">
+  <div
+    class="login-page split-layout"
+    :class="{ 'has-bangumi': activeBangumi, 'has-fallback-visual': !activeBangumi }"
+  >
+    <div class="login-bangumi-scene" aria-hidden="true">
+      <div v-if="!activeBangumi" class="login-fallback-visual" />
+      <Transition v-if="activeBangumi" :name="`login-bangumi-${bangumiDirection}`">
         <div :key="activeBangumi.id" class="login-bangumi-backdrop" :style="bangumiBackground" />
       </Transition>
       <div class="login-bangumi-shade" />

@@ -407,13 +407,21 @@ watch(pageSize, () => {
 
 async function switchKind(kind) {
   if (!['bangumi', 'comic', 'book', 'other'].includes(kind) || kind === activeKind.value) return
+  rememberPosition()
   clearDiscoverSelection()
+  const nav = readDiscoverNav()
   activeKind.value = kind
-  activeId.value = sources.value[0]?.id || ''
+  const rememberedSource = String(nav.sourceByKind?.[kind] || '').trim()
+  const remembered = sources.value.find((source) => source.id === rememberedSource)
+  activeId.value = remembered?.id || sources.value[0]?.id || ''
   if (route.query.kind !== kind || route.query.source !== activeId.value) {
     router.replace({ name: 'discover', query: { kind, source: activeId.value } })
   }
   rememberPosition()
+  restoreSourceStripScroll({
+    source: activeId.value,
+    sourceScrollLeft: nav.sourceScrollLeftByKind?.[kind] || 0,
+  })
   scrollPageTop()
   if (activeId.value) void ensure(activeSource.value, panelFor(activeSource.value), 1)
 }
@@ -611,12 +619,22 @@ function jumpToPage() {
 }
 
 function rememberPosition() {
+  const nav = readDiscoverNav()
+  const sourceScrollLeft = sourceStripRef.value?.scrollLeft || 0
   saveDiscoverNav({
     kind: activeKind.value,
     source: activeId.value,
     page: activePanel.value?.page || 1,
     scrollTop: document.querySelector('.content-scroll')?.scrollTop || 0,
-    sourceScrollLeft: sourceStripRef.value?.scrollLeft || 0,
+    sourceScrollLeft,
+    sourceByKind: {
+      ...(nav.sourceByKind || {}),
+      [activeKind.value]: activeId.value,
+    },
+    sourceScrollLeftByKind: {
+      ...(nav.sourceScrollLeftByKind || {}),
+      [activeKind.value]: sourceScrollLeft,
+    },
   })
 }
 

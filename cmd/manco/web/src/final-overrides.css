@@ -1896,14 +1896,16 @@
   gap: 8px;
   height: 34px;
   padding: 0 8px 0 11px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--border));
   border-radius: 999px;
-  background: var(--surface-muted);
+  background: color-mix(in srgb, var(--surface) 76%, var(--primary-soft));
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--primary) 8%, transparent);
   color: var(--text-muted);
 }
 .discover-search-field:focus-within {
   border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
   background: var(--surface);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-soft) 42%, transparent);
 }
 .discover-search-input {
   flex: 1 1 auto;
@@ -2462,8 +2464,8 @@
   to { background-position: -120% 0, 0 0; }
 }
 
-/* 登录页 Bangumi 近期注目背景：无代理或请求失败时不渲染。 */
-.login-page.has-bangumi {
+/* 登录页固定左图右栏；Bangumi 不可用时左侧使用本地猫箱视觉。 */
+.login-page.split-layout {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 62fr) minmax(420px, 38fr);
@@ -2490,6 +2492,29 @@
   background: #d9d0bd;
 }
 
+.login-fallback-visual {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 248, 226, 0.9), transparent 46%),
+    linear-gradient(135deg, #f3e8cd, #dfb96d 58%, #c88b42),
+    #ead9b8;
+}
+
+.login-fallback-visual::after {
+  position: absolute;
+  inset: 7%;
+  background: url('/loading-box-cat.png') center / contain no-repeat;
+  content: '';
+  filter: drop-shadow(0 28px 48px rgba(58, 39, 21, 0.2));
+}
+
+.login-page.has-fallback-visual .login-bangumi-shade {
+  background:
+    radial-gradient(circle at 50% 42%, transparent 0 38%, rgba(79, 52, 24, 0.08) 76%),
+    linear-gradient(180deg, rgba(255, 250, 239, 0.08), rgba(91, 61, 31, 0.12));
+}
+
 .login-bangumi-backdrop {
   background-position: center;
   background-size: cover;
@@ -2501,7 +2526,7 @@
     linear-gradient(0deg, rgba(16, 18, 15, 0.54), transparent 62%);
 }
 
-.login-page.has-bangumi .login-card {
+.login-page.split-layout .login-card {
   grid-column: 2;
   grid-row: 1;
   align-self: center;
@@ -2517,39 +2542,39 @@
   -webkit-backdrop-filter: none;
 }
 
-.login-page.has-bangumi .login-brand {
+.login-page.split-layout .login-brand {
   width: min(360px, 100%);
   gap: 6px;
   margin: 0 0 30px;
 }
 
-.login-page.has-bangumi .login-brand .brand-tagline {
+.login-page.split-layout .login-brand .brand-tagline {
   font-size: 13px;
 }
 
-.login-page.has-bangumi .login-title {
+.login-page.split-layout .login-title {
   align-items: flex-start;
   gap: 8px;
   margin-top: 0;
 }
 
-.login-page.has-bangumi .login-title h1 {
+.login-page.split-layout .login-title h1 {
   font-size: clamp(28px, 2.4vw, 36px);
   line-height: 1.12;
 }
 
-.login-page.has-bangumi .login-form {
+.login-page.split-layout .login-form {
   width: min(380px, 100%);
   gap: 18px;
   margin-top: 32px;
 }
 
-.login-page.has-bangumi .login-brand + .login-form {
+.login-page.split-layout .login-brand + .login-form {
   margin-top: 24px;
 }
 
-.login-page.has-bangumi .login-form .input,
-.login-page.has-bangumi .login-submit {
+.login-page.split-layout .login-form .input,
+.login-page.split-layout .login-submit {
   min-height: 48px;
 }
 
@@ -2738,11 +2763,11 @@
   transform: translate3d(-10px, 0, 0);
 }
 
-[data-theme='dark'] .login-page.has-bangumi {
+[data-theme='dark'] .login-page.split-layout {
   background: #171915;
 }
 
-[data-theme='dark'] .login-page.has-bangumi .login-card {
+[data-theme='dark'] .login-page.split-layout .login-card {
   background: transparent;
 }
 
@@ -2771,7 +2796,7 @@
 }
 
 @media (max-width: 900px) {
-  .login-page.has-bangumi {
+  .login-page.split-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 44vh auto;
@@ -2792,7 +2817,7 @@
     min-height: 44vh;
   }
 
-  .login-page.has-bangumi .login-card {
+  .login-page.split-layout .login-card {
     grid-column: 1;
     grid-row: 2;
     align-self: center;
@@ -2800,12 +2825,12 @@
     padding: 34px 0 42px;
   }
 
-  .login-page.has-bangumi .login-brand {
+  .login-page.split-layout .login-brand {
     width: min(310px, 100%);
     margin-bottom: 24px;
   }
 
-  .login-page.has-bangumi .login-form {
+  .login-page.split-layout .login-form {
     width: min(340px, 100%);
   }
 
