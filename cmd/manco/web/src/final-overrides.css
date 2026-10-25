@@ -2539,6 +2539,7 @@
 }
 
 .login-page.has-bangumi .login-form {
+  width: min(380px, 100%);
   gap: 18px;
   margin-top: 32px;
 }
@@ -2649,19 +2650,49 @@
 .login-bangumi-next-leave-active,
 .login-bangumi-prev-enter-active,
 .login-bangumi-prev-leave-active {
-  transition: opacity 0.85s ease, transform 1.2s cubic-bezier(0.22, 0.7, 0.25, 1);
+  backface-visibility: hidden;
+  transition:
+    opacity 0.9s ease,
+    transform 1.35s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
 }
 
 .login-bangumi-next-enter-from,
 .login-bangumi-prev-leave-to {
   opacity: 0;
-  transform: translateX(2.2%) scale(1.04);
+  transform: translate3d(2.4%, 0, 0);
 }
 
 .login-bangumi-next-leave-to,
 .login-bangumi-prev-enter-from {
   opacity: 0;
-  transform: translateX(-2.2%) scale(1.04);
+  transform: translate3d(-1.6%, 0, 0);
+}
+
+.login-bangumi-copy-next-enter-active,
+.login-bangumi-copy-prev-enter-active {
+  transition:
+    opacity 0.52s ease,
+    transform 0.82s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.login-bangumi-copy-next-leave-active,
+.login-bangumi-copy-prev-leave-active {
+  transition:
+    opacity 0.22s ease,
+    transform 0.34s ease;
+}
+
+.login-bangumi-copy-next-enter-from,
+.login-bangumi-copy-prev-leave-to {
+  opacity: 0;
+  transform: translate3d(18px, 0, 0);
+}
+
+.login-bangumi-copy-next-leave-to,
+.login-bangumi-copy-prev-enter-from {
+  opacity: 0;
+  transform: translate3d(-10px, 0, 0);
 }
 
 [data-theme='dark'] .login-page.has-bangumi {
@@ -2670,6 +2701,30 @@
 
 [data-theme='dark'] .login-page.has-bangumi .login-card {
   background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-bangumi-next-enter-active,
+  .login-bangumi-next-leave-active,
+  .login-bangumi-prev-enter-active,
+  .login-bangumi-prev-leave-active,
+  .login-bangumi-copy-next-enter-active,
+  .login-bangumi-copy-prev-enter-active,
+  .login-bangumi-copy-next-leave-active,
+  .login-bangumi-copy-prev-leave-active {
+    transition-duration: 0.18s;
+  }
+
+  .login-bangumi-next-enter-from,
+  .login-bangumi-next-leave-to,
+  .login-bangumi-prev-enter-from,
+  .login-bangumi-prev-leave-to,
+  .login-bangumi-copy-next-enter-from,
+  .login-bangumi-copy-next-leave-to,
+  .login-bangumi-copy-prev-enter-from,
+  .login-bangumi-copy-prev-leave-to {
+    transform: none;
+  }
 }
 
 @media (max-width: 900px) {
@@ -2705,6 +2760,10 @@
   .login-page.has-bangumi .login-brand {
     width: min(310px, 100%);
     margin-bottom: 24px;
+  }
+
+  .login-page.has-bangumi .login-form {
+    width: min(340px, 100%);
   }
 
   .login-bangumi-dots {

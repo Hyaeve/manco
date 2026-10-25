@@ -115,17 +115,20 @@ async function submit() {
       </Transition>
       <div class="login-bangumi-shade" />
     </div>
-    <a
-      v-if="activeBangumi"
-      class="login-bangumi-feature"
-      :href="activeBangumi.url"
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      <span>Bangumi · 随机推荐</span>
-      <strong>{{ activeBangumi.title }}</strong>
-      <p>{{ activeBangumi.summary }}</p>
-    </a>
+    <Transition :name="`login-bangumi-copy-${bangumiDirection}`" mode="out-in">
+      <a
+        v-if="activeBangumi"
+        :key="activeBangumi.id"
+        class="login-bangumi-feature"
+        :href="activeBangumi.url"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <span>Bangumi · 随机推荐</span>
+        <strong>{{ activeBangumi.title }}</strong>
+        <p>{{ activeBangumi.summary }}</p>
+      </a>
+    </Transition>
     <div
       v-if="activeBangumi && bangumiItems.length > 1"
       class="login-bangumi-dots"

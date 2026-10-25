@@ -8,13 +8,13 @@ import (
 func TestParseBangumiCalendarPrefersTodayAndFiltersIncompleteSubjects(t *testing.T) {
 	raw := []byte(`[
 	  {"weekday":{"id":1},"items":[
-	    {"id":1,"type":2,"name":"Monday","summary":"Monday summary","images":{"common":"https://lain.bgm.tv/1.jpg"},"collection":{"doing":99}}
+	    {"id":1,"type":1,"name":"Monday","summary":"Monday summary","images":{"common":"https://lain.bgm.tv/1.jpg"},"collection":{"doing":99}}
 	  ]},
 	  {"weekday":{"id":2},"items":[
-	    {"id":2,"type":2,"name":"Today low","summary":"Today summary","images":{"common":"https://lain.bgm.tv/2.jpg"},"collection":{"doing":1}},
-	    {"id":3,"type":2,"url":"javascript:alert(1)","name":"Today high","summary":"Today summary","images":{"large":"https://lain.bgm.tv/3-large.jpg","common":"https://lain.bgm.tv/3-common.jpg"},"collection":{"doing":20}},
-	    {"id":4,"type":1,"name":"Book","summary":"Book summary","images":{"common":"https://lain.bgm.tv/4.jpg"}},
-	    {"id":5,"type":2,"name":"No image","summary":"No image summary"}
+	    {"id":2,"type":1,"name":"Today low","summary":"Today summary","images":{"common":"https://lain.bgm.tv/2.jpg"},"collection":{"doing":1}},
+	    {"id":3,"type":1,"url":"javascript:alert(1)","name":"Today high","summary":"Today summary","images":{"large":"https://lain.bgm.tv/3-large.jpg","common":"https://lain.bgm.tv/3-common.jpg"},"collection":{"doing":20}},
+	    {"id":4,"type":2,"name":"Anime","summary":"Anime summary","images":{"common":"https://lain.bgm.tv/4.jpg"}},
+	    {"id":5,"type":1,"name":"No image","summary":"No image summary"}
 	  ]}
 	]`)
 	// 2026-10-27 is a Tuesday.

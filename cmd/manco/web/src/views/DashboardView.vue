@@ -1,26 +1,21 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  AlertTriangle,
-  ArrowDownToLine,
   Blocks,
   BookOpen,
   CalendarClock,
   Cat,
   ChartNoAxesCombined,
-  CheckCircle2,
   Clock3,
   Library,
   ListChecks,
-  ListOrdered,
-  Loader2,
-  Rss,
   Server,
   Tag,
   UserRound,
 } from 'lucide-vue-next'
 import { api } from '../api'
 import ContentLink from '../components/ContentLink.vue'
+import OverviewStatIcon from '../components/OverviewStatIcon.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { splitAuthors } from '../utils/metadata'
 import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
@@ -31,7 +26,12 @@ const sources = ref([])
 const downloads = ref([])
 const upcoming = ref([])
 const libraryTotal = ref(0)
-const loading = ref(true)
+const heroLoading = ref(true)
+const statsLoading = ref(true)
+const libraryLoading = ref(true)
+const downloadsLoading = ref(true)
+const sourcesLoading = ref(true)
+const upcomingLoading = ref(true)
 const error = ref('')
 const sourceTab = ref('comic')
 const heroIndex = ref(0)
@@ -61,7 +61,7 @@ const heroStyle = computed(() => ({
 const activeTasks = computed(() =>
   downloads.value
     .filter((item) => ['running', 'queued', 'waiting', 'paused'].includes(String(item.status || '').toLowerCase()))
-    .slice(0, 4),
+    .slice(0, 3),
 )
 const visibleSources = computed(() =>
   sources.value
@@ -77,28 +77,25 @@ watch(
   },
 )
 
-onMounted(async () => {
+onMounted(() => {
   window.addEventListener(SOURCES_CHANGED_EVENT, refreshSources)
-  try {
-    const [statsPayload, localPayload, downloadsPayload, sourcesPayload, upcomingPayload] = await Promise.all([
-      api.stats(),
-      api.localLibrary(7, 0, true, { hasCover: true }),
-      api.downloads(40, 0, 'active'),
-      api.sources(),
-      api.dashboardUpcoming(3),
-    ])
+  void loadDashboardSection(api.stats(), (statsPayload) => {
     stats.value = statsPayload || {}
+  }, statsLoading)
+  void loadDashboardSection(api.localLibrary(7, 0, true, { hasCover: true }), (localPayload) => {
     latest.value = localPayload.items || []
     libraryTotal.value = Number(localPayload.total || latest.value.length)
-    downloads.value = downloadsPayload.items || []
-    sources.value = sourcesPayload.items || []
-    upcoming.value = upcomingPayload.items || []
     restartHeroRotation()
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    loading.value = false
-  }
+  }, heroLoading, libraryLoading)
+  void loadDashboardSection(api.downloads(40, 0, 'active'), (downloadsPayload) => {
+    downloads.value = downloadsPayload.items || []
+  }, downloadsLoading)
+  void loadDashboardSection(api.sources(), (sourcesPayload) => {
+    sources.value = sourcesPayload.items || []
+  }, sourcesLoading)
+  void loadDashboardSection(api.dashboardUpcoming(3), (upcomingPayload) => {
+    upcoming.value = upcomingPayload.items || []
+  }, upcomingLoading)
 })
 
 onUnmounted(() => {
@@ -107,11 +104,24 @@ onUnmounted(() => {
 })
 
 async function refreshSources() {
+  if (!sources.value.length) sourcesLoading.value = true
   try {
     const payload = await api.sources()
     sources.value = payload.items || []
   } catch {
     // 保持当前来源列表，下一次页面轮询或手动刷新会重新获取。
+  } finally {
+    sourcesLoading.value = false
+  }
+}
+
+async function loadDashboardSection(request, apply, ...loadingFlags) {
+  try {
+    apply(await request)
+  } catch (err) {
+    if (!error.value) error.value = err.message
+  } finally {
+    for (const flag of loadingFlags) flag.value = false
   }
 }
 
@@ -208,17 +218,14 @@ function formatNextRun(value) {
 </script>
 
 <template>
-  <div v-if="loading" class="empty">
-    <Loader2 :size="22" class="spin" />
-    <span>加载信息总览</span>
-  </div>
-  <div v-else class="overview-dashboard">
+  <div class="overview-dashboard">
     <div v-if="error" class="alert error">{{ error }}</div>
 
     <div class="overview-top">
       <section
         class="overview-window overview-hero"
-        :class="{ 'is-empty': !heroComic }"
+        :class="{ 'is-empty': !heroComic && !heroLoading, 'is-loading': heroLoading }"
+        :aria-busy="heroLoading"
         @mouseenter="pauseHeroRotation"
         @mouseleave="resumeHeroRotation"
       >
@@ -230,7 +237,17 @@ function formatNextRun(value) {
             :style="heroStyle"
           />
         </Transition>
-        <template v-if="heroComic">
+        <div v-if="heroLoading" class="overview-hero-skeleton" aria-hidden="true">
+          <span class="overview-skeleton overview-hero-skeleton-poster" />
+          <span class="overview-hero-skeleton-copy">
+            <span class="overview-skeleton overview-skeleton-title" />
+            <span class="overview-skeleton overview-skeleton-pill-row" />
+            <span class="overview-skeleton overview-skeleton-copy-line" />
+            <span class="overview-skeleton overview-skeleton-copy-line short" />
+            <span class="overview-skeleton overview-skeleton-button" />
+          </span>
+        </div>
+        <template v-else-if="heroComic">
           <div class="overview-hero-slide-stage">
             <Transition :name="`overview-hero-slide-${heroDirection}`">
               <div :key="heroKey" class="overview-hero-content">
@@ -251,12 +268,14 @@ function formatNextRun(value) {
                       未知作者
                     </span>
                   </div>
-                  <p>{{ heroComic.description || '暂无简介' }}</p>
-                  <div v-if="heroComic.tags?.length" class="tag-list overview-hero-tags" aria-label="作品标签">
-                    <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag" class="badge tag-pill">
-                      <Tag :size="12" />
-                      {{ tag }}
-                    </span>
+                  <div class="overview-hero-summary" :class="{ blurred: heroComic.coverBlur }">
+                    <div class="overview-hero-description">{{ heroComic.description || '暂无简介' }}</div>
+                    <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
+                      <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag" class="badge tag-pill">
+                        <Tag :size="12" />
+                        {{ tag }}
+                      </span>
+                    </div>
                   </div>
                   <ContentLink class="btn secondary small overview-hero-link" to="/local">
                     <Library :size="15" />
@@ -296,34 +315,40 @@ function formatNextRun(value) {
         </header>
         <div class="overview-stat-grid">
           <div class="overview-stat">
-            <Rss :size="30" :stroke-width="1.65" />
+            <OverviewStatIcon name="subscriptions" />
             <span>订阅作品</span>
-            <strong>{{ stats.subscriptions || 0 }}</strong>
+            <strong v-if="statsLoading" class="overview-skeleton overview-stat-value-skeleton" />
+            <strong v-else>{{ stats.subscriptions || 0 }}</strong>
           </div>
           <div class="overview-stat">
-            <Library :size="30" :stroke-width="1.65" />
+            <OverviewStatIcon name="library" />
             <span>本地仓库</span>
-            <strong>{{ libraryTotal }}</strong>
+            <strong v-if="libraryLoading" class="overview-skeleton overview-stat-value-skeleton" />
+            <strong v-else>{{ libraryTotal }}</strong>
           </div>
           <div class="overview-stat is-success">
-            <CheckCircle2 :size="30" :stroke-width="1.65" />
+            <OverviewStatIcon name="completed" />
             <span>完成章节</span>
-            <strong>{{ stats.completedJobs || 0 }}</strong>
+            <strong v-if="statsLoading" class="overview-skeleton overview-stat-value-skeleton" />
+            <strong v-else>{{ stats.completedJobs || 0 }}</strong>
           </div>
           <div class="overview-stat is-danger">
-            <AlertTriangle :size="30" :stroke-width="1.65" />
+            <OverviewStatIcon name="failed" />
             <span>失败章节</span>
-            <strong>{{ stats.failedJobs || 0 }}</strong>
+            <strong v-if="statsLoading" class="overview-skeleton overview-stat-value-skeleton" />
+            <strong v-else>{{ stats.failedJobs || 0 }}</strong>
           </div>
           <div class="overview-stat">
-            <ArrowDownToLine :size="30" :stroke-width="1.65" />
+            <OverviewStatIcon name="running" />
             <span>正在下载</span>
-            <strong>{{ stats.runningJobs || 0 }}</strong>
+            <strong v-if="statsLoading" class="overview-skeleton overview-stat-value-skeleton" />
+            <strong v-else>{{ stats.runningJobs || 0 }}</strong>
           </div>
           <div class="overview-stat">
-            <ListOrdered :size="30" :stroke-width="1.65" />
+            <OverviewStatIcon name="queued" />
             <span>排队章节</span>
-            <strong>{{ stats.queuedJobs || 0 }}</strong>
+            <strong v-if="statsLoading" class="overview-skeleton overview-stat-value-skeleton" />
+            <strong v-else>{{ stats.queuedJobs || 0 }}</strong>
           </div>
         </div>
       </section>
@@ -349,7 +374,13 @@ function formatNextRun(value) {
             {{ tab.label }}
           </button>
         </div>
-        <div v-if="visibleSources.length" class="overview-source-grid">
+        <div v-if="sourcesLoading" class="overview-source-grid overview-source-skeleton-grid" aria-hidden="true">
+          <span v-for="index in 8" :key="index" class="overview-source-skeleton-item">
+            <span class="overview-skeleton overview-source-skeleton-icon" />
+            <span class="overview-skeleton overview-source-skeleton-label" />
+          </span>
+        </div>
+        <div v-else-if="visibleSources.length" class="overview-source-grid">
           <ContentLink
             v-for="item in visibleSources"
             :key="item.id"
@@ -377,7 +408,17 @@ function formatNextRun(value) {
           </ContentLink>
           <ContentLink class="overview-head-link" to="/downloads">查看全部</ContentLink>
         </header>
-        <div v-if="activeTasks.length" class="overview-task-list">
+        <div v-if="downloadsLoading" class="overview-task-list" aria-hidden="true">
+          <div v-for="index in 3" :key="index" class="overview-task-row overview-task-skeleton-row">
+            <span class="overview-skeleton overview-task-skeleton-state" />
+            <span class="overview-task-skeleton-copy">
+              <span class="overview-skeleton overview-task-skeleton-title" />
+              <span class="overview-skeleton overview-task-skeleton-subtitle" />
+              <span class="overview-skeleton overview-task-skeleton-progress" />
+            </span>
+          </div>
+        </div>
+        <div v-else-if="activeTasks.length" class="overview-task-list">
           <ContentLink
             v-for="item in activeTasks"
             :key="item.id"
@@ -422,7 +463,17 @@ function formatNextRun(value) {
           </ContentLink>
           <ContentLink class="overview-head-link" to="/subscriptions">查看全部</ContentLink>
         </header>
-        <div v-if="upcoming.length" class="overview-upcoming-list">
+        <div v-if="upcomingLoading" class="overview-upcoming-list" aria-hidden="true">
+          <div v-for="index in 3" :key="index" class="overview-upcoming-card overview-upcoming-skeleton-card">
+            <span class="overview-skeleton overview-upcoming-skeleton-cover" />
+            <span class="overview-upcoming-skeleton-copy">
+              <span class="overview-skeleton overview-upcoming-skeleton-title" />
+              <span class="overview-skeleton overview-upcoming-skeleton-author" />
+              <span class="overview-skeleton overview-upcoming-skeleton-time" />
+            </span>
+          </div>
+        </div>
+        <div v-else-if="upcoming.length" class="overview-upcoming-list">
           <ContentLink
             v-for="item in upcoming"
             :key="item.id"
@@ -485,12 +536,97 @@ function formatNextRun(value) {
   box-shadow: var(--shadow-sm);
 }
 
+.overview-skeleton {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text-muted) 12%, var(--surface));
+}
+
+.overview-skeleton::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 18%,
+    color-mix(in srgb, var(--surface) 76%, transparent) 46%,
+    transparent 74%
+  );
+  content: '';
+  transform: translateX(-100%);
+  animation: overview-skeleton-shimmer 1.45s ease-in-out infinite;
+}
+
+@keyframes overview-skeleton-shimmer {
+  to { transform: translateX(100%); }
+}
+
 .overview-hero {
   position: relative;
   height: 100%;
   min-height: 0;
   color: var(--text);
   background: color-mix(in srgb, #fffef8 97%, #fbf4cf);
+}
+
+.overview-hero.is-loading {
+  color: var(--text);
+  background: color-mix(in srgb, #fffef8 97%, #fbf4cf);
+}
+
+.overview-hero-skeleton {
+  --overview-hero-cover-width: clamp(138px, 13vw, 168px);
+  position: relative;
+  z-index: 1;
+  display: grid;
+  height: 100%;
+  grid-template-columns: var(--overview-hero-cover-width) minmax(0, 1fr);
+  align-items: end;
+  gap: 20px;
+  padding: 18px 26px 22px;
+}
+
+.overview-hero-skeleton-poster {
+  width: var(--overview-hero-cover-width);
+  aspect-ratio: 2 / 3;
+  align-self: end;
+  border-radius: 10px;
+}
+
+.overview-hero-skeleton-copy {
+  display: flex;
+  height: calc(var(--overview-hero-cover-width) * 1.5);
+  align-self: end;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.overview-skeleton-title {
+  width: min(68%, 360px);
+  height: 31px;
+}
+
+.overview-skeleton-pill-row {
+  width: 148px;
+  height: 22px;
+  border-radius: 999px;
+}
+
+.overview-skeleton-copy-line {
+  width: 100%;
+  height: 13px;
+}
+
+.overview-skeleton-copy-line.short {
+  width: 76%;
+}
+
+.overview-skeleton-button {
+  width: 118px;
+  height: 32px;
+  margin-top: auto;
+  border-radius: 999px;
 }
 
 .overview-hero-backdrop {
@@ -671,8 +807,8 @@ function formatNextRun(value) {
   transform: scale(var(--manco-cover-blur-scale, 1.03));
 }
 
-.overview-hero-poster.blurred:hover img,
-.overview-hero-poster.blurred:focus-within img {
+.overview-hero-content:hover .overview-hero-poster.blurred img,
+.overview-hero-content:focus-within .overview-hero-poster.blurred img {
   filter: blur(0);
   transform: scale(var(--manco-cover-hover-scale, 1.08));
 }
@@ -692,8 +828,8 @@ function formatNextRun(value) {
   transition: opacity 0.32s ease;
 }
 
-.overview-hero-poster.blurred:hover::after,
-.overview-hero-poster.blurred:focus-within::after {
+.overview-hero-content:hover .overview-hero-poster.blurred::after,
+.overview-hero-content:focus-within .overview-hero-poster.blurred::after {
   opacity: 0;
 }
 
@@ -703,6 +839,7 @@ function formatNextRun(value) {
   height: calc(var(--overview-hero-cover-width) * 1.5);
   align-self: end;
   flex-direction: column;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
   overflow: hidden;
@@ -728,21 +865,48 @@ function formatNextRun(value) {
   gap: 6px;
 }
 
-.overview-hero-copy p {
-  display: -webkit-box;
+.overview-hero-summary {
+  display: flex;
   flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 5px;
   max-width: 660px;
   margin: 2px 0 5px;
-  min-height: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 15px;
   line-height: 1.6;
+  transition: filter 0.32s ease, opacity 0.32s ease;
+}
+
+.overview-hero-description {
+  display: -webkit-box;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
 }
 
+.overview-hero-summary.blurred {
+  filter: blur(5px) saturate(0.92);
+  opacity: 0.72;
+  pointer-events: none;
+  user-select: none;
+}
+
+.overview-hero-content:hover .overview-hero-summary.blurred,
+.overview-hero-content:focus-within .overview-hero-summary.blurred {
+  filter: none;
+  opacity: 1;
+}
+
 .overview-hero-tags :deep(.tag-pill) {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -755,18 +919,21 @@ function formatNextRun(value) {
 
 .overview-hero-tags {
   display: flex;
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
+  flex: 0 0 26px;
+  max-width: 100%;
+  min-height: 26px;
+  align-items: center;
   gap: 6px;
-  max-height: 26px;
-  margin-bottom: 0;
   overflow: hidden;
 }
 
 .overview-hero-link {
   flex: 0 0 auto;
+  align-self: flex-start;
   justify-self: start;
-  margin-top: auto;
+  width: auto;
+  max-width: max-content;
+  margin-top: 4px;
 }
 
 .overview-hero-dots {
@@ -861,15 +1028,15 @@ function formatNextRun(value) {
   align-items: center;
   gap: 10px;
   color: var(--text);
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 720;
   line-height: 1.2;
 }
 
 .overview-window-title svg {
   flex: 0 0 auto;
-  width: 23px;
-  height: 23px;
+  width: 20px;
+  height: 20px;
   color: var(--primary-strong);
 }
 
@@ -921,6 +1088,11 @@ function formatNextRun(value) {
 .overview-stat strong {
   font-size: 21px;
   line-height: 1.05;
+}
+
+.overview-stat .overview-stat-value-skeleton {
+  width: 42px;
+  height: 20px;
 }
 
 .overview-stat span {
@@ -1009,6 +1181,26 @@ function formatNextRun(value) {
   white-space: nowrap;
 }
 
+.overview-source-skeleton-item {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 3px;
+}
+
+.overview-source-skeleton-icon {
+  width: 50px;
+  height: 50px;
+  border-radius: 15px;
+}
+
+.overview-source-skeleton-label {
+  width: min(76px, 84%);
+  height: 10px;
+}
+
 .overview-source-icon {
   display: grid;
   width: 50px;
@@ -1064,6 +1256,42 @@ function formatNextRun(value) {
   border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
   background: color-mix(in srgb, var(--primary-soft) 22%, var(--surface));
   transform: translateY(-1px);
+}
+
+.overview-task-skeleton-row:hover {
+  border-color: var(--border);
+  background: transparent;
+  transform: none;
+}
+
+.overview-task-skeleton-state {
+  width: 48px;
+  height: 22px;
+  border-radius: 999px;
+}
+
+.overview-task-skeleton-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.overview-task-skeleton-title {
+  width: 68%;
+  height: 11px;
+}
+
+.overview-task-skeleton-subtitle {
+  width: 46%;
+  height: 9px;
+}
+
+.overview-task-skeleton-progress {
+  width: 100%;
+  height: 4px;
+  margin-top: 2px;
+  border-radius: 999px;
 }
 
 .overview-task-state {
@@ -1209,6 +1437,42 @@ function formatNextRun(value) {
   transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
 }
 
+.overview-upcoming-skeleton-card:hover {
+  border-color: var(--border);
+  background: transparent;
+  transform: none;
+}
+
+.overview-upcoming-skeleton-cover {
+  width: 58px;
+  height: 100%;
+  min-height: 54px;
+  border-radius: 6px;
+}
+
+.overview-upcoming-skeleton-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+}
+
+.overview-upcoming-skeleton-title {
+  width: 68%;
+  height: 11px;
+}
+
+.overview-upcoming-skeleton-author {
+  width: 44%;
+  height: 9px;
+}
+
+.overview-upcoming-skeleton-time {
+  width: 58%;
+  height: 10px;
+}
+
 .overview-upcoming-cover {
   position: relative;
   display: grid;
@@ -1322,12 +1586,38 @@ function formatNextRun(value) {
     padding: 20px 16px 22px;
   }
 
+  .overview-hero-skeleton {
+    --overview-hero-cover-width: 92px;
+    grid-template-columns: 92px minmax(0, 1fr);
+    gap: 14px;
+    padding: 20px 16px 22px;
+  }
+
+  .overview-skeleton-title {
+    width: 82%;
+    height: 24px;
+  }
+
+  .overview-skeleton-pill-row {
+    width: 112px;
+    height: 18px;
+  }
+
+  .overview-skeleton-copy-line {
+    height: 10px;
+  }
+
+  .overview-skeleton-button {
+    width: 104px;
+    height: 28px;
+  }
+
   .overview-hero-poster {
     align-self: end;
   }
 
   .overview-hero-copy {
-    gap: 3px;
+    gap: 2px;
   }
 
   .overview-hero-copy h1 {
@@ -1339,22 +1629,32 @@ function formatNextRun(value) {
     font-size: 12px;
   }
 
-  .overview-hero-copy p {
-    margin-bottom: 1px;
+  .overview-hero-description {
+    min-height: 1.55em;
     font-size: 12px;
     line-height: 1.55;
     -webkit-line-clamp: 2;
   }
 
-  .overview-hero-tags {
-    gap: 4px;
-    max-height: 22px;
+  .overview-hero-summary {
+    gap: 2px;
+    margin: 0;
   }
 
-  .overview-hero-tags span {
+  .overview-hero-tags {
+    flex-basis: 20px;
+    min-height: 20px;
+    gap: 4px;
+  }
+
+  .overview-hero-tags .tag-pill {
     max-width: 108px;
     padding: 2px 7px;
     font-size: 10px;
+  }
+
+  .overview-hero-link {
+    margin-top: 0;
   }
 
   .overview-hero-dots {
@@ -1398,7 +1698,7 @@ function formatNextRun(value) {
   color: rgba(255, 255, 255, 0.86);
 }
 
-:global([data-theme='dark'] .overview-hero-copy p) {
+:global([data-theme='dark'] .overview-hero-summary) {
   color: rgba(255, 255, 255, 0.78);
 }
 
@@ -1426,6 +1726,10 @@ function formatNextRun(value) {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .overview-skeleton::after {
+    animation: none;
+  }
+
   .overview-hero-bg-next-enter-active,
   .overview-hero-bg-next-leave-active,
   .overview-hero-bg-prev-enter-active,

@@ -220,7 +220,7 @@ func parseBangumiCalendar(raw []byte, now time.Time) ([]bangumiLoginItem, error)
 			return left > right
 		})
 		for _, subject := range day.Items {
-			if subject.ID <= 0 || subject.Type != 2 || seen[subject.ID] {
+			if subject.ID <= 0 || subject.Type != 1 || seen[subject.ID] {
 				continue
 			}
 			title := strings.TrimSpace(subject.NameCN)

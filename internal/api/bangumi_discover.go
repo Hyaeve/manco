@@ -31,12 +31,12 @@ type bangumiFeedDefinition struct {
 }
 
 var bangumiFeedDefinitions = []bangumiFeedDefinition{
-	{ID: "recent", Name: "近期注目", Calendar: true},
-	{ID: "airing", Name: "连载中", Calendar: true},
-	{ID: "monthly", Name: "本月新作", Type: 2, Sort: "heat", Month: true},
-	{ID: "yearly", Name: "今年新作", Type: 2, Sort: "heat", Year: true},
-	{ID: "popular", Name: "收藏最多", Type: 2, Sort: "heat"},
-	{ID: "ranking", Name: "排行榜", Type: 2, Sort: "rank"},
+	{ID: "recent", Name: "近期注目", Type: 1, Sort: "heat"},
+	{ID: "airing", Name: "连载中", Type: 1, Sort: "heat", Tag: "连载中"},
+	{ID: "monthly", Name: "本月新作", Type: 1, Sort: "heat", Month: true},
+	{ID: "yearly", Name: "今年新作", Type: 1, Sort: "heat", Year: true},
+	{ID: "popular", Name: "收藏最多", Type: 1, Sort: "heat"},
+	{ID: "ranking", Name: "排行榜", Type: 1, Sort: "rank"},
 	{ID: "manga", Name: "高分漫画", Type: 1, Sort: "score", Tag: "漫画", RatingMin: 7.5},
 	{ID: "novel", Name: "高分小说", Type: 1, Sort: "score", Tag: "小说", RatingMin: 7.5},
 }
@@ -83,6 +83,46 @@ func (s *Server) handleBangumiDiscover(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "Bangumi 加载失败："+err.Error())
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":   items,
+		"page":    page,
+		"total":   total,
+		"hasMore": page*limit < total,
+	})
+}
+
+func (s *Server) handleBangumiSearch(w http.ResponseWriter, r *http.Request) {
+	keyword := strings.TrimSpace(r.URL.Query().Get("q"))
+	if keyword == "" {
+		writeError(w, http.StatusBadRequest, "请输入 Bangumi 搜索关键词")
+		return
+	}
+	page := intParam(r, "page", 1)
+	if page < 1 {
+		page = 1
+	}
+	limit := intParam(r, "limit", 42)
+	if limit < 1 {
+		limit = 42
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	subjects, total, err := s.searchBangumiSubjects(r.Context(), keyword, "match", map[string]any{
+		"type": []int{1},
+		"nsfw": false,
+	}, page, limit)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Bangumi 搜索失败："+err.Error())
+		return
+	}
+	feed := bangumiFeedDefinition{ID: "search", Name: "Bangumi 搜索"}
+	items := make([]model.Comic, 0, len(subjects))
+	for _, subject := range subjects {
+		if item, ok := bangumiSubjectComic(subject, feed); ok {
+			items = append(items, item)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":   items,
@@ -159,9 +199,20 @@ func (s *Server) searchBangumiFeed(ctx context.Context, feed bangumiFeedDefiniti
 		end := start.AddDate(1, 0, 0)
 		filter["air_date"] = []string{">=" + start.Format("2006-01-02"), "<" + end.Format("2006-01-02")}
 	}
+	return s.searchBangumiSubjects(ctx, "", feed.Sort, filter, page, limit)
+}
+
+func (s *Server) searchBangumiSubjects(
+	ctx context.Context,
+	keyword string,
+	sortMode string,
+	filter map[string]any,
+	page int,
+	limit int,
+) ([]bangumiCalendarSubject, int, error) {
 	body, err := json.Marshal(map[string]any{
-		"keyword": "",
-		"sort":    feed.Sort,
+		"keyword": keyword,
+		"sort":    sortMode,
 		"filter":  filter,
 	})
 	if err != nil {
@@ -382,8 +433,16 @@ func bangumiSubjectComic(subject bangumiCalendarSubject, feed bangumiFeedDefinit
 			tags = append(tags, name)
 		}
 	}
+	sourceID := "bangumi-" + feed.ID
+	if feed.ID != "manga" && feed.ID != "novel" {
+		if bangumiSubjectLooksNovel(tags) {
+			sourceID = "bangumi-novel"
+		} else {
+			sourceID = "bangumi-manga"
+		}
+	}
 	return model.Comic{
-		SourceID:    "bangumi-" + feed.ID,
+		SourceID:    sourceID,
 		ID:          strconv.Itoa(subject.ID),
 		Title:       title,
 		Cover:       cover,
@@ -393,6 +452,16 @@ func bangumiSubjectComic(subject bangumiCalendarSubject, feed bangumiFeedDefinit
 		Status:      status,
 		UpdatedAt:   strings.TrimSpace(subject.Date),
 	}, true
+}
+
+func bangumiSubjectLooksNovel(tags []string) bool {
+	for _, tag := range tags {
+		normalized := strings.ToLower(strings.TrimSpace(tag))
+		if normalized == "小说" || normalized == "轻小说" || strings.Contains(normalized, "小说") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) bangumiHTTPClient() *http.Client {

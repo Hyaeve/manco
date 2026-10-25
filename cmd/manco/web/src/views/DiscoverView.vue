@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
+import BangumiFeedIcon from '../components/BangumiFeedIcon.vue'
 import ContentLink from '../components/ContentLink.vue'
 import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
@@ -37,17 +38,19 @@ import {
 } from '../stores/discover'
 import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
+defineOptions({ name: 'DiscoverView' })
+
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v3'
 const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
 const BANGUMI_FEEDS = [
-  { id: 'bangumi-recent', feed: 'recent', name: '近期注目', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-airing', feed: 'airing', name: '连载中', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-monthly', feed: 'monthly', name: '本月新作', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-yearly', feed: 'yearly', name: '今年新作', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-popular', feed: 'popular', name: '收藏最多', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-ranking', feed: 'ranking', name: '排行榜', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-manga', feed: 'manga', name: '高分漫画', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
-  { id: 'bangumi-novel', feed: 'novel', name: '高分小说', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-recent', feed: 'recent', name: '近期注目', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-airing', feed: 'airing', name: '连载中', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-monthly', feed: 'monthly', name: '本月新作', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-yearly', feed: 'yearly', name: '今年新作', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-popular', feed: 'popular', name: '收藏最多', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-ranking', feed: 'ranking', name: '排行榜', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-manga', feed: 'manga', name: '高分漫画', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
+  { id: 'bangumi-novel', feed: 'novel', name: '高分小说', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
 ]
 
 const route = useRoute()
@@ -430,6 +433,9 @@ function finishPanelRequest(source, panel, state) {
 
 function fetchPage(source, panel, page, signal) {
   if (source.kind === 'bangumi') {
+    if (panel.mode === 'search' && panel.query.trim()) {
+      return api.bangumiSearch(panel.query.trim(), page, pageSize.value, signal)
+    }
     return api.bangumiBrowse(source.feed, page, pageSize.value, signal)
   }
   return panel.mode === 'search' && panel.query.trim()
@@ -861,7 +867,7 @@ function latestLabel(item) {
           :class="{ active: source.id === activeId }"
           @click="selectSource(source.id)"
         >
-          <Sparkles v-if="source.kind === 'bangumi'" class="source-tab-icon" :size="18" />
+          <BangumiFeedIcon v-if="source.kind === 'bangumi'" class="source-tab-icon" :feed="source.feed" :size="18" />
           <SourceIcon v-else class="source-tab-icon" :src="source.icon" :kind="kindOf(source)" :alt="source.name" :size="18" />
           <span>{{ source.name }}</span>
         </button>
