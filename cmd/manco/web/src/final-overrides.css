@@ -2544,6 +2544,10 @@
   margin-top: 32px;
 }
 
+.login-page.has-bangumi .login-brand + .login-form {
+  margin-top: 24px;
+}
+
 .login-page.has-bangumi .login-form .input,
 .login-page.has-bangumi .login-submit {
   min-height: 48px;
@@ -2551,7 +2555,7 @@
 
 .login-bangumi-feature {
   position: absolute;
-  bottom: clamp(28px, 6vh, 72px);
+  bottom: clamp(58px, 8vh, 92px);
   left: clamp(28px, 4vw, 72px);
   z-index: 1;
   display: flex;
@@ -2561,6 +2565,45 @@
   color: #fffdf6;
   text-decoration: none;
   text-shadow: 0 2px 18px rgba(0, 0, 0, 0.45);
+}
+
+.login-bangumi-link {
+  position: absolute;
+  bottom: 22px;
+  left: clamp(28px, 4vw, 72px);
+  z-index: 2;
+  display: flex;
+  width: min(520px, calc(62vw - 180px));
+  min-width: 0;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: 8px;
+  color: rgba(255, 253, 246, 0.86);
+  font-size: 12px;
+  line-height: 1.35;
+  text-decoration: none;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  transition: color 0.18s ease, background-color 0.18s ease;
+}
+
+.login-bangumi-link:hover,
+.login-bangumi-link:focus-visible {
+  background: rgba(255, 253, 246, 0.12);
+  color: #f4d878;
+}
+
+.login-bangumi-link svg {
+  flex: 0 0 13px;
+}
+
+.login-bangumi-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .login-bangumi-dots {
@@ -2781,6 +2824,14 @@
   .login-bangumi-feature {
     top: 20px;
     right: 18px;
+    bottom: auto;
+    left: 18px;
+    width: auto;
+  }
+
+  .login-bangumi-link {
+    top: calc(44vh - 42px);
+    right: 154px;
     bottom: auto;
     left: 18px;
     width: auto;

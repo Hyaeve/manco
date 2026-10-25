@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   BookOpen,
@@ -76,7 +76,9 @@ const gridColumns = ref(responsiveGridColumns())
 const refreshRevealing = ref(false)
 const requestStates = new Map()
 let refreshRevealTimer = 0
+let stripPersistTimer = 0
 let selectionAnchor = -1
+let removeDiscoverRouteRestore = null
 
 const kindCount = computed(() => (kind) => kind === 'bangumi'
   ? BANGUMI_FEEDS.length
@@ -252,6 +254,9 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleDiscoverKeydown)
   window.removeEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
   window.clearTimeout(refreshRevealTimer)
+  window.clearTimeout(stripPersistTimer)
+  removeDiscoverRouteRestore?.()
+  removeDiscoverRouteRestore = null
   for (const state of requestStates.values()) state.controller.abort()
   requestStates.clear()
 })
@@ -274,6 +279,8 @@ async function loadSources() {
       const panel = panelFor(activeSource.value)
       persistSourceBrowseFilters(activeSource.value, panel.filters)
       const restorePage = nav.source === activeId.value && nav.page ? nav.page : panel.page || 1
+      restoreSourceStripScroll(nav)
+      nextTick(rememberPosition)
       void ensure(activeSource.value, panel, restorePage).then(() => {
         if (nav.source === activeId.value && nav.scrollTop) {
           nextTick(() => {
@@ -296,10 +303,23 @@ onMounted(() => {
   window.addEventListener('resize', updateStripBounds)
   window.addEventListener('keydown', handleDiscoverKeydown)
   window.addEventListener(SOURCES_CHANGED_EVENT, handleSourcesChanged)
+  removeDiscoverRouteRestore = router.afterEach((to, from) => {
+    if (to.name === 'discover' && from.name !== 'discover') {
+      restoreSourceStripScroll(readDiscoverNav())
+    }
+  })
   loadSources().then(() => {
     nextTick(updateStripBounds)
     nextTick(measureGridColumns)
   })
+})
+
+onActivated(() => {
+  restoreSourceStripScroll(readDiscoverNav())
+})
+
+onDeactivated(() => {
+  rememberPosition()
 })
 
 function handleSourcesChanged() {
@@ -360,6 +380,12 @@ function handleStripWheel(event) {
   const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
   if (delta === 0) return
   element.scrollBy({ left: delta, behavior: 'auto' })
+}
+
+function handleSourceStripScroll() {
+  updateStripBounds()
+  window.clearTimeout(stripPersistTimer)
+  stripPersistTimer = window.setTimeout(rememberPosition, 140)
 }
 
 watch(sources, () => {
@@ -590,7 +616,26 @@ function rememberPosition() {
     source: activeId.value,
     page: activePanel.value?.page || 1,
     scrollTop: document.querySelector('.content-scroll')?.scrollTop || 0,
+    sourceScrollLeft: sourceStripRef.value?.scrollLeft || 0,
   })
+}
+
+function restoreSourceStripScroll(nav) {
+  const savedTarget = nav.source === activeId.value ? Number(nav.sourceScrollLeft) || 0 : 0
+  const apply = () => {
+    const strip = sourceStripRef.value
+    if (!strip) return
+    const activeButton = strip.querySelector('button.active')
+    const centeredTarget = activeButton
+      ? Math.max(0, activeButton.offsetLeft - (strip.clientWidth - activeButton.offsetWidth) / 2)
+      : 0
+    const target = savedTarget || centeredTarget
+    strip.scrollLeft = target
+    updateStripBounds()
+  }
+  nextTick(apply)
+  window.requestAnimationFrame(() => window.requestAnimationFrame(apply))
+  window.setTimeout(apply, 160)
 }
 
 function cover(item) {
@@ -854,7 +899,7 @@ function latestLabel(item) {
         ref="sourceStripRef"
         class="discover-source-strip"
         aria-label="来源"
-        @scroll="updateStripBounds"
+        @scroll="handleSourceStripScroll"
         @wheel="handleStripWheel"
       >
         <button

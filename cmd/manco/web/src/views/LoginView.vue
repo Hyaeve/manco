@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Loader2, LogIn, UserPlus } from 'lucide-vue-next'
+import { ExternalLink, Loader2, LogIn, UserPlus } from 'lucide-vue-next'
 import { api } from '../api'
 import MancoBrand from '../components/MancoBrand.vue'
 import { useAuthStore } from '../stores/auth'
@@ -116,17 +116,27 @@ async function submit() {
       <div class="login-bangumi-shade" />
     </div>
     <Transition :name="`login-bangumi-copy-${bangumiDirection}`" mode="out-in">
-      <a
+      <div
         v-if="activeBangumi"
         :key="activeBangumi.id"
         class="login-bangumi-feature"
-        :href="activeBangumi.url"
-        target="_blank"
-        rel="noopener noreferrer"
       >
         <span>Bangumi · 随机推荐</span>
         <strong>{{ activeBangumi.title }}</strong>
         <p>{{ activeBangumi.summary }}</p>
+      </div>
+    </Transition>
+    <Transition :name="`login-bangumi-copy-${bangumiDirection}`" mode="out-in">
+      <a
+        v-if="activeBangumi"
+        :key="activeBangumi.id"
+        class="login-bangumi-link"
+        :href="activeBangumi.url"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <ExternalLink :size="13" />
+        <span>{{ activeBangumi.url }}</span>
       </a>
     </Transition>
     <div
@@ -147,9 +157,9 @@ async function submit() {
     </div>
     <div class="login-card">
       <MancoBrand class="login-brand" />
-      <div class="login-title">
-        <h1>{{ setupRequired ? '创建账号' : '登录' }}</h1>
-        <span v-if="setupRequired">首次使用</span>
+      <div v-if="setupRequired" class="login-title">
+        <h1>创建账号</h1>
+        <span>首次使用</span>
       </div>
       <form class="login-form" @submit.prevent="submit">
         <input
