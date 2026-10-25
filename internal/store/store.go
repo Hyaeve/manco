@@ -102,6 +102,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			source_id TEXT NOT NULL,
 			comic_id TEXT NOT NULL,
+			origin_source_id TEXT NOT NULL DEFAULT '',
+			origin_comic_id TEXT NOT NULL DEFAULT '',
+			origin_source_url TEXT NOT NULL DEFAULT '',
+			match_kind TEXT NOT NULL DEFAULT '',
+			match_status TEXT NOT NULL DEFAULT '',
+			match_error TEXT NOT NULL DEFAULT '',
+			match_attempt_at DATETIME,
 			title TEXT NOT NULL,
 			cover TEXT NOT NULL DEFAULT '',
 			series_dir TEXT NOT NULL DEFAULT '',
@@ -246,6 +253,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "subscriptions", "chapter_count", `INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "origin_source_id", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "origin_comic_id", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "origin_source_url", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "match_kind", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "match_status", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "match_error", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "subscriptions", "match_attempt_at", `DATETIME`); err != nil {
 		return err
 	}
 	for _, statement := range []string{
@@ -816,9 +844,16 @@ func (s *Store) DeleteExtensionCandidatesForRepository(ctx context.Context, repo
 func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) (model.Subscription, error) {
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO subscriptions(source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, temporary)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+		INSERT INTO subscriptions(source_id, comic_id, origin_source_id, origin_comic_id, origin_source_url, match_kind, match_status, match_error, match_attempt_at, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, comic_status, last_new_chapter_at, temporary)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
 		ON CONFLICT(source_id, comic_id) DO UPDATE SET
+			origin_source_id = excluded.origin_source_id,
+			origin_comic_id = excluded.origin_comic_id,
+			origin_source_url = excluded.origin_source_url,
+			match_kind = excluded.match_kind,
+			match_status = excluded.match_status,
+			match_error = excluded.match_error,
+			match_attempt_at = excluded.match_attempt_at,
 			chapter_marker = excluded.chapter_marker,
 			cover_blur = excluded.cover_blur,
 			title = excluded.title,
@@ -840,7 +875,7 @@ func (s *Store) UpsertSubscription(ctx context.Context, sub model.Subscription) 
 			archive_reason = '',
 			temporary = excluded.temporary,
 			updated_at = CURRENT_TIMESTAMP`,
-		sub.SourceID, sub.ComicID, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.Temporary)
+		sub.SourceID, sub.ComicID, sub.OriginSourceID, sub.OriginComicID, sub.OriginSourceURL, sub.MatchKind, sub.MatchStatus, sub.MatchError, sub.MatchAttemptAt, sub.Title, sub.Cover, sub.SeriesDir, sub.Author, sub.Enabled, sub.AutoDownload, sub.CronExpr, sub.DownloadDir, sub.ConvertToSimplified, sub.ChapterMarker, sub.CoverBlur, sub.LastChapterID, sub.LastChapterTitle, sub.LastChapterOrder, sub.ComicStatus, sub.Temporary)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -887,11 +922,12 @@ func (s *Store) ListSubscriptions(ctx context.Context) ([]model.Subscription, er
 	return subscriptions, rows.Err()
 }
 
-const subscriptionSelect = `SELECT id, source_id, comic_id, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary, archive_warning_at, archive_warning_days FROM subscriptions`
+const subscriptionSelect = `SELECT id, source_id, comic_id, origin_source_id, origin_comic_id, origin_source_url, match_kind, match_status, match_error, match_attempt_at, title, cover, series_dir, author, enabled, auto_download, cron_expr, download_dir, convert_to_simplified, chapter_marker, cover_blur, last_chapter_id, last_chapter_title, last_chapter_order, chapter_count, comic_status, last_new_chapter_at, last_checked_at, disabled_at, completed_at, archived_at, archive_reason, created_at, updated_at, temporary, archive_warning_at, archive_warning_days FROM subscriptions`
 
 type SubscriptionFilter struct {
 	SourceIDs        []string
 	ExcludeSourceIDs []string
+	MatchKind        string
 	DownloadDir      string
 	Sort             string
 	Descending       bool
@@ -904,13 +940,21 @@ func subscriptionFilterClause(filter SubscriptionFilter) (string, []any) {
 	if filter.MatchNone {
 		clauses = append(clauses, "0 = 1")
 	}
-	if sourceIDs := filter.SourceIDs; len(sourceIDs) > 0 {
+	sourceIDs := filter.SourceIDs
+	if len(sourceIDs) > 0 || strings.EqualFold(filter.MatchKind, "book") {
 		placeholders := make([]string, len(sourceIDs))
 		for index, sourceID := range sourceIDs {
 			placeholders[index] = "?"
 			args = append(args, sourceID)
 		}
-		clauses = append(clauses, "source_id IN ("+strings.Join(placeholders, ",")+")")
+		clause := "0 = 1"
+		if len(placeholders) > 0 {
+			clause = "source_id IN (" + strings.Join(placeholders, ",") + ")"
+		}
+		if strings.EqualFold(filter.MatchKind, "book") {
+			clause = "(" + clause + " OR (source_id = 'bangumi' AND match_kind = 'book'))"
+		}
+		clauses = append(clauses, clause)
 	}
 	if excluded := filter.ExcludeSourceIDs; len(excluded) > 0 {
 		placeholders := make([]string, len(excluded))
@@ -923,6 +967,10 @@ func subscriptionFilterClause(filter SubscriptionFilter) (string, []any) {
 	if dir := strings.TrimSpace(filter.DownloadDir); dir != "" {
 		clauses = append(clauses, "download_dir = ?")
 		args = append(args, dir)
+	}
+	if kind := strings.ToLower(strings.TrimSpace(filter.MatchKind)); kind == "comic" || kind == "other" {
+		clauses = append(clauses, "(source_id <> 'bangumi' OR match_kind = ?)")
+		args = append(args, kind)
 	}
 	return strings.Join(clauses, " AND "), args
 }
@@ -995,6 +1043,28 @@ func (s *Store) SubscriptionSourceCounts(ctx context.Context) (map[string]int, e
 			return nil, err
 		}
 		counts[sourceID] = count
+	}
+	return counts, rows.Err()
+}
+
+func (s *Store) SubscriptionBangumiKindCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT CASE WHEN match_kind = 'book' THEN 'book' ELSE 'comic' END, COUNT(*)
+		FROM subscriptions
+		WHERE archived_at IS NULL AND source_id = 'bangumi'
+		GROUP BY CASE WHEN match_kind = 'book' THEN 'book' ELSE 'comic' END`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var kind string
+		var count int
+		if err := rows.Scan(&kind, &count); err != nil {
+			return nil, err
+		}
+		counts[kind] = count
 	}
 	return counts, rows.Err()
 }
@@ -1114,7 +1184,7 @@ func (s *Store) ImportSubscription(ctx context.Context, sub model.Subscription) 
 
 func scanSubscription(row rowScanner) (model.Subscription, error) {
 	var sub model.Subscription
-	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ChapterCount, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary, &sub.ArchiveWarningAt, &sub.ArchiveWarningDays)
+	err := row.Scan(&sub.ID, &sub.SourceID, &sub.ComicID, &sub.OriginSourceID, &sub.OriginComicID, &sub.OriginSourceURL, &sub.MatchKind, &sub.MatchStatus, &sub.MatchError, &sub.MatchAttemptAt, &sub.Title, &sub.Cover, &sub.SeriesDir, &sub.Author, &sub.Enabled, &sub.AutoDownload, &sub.CronExpr, &sub.DownloadDir, &sub.ConvertToSimplified, &sub.ChapterMarker, &sub.CoverBlur, &sub.LastChapterID, &sub.LastChapterTitle, &sub.LastChapterOrder, &sub.ChapterCount, &sub.ComicStatus, &sub.LastNewChapterAt, &sub.LastCheckedAt, &sub.DisabledAt, &sub.CompletedAt, &sub.ArchivedAt, &sub.ArchiveReason, &sub.CreatedAt, &sub.UpdatedAt, &sub.Temporary, &sub.ArchiveWarningAt, &sub.ArchiveWarningDays)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Subscription{}, ErrNotFound
 	}
@@ -1173,6 +1243,31 @@ func (s *Store) RestoreSubscription(ctx context.Context, id int64) error {
 // 拉到章节列表都刷新），订阅卡片用它显示「共 N 话」。
 func (s *Store) UpdateSubscriptionChapterCount(ctx context.Context, id int64, count int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET chapter_count = ? WHERE id = ?`, count, id)
+	return err
+}
+
+func (s *Store) MatchSubscription(ctx context.Context, id int64, sourceID, comicID, author, comicStatus string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE subscriptions SET
+			source_id = ?, comic_id = ?,
+			author = CASE WHEN ? <> '' THEN ? ELSE author END,
+			comic_status = CASE WHEN ? <> '' THEN ? ELSE comic_status END,
+			match_status = 'matched', match_error = '', match_attempt_at = CURRENT_TIMESTAMP,
+			last_checked_at = NULL, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		strings.ToLower(strings.TrimSpace(sourceID)), strings.TrimSpace(comicID),
+		strings.TrimSpace(author), strings.TrimSpace(author),
+		strings.TrimSpace(comicStatus), strings.TrimSpace(comicStatus), id)
+	return err
+}
+
+func (s *Store) MarkSubscriptionMatchAttempt(ctx context.Context, id int64, status, message string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE subscriptions SET
+			match_status = ?, match_error = ?, match_attempt_at = CURRENT_TIMESTAMP,
+			last_checked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`,
+		strings.TrimSpace(status), strings.TrimSpace(message), id)
 	return err
 }
 

@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Rss,
   Search,
+  Sparkles,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -23,6 +24,7 @@ import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
+import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 import { notify } from '../stores/notices'
 import { rememberComicPreview } from '../stores/comicPreview'
 import {
@@ -37,6 +39,16 @@ import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v3'
 const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
+const BANGUMI_FEEDS = [
+  { id: 'bangumi-recent', feed: 'recent', name: '近期注目', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-airing', feed: 'airing', name: '连载中', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-monthly', feed: 'monthly', name: '本月新作', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-yearly', feed: 'yearly', name: '今年新作', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-popular', feed: 'popular', name: '收藏最多', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-ranking', feed: 'ranking', name: '排行榜', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-manga', feed: 'manga', name: '高分漫画', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+  { id: 'bangumi-novel', feed: 'novel', name: '高分小说', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: false, filters: [], filtersLoaded: true },
+]
 
 const route = useRoute()
 const router = useRouter()
@@ -63,8 +75,12 @@ const requestStates = new Map()
 let refreshRevealTimer = 0
 let selectionAnchor = -1
 
-const kindCount = computed(() => (kind) => allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
-const sources = computed(() => allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
+const kindCount = computed(() => (kind) => kind === 'bangumi'
+  ? BANGUMI_FEEDS.length
+  : allSources.value.filter((source) => !source.hidden && kindOf(source) === kind).length)
+const sources = computed(() => activeKind.value === 'bangumi'
+  ? BANGUMI_FEEDS
+  : allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
 const pageSize = computed(() => (viewMode.value === 'list' ? 30 : Math.max(1, gridColumns.value * 7)))
 
 // Kototoro 的排序能力会作为 sort 筛选组返回；没有声明的来源统一提供“最新”，
@@ -87,7 +103,7 @@ const activeSortGroup = computed(() => {
 
 
 function kindOf(source) {
-  if (source.kind === 'book' || source.kind === 'other') return source.kind
+  if (source.kind === 'book' || source.kind === 'other' || source.kind === 'bangumi') return source.kind
   return 'comic'
 }
 
@@ -136,7 +152,7 @@ function applyServerBrowseFilters(raw) {
 }
 
 function persistSourceBrowseFilters(source, filters) {
-  if (!source?.id) return
+  if (!source?.id || source.kind === 'bangumi') return
   void api.updateSource(source.id, { browseFilters: { ...filters } }).catch(() => {})
 }
 
@@ -219,6 +235,9 @@ const activeSourceDefaultDir = computed(() => {
   return String(account?.settings?.defaultDownloadDir || '').trim()
 })
 const activeSourceCoverBlur = computed(() => Boolean(sourceAccounts.value[activeSource.value?.id]?.settings?.coverBlur))
+const canBatchSubscribe = computed(() =>
+  activeKind.value === 'bangumi' || Boolean(activeSourceDefaultDir.value),
+)
 const hasNextPage = computed(() => {
   const panel = activePanel.value
   if (!panel) return false
@@ -242,8 +261,8 @@ async function loadSources() {
     allSources.value = payload.items || []
     sourceAccounts.value = payload.accounts || {}
     applyServerBrowseFilters(payload.browseFilters)
-    const requestedKind = ['comic', 'book', 'other'].includes(route.query.kind) ? route.query.kind : ''
-    activeKind.value = requestedKind || (['book', 'other'].includes(nav.kind) ? nav.kind : 'comic')
+    const requestedKind = ['bangumi', 'comic', 'book', 'other'].includes(route.query.kind) ? route.query.kind : ''
+    activeKind.value = requestedKind || (['bangumi', 'book', 'other'].includes(nav.kind) ? nav.kind : 'comic')
     const preferred = typeof route.query.source === 'string' ? route.query.source : nav.source || ''
     const found = sources.value.find((source) => source.id === preferred)
     activeId.value = found?.id || sources.value[0]?.id || ''
@@ -294,7 +313,7 @@ function handleDiscoverKeydown(event) {
 watch(
   () => [route.query.kind, route.query.source],
   ([kind, source]) => {
-    if (typeof kind === 'string' && kind && kind !== activeKind.value && ['comic', 'book', 'other'].includes(kind)) {
+    if (typeof kind === 'string' && kind && kind !== activeKind.value && ['bangumi', 'comic', 'book', 'other'].includes(kind)) {
       switchKind(kind)
       return
     }
@@ -358,7 +377,7 @@ watch(pageSize, () => {
 })
 
 async function switchKind(kind) {
-  if (!['comic', 'book', 'other'].includes(kind) || kind === activeKind.value) return
+  if (!['bangumi', 'comic', 'book', 'other'].includes(kind) || kind === activeKind.value) return
   clearDiscoverSelection()
   activeKind.value = kind
   activeId.value = sources.value[0]?.id || ''
@@ -410,6 +429,9 @@ function finishPanelRequest(source, panel, state) {
 }
 
 function fetchPage(source, panel, page, signal) {
+  if (source.kind === 'bangumi') {
+    return api.bangumiBrowse(source.feed, page, pageSize.value, signal)
+  }
   return panel.mode === 'search' && panel.query.trim()
     ? api.search(source.id, panel.query.trim(), page, signal)
     : api.browse(source.id, panel.filters, page, signal)
@@ -568,6 +590,9 @@ function rememberPosition() {
 function cover(item) {
   if (item.cachedCover) return item.cachedCover
   const source = allSources.value.find((entry) => entry.id === item.sourceId)
+  if (String(item.sourceId || '').startsWith('bangumi-')) {
+    return api.imageUrl(item.cover, item.sourceId, source?.homepage || 'https://bgm.tv/', 320)
+  }
   return api.imageUrl(item.cover, item.sourceId, source?.homepage || '', 320)
 }
 
@@ -578,7 +603,7 @@ function filterOptions(group) {
 }
 
 function sourceKindLabel(kind) {
-  return { comic: '漫画源', book: '书籍源', other: '视频源' }[kind] || '来源'
+  return { bangumi: 'Bangumi', comic: '漫画源', book: '书籍源', other: '视频源' }[kind] || '来源'
 }
 
 function discoveryKey(item) {
@@ -640,7 +665,20 @@ function handleDiscoverCardClick(event, item, index) {
     handleDiscoverItemClick(event, item, index)
     return
   }
+  if (isBangumiItem(item)) return
   openComic(item)
+}
+
+function isBangumiItem(item) {
+  return String(item?.sourceId || '').startsWith('bangumi-')
+}
+
+function beforeDiscoverNavigate(item) {
+  if (discoverSelecting.value) return false
+  if (!isBangumiItem(item)) return true
+  const target = String(item.sourceUrl || '').trim()
+  if (target) window.open(target, '_blank', 'noopener,noreferrer')
+  return false
 }
 
 function toggleAllDiscoverItems() {
@@ -658,15 +696,19 @@ function defaultSubscriptionCron() {
 
 async function batchSubscribeSelected() {
   const rows = visibleItems.value.filter((item) => selectedItems.value.has(discoveryKey(item)))
-  const downloadDir = activeSourceDefaultDir.value
+  const downloadDir = activeKind.value === 'bangumi'
+    ? activeSourceDefaultDir.value || lastSubscriptionDownloadDir()
+    : activeSourceDefaultDir.value
   if (!rows.length || batchSubscribing.value) return
-  if (!downloadDir) {
+  if (activeKind.value !== 'bangumi' && !downloadDir) {
     notify('当前内容源未设置默认下载目录，无法批量订阅', 'warning')
     return
   }
   const confirmed = await askConfirm({
     title: '批量加入订阅',
-    message: `确定订阅所选 ${rows.length} 部作品吗？将使用当前内容源默认下载目录：${downloadDir}${batchCoverBlur.value ? '，并开启封面模糊。' : '。'}`,
+    message: activeKind.value === 'bangumi'
+      ? `确定将所选 ${rows.length} 部 Bangumi 作品加入订阅计划吗？添加后会先匹配漫画或书籍内容源，未匹配时将在下次计划检查时重试。`
+      : `确定订阅所选 ${rows.length} 部作品吗？将使用当前内容源默认下载目录：${downloadDir}${batchCoverBlur.value ? '，并开启封面模糊。' : '。'}`,
     confirmText: '批量订阅',
   })
   if (!confirmed) return
@@ -682,11 +724,12 @@ async function batchSubscribeSelected() {
           title: item.title,
           cover: item.cover,
           author: item.author,
+          sourceUrl: item.sourceUrl,
           autoDownload: true,
           enabled: true,
           baseline: '',
           lastChapterOrder: 0,
-          allChapters: true,
+          allChapters: activeKind.value !== 'bangumi',
           cronExpr: defaultSubscriptionCron(),
           downloadDir,
           seriesDir: '',
@@ -702,6 +745,7 @@ async function batchSubscribeSelected() {
   } finally {
     batchSubscribing.value = false
   }
+  if (downloadDir) rememberSubscriptionDownloadDir(downloadDir)
   clearDiscoverSelection()
   notify(
     failed
@@ -718,6 +762,7 @@ function openComic(item) {
 }
 
 function latestLabel(item) {
+  if (isBangumiItem(item)) return String(item.status || 'Bangumi')
   const latest = String(item.latestChapterTitle || '').trim()
   if (/完结|完結|已完|completed|finished/i.test(String(item.status || ''))) {
     return `完结至 ${latest || '最后章节'}`
@@ -731,6 +776,10 @@ function latestLabel(item) {
     <div class="discover-head">
       <div class="inline discover-head-left">
         <div class="segmented" role="tablist" aria-label="资源类型">
+          <button type="button" :class="{ active: activeKind === 'bangumi' }" @click="switchKind('bangumi')">
+            <Sparkles :size="18" />
+            Bangumi <span class="segmented-count">{{ kindCount('bangumi') }}</span>
+          </button>
           <button type="button" :class="{ active: activeKind === 'comic' }" @click="switchKind('comic')">
             <ComicSourceIcon :size="18" />
             漫画源 <span class="segmented-count">{{ kindCount('comic') }}</span>
@@ -756,7 +805,7 @@ function latestLabel(item) {
         >
           <RefreshCw :size="18" :class="{ spin: activePanel.loading }" />
         </button>
-        <label class="discover-search-field">
+        <label v-if="activeSource.canSearch" class="discover-search-field">
           <Search :size="15" />
           <input
             v-model="activePanel.query"
@@ -808,10 +857,12 @@ function latestLabel(item) {
           type="button"
           :data-name="source.name"
           :title="source.name"
+          :aria-label="source.name"
           :class="{ active: source.id === activeId }"
           @click="selectSource(source.id)"
         >
-          <SourceIcon class="source-tab-icon" :src="source.icon" :kind="kindOf(source)" :alt="source.name" :size="18" />
+          <Sparkles v-if="source.kind === 'bangumi'" class="source-tab-icon" :size="18" />
+          <SourceIcon v-else class="source-tab-icon" :src="source.icon" :kind="kindOf(source)" :alt="source.name" :size="18" />
           <span>{{ source.name }}</span>
         </button>
       </nav>
@@ -838,7 +889,7 @@ function latestLabel(item) {
 
     <section v-else-if="activeSource && activePanel" class="source-page">
 
-      <div class="source-column-tools">
+      <div v-if="activeKind !== 'bangumi'" class="source-column-tools">
         <div class="source-filter-grid">
           <label v-for="group in activeFilters" :key="group.key" class="field compact filter-chip">
             <RoundedSelect
@@ -876,7 +927,7 @@ function latestLabel(item) {
             class="comic-card source-comic-card"
             :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
             :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-            :before-navigate="() => !discoverSelecting"
+            :before-navigate="() => beforeDiscoverNavigate(item)"
             @click="handleDiscoverCardClick($event, item, index)"
             @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
           >
@@ -913,7 +964,7 @@ function latestLabel(item) {
             class="source-list-card"
             :class="{ selected: isDiscoverSelected(item), selecting: discoverSelecting }"
             :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.id } }"
-            :before-navigate="() => !discoverSelecting"
+            :before-navigate="() => beforeDiscoverNavigate(item)"
             @click="handleDiscoverCardClick($event, item, index)"
             @contextmenu.prevent="enterDiscoverSelection($event, item, index)"
           >
@@ -985,8 +1036,8 @@ function latestLabel(item) {
     <button
       class="btn ghost small"
       type="button"
-      :disabled="!selectedItems.size || !activeSourceDefaultDir || batchSubscribing"
-      :title="activeSourceDefaultDir ? '批量加入订阅' : '当前内容源未设置默认下载目录'"
+      :disabled="!selectedItems.size || !canBatchSubscribe || batchSubscribing"
+      :title="canBatchSubscribe ? '批量加入订阅' : '当前内容源未设置默认下载目录'"
       @click="batchSubscribeSelected"
     >
       <Loader2 v-if="batchSubscribing" :size="14" class="spin" />

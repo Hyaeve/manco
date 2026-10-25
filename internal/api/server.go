@@ -59,7 +59,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.8.2"
+	appVersion    = "v0.9.0"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -129,6 +129,11 @@ type Server struct {
 	loginBangumiCovers      map[int]string
 	loginBangumiCoversCache map[int]bangumiCoverCacheEntry
 	loginBangumiAt          time.Time
+	bangumiFeedMu           sync.Mutex
+	bangumiFeedCache        map[string]bangumiFeedCacheEntry
+	bangumiCalendarMu       sync.Mutex
+	bangumiCalendarCache    []bangumiCalendarSubject
+	bangumiCalendarAt       time.Time
 
 	// 本地仓库扫描结果短缓存：NAS 目录扫描很慢，刷新页面不应该重扫一遍。
 	libraryMu    sync.Mutex
@@ -202,7 +207,7 @@ func New(options Options) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Server{
+	server := &Server{
 		cfg:                options.Config,
 		store:              options.Store,
 		configs:            options.Configs,
@@ -220,6 +225,10 @@ func New(options Options) *Server {
 		assets:             options.Assets,
 		telegram:           options.Telegram,
 	}
+	if options.Scheduler != nil {
+		options.Scheduler.SetMatcher(server)
+	}
+	return server
 }
 
 // Settings loads the persisted runtime settings with defaults applied.
@@ -360,6 +369,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("GET /api/login/bangumi", s.handleLoginBangumi)
 	mux.HandleFunc("GET /api/login/bangumi/cover", s.handleLoginBangumiCover)
+	mux.HandleFunc("GET /api/bangumi/discover", s.requireAuth(s.handleBangumiDiscover))
 
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleSources))
 	mux.HandleFunc("GET /api/icons", s.requireAuth(s.handleListIcons))
@@ -3809,13 +3819,15 @@ func (s *Server) subscriptionFilterFromRequest(r *http.Request) store.Subscripti
 	switch kind {
 	case source.KindBook:
 		filter.SourceIDs = bookSources
-		filter.MatchNone = len(bookSources) == 0
+		filter.MatchKind = source.KindBook
 	case source.KindOther:
 		filter.SourceIDs = otherSources
+		filter.MatchKind = source.KindOther
 		filter.MatchNone = len(otherSources) == 0
 	case source.KindComic:
 		filter.ExcludeSourceIDs = append(filter.ExcludeSourceIDs, bookSources...)
 		filter.ExcludeSourceIDs = append(filter.ExcludeSourceIDs, otherSources...)
+		filter.MatchKind = source.KindComic
 	}
 	return filter
 }
@@ -3833,12 +3845,21 @@ func (s *Server) subscriptionKindCounts(ctx context.Context) map[string]int {
 		return counts
 	}
 	for sourceID, count := range sourceCounts {
+		if sourceID == "bangumi" {
+			continue
+		}
 		kind := kindBySource[sourceID]
 		if kind == "" {
 			kind = source.KindComic
 		}
 		counts["all"] += count
 		counts[kind] += count
+	}
+	if bangumiCounts, countErr := s.store.SubscriptionBangumiKindCounts(ctx); countErr == nil {
+		for kind, count := range bangumiCounts {
+			counts["all"] += count
+			counts[kind] += count
+		}
 	}
 	return counts
 }
@@ -3916,6 +3937,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		Title               string  `json:"title"`
 		Cover               string  `json:"cover"`
 		Author              string  `json:"author"`
+		SourceURL           string  `json:"sourceUrl"`
 		SeriesDir           string  `json:"seriesDir"`
 		AutoDownload        *bool   `json:"autoDownload"`
 		Enabled             *bool   `json:"enabled"`
@@ -3961,24 +3983,46 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
 	}
-	item, err := s.registry.Get(payload.SourceID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	if strings.TrimSpace(payload.Title) == "" || strings.TrimSpace(payload.Cover) == "" {
-		account, _ := s.registry.Account(r.Context(), payload.SourceID)
-		if comic, err := item.Detail(r.Context(), account, payload.ComicID); err == nil {
-			payload.Title = source.FirstNonEmpty(payload.Title, comic.Title)
-			payload.Cover = source.FirstNonEmpty(payload.Cover, comic.Cover)
-			payload.Author = source.FirstNonEmpty(payload.Author, comic.Author)
+	bangumiSubmission := strings.HasPrefix(strings.ToLower(strings.TrimSpace(payload.SourceID)), "bangumi-")
+	matchKind := ""
+	originSourceID := strings.TrimSpace(payload.SourceID)
+	sourceID := originSourceID
+	if bangumiSubmission {
+		sourceID = "bangumi"
+		matchKind = source.KindComic
+		if strings.HasPrefix(strings.ToLower(originSourceID), "bangumi-novel") {
+			matchKind = source.KindBook
 		}
+	}
+	if !bangumiSubmission {
+		item, sourceErr := s.registry.Get(payload.SourceID)
+		if sourceErr != nil {
+			writeError(w, http.StatusNotFound, sourceErr.Error())
+			return
+		}
+		if strings.TrimSpace(payload.Title) == "" || strings.TrimSpace(payload.Cover) == "" {
+			account, _ := s.registry.Account(r.Context(), payload.SourceID)
+			if comic, detailErr := item.Detail(r.Context(), account, payload.ComicID); detailErr == nil {
+				payload.Title = source.FirstNonEmpty(payload.Title, comic.Title)
+				payload.Cover = source.FirstNonEmpty(payload.Cover, comic.Cover)
+				payload.Author = source.FirstNonEmpty(payload.Author, comic.Author)
+			}
+		}
+	}
+	if bangumiSubmission && (strings.TrimSpace(payload.Title) == "" || strings.TrimSpace(payload.Cover) == "") {
+		writeError(w, http.StatusBadRequest, "Bangumi 订阅缺少作品标题或封面")
+		return
 	}
 	title := source.FirstNonEmpty(payload.Title, payload.ComicID)
 	seriesDir := subscriptionSeriesDirName(payload.SeriesDir, title, convertToSimplified)
 	subscription := model.Subscription{
-		SourceID:            payload.SourceID,
+		SourceID:            sourceID,
 		ComicID:             payload.ComicID,
+		OriginSourceID:      originSourceID,
+		OriginComicID:       payload.ComicID,
+		OriginSourceURL:     strings.TrimSpace(payload.SourceURL),
+		MatchKind:           matchKind,
+		MatchStatus:         "",
 		Title:               title,
 		SeriesDir:           seriesDir,
 		Cover:               payload.Cover,
@@ -3994,6 +4038,10 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 		LastChapterOrder:    payload.LastOrder,
 		LastChapterTitle:    "",
 	}
+	if bangumiSubmission {
+		subscription.MatchStatus = "pending"
+		subscription.OriginComicID = payload.ComicID
+	}
 	saved, err := s.store.UpsertSubscription(r.Context(), subscription)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -4002,7 +4050,10 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	_ = s.configs.PersistSubscriptions(r.Context(), s.store)
 	response := map[string]any{"item": s.subscriptionWithCovers(r.Context(), saved)}
 	s.flushSubscriptionCoverIndex()
-	if payload.AllChapters {
+	if bangumiSubmission {
+		go s.finishBangumiSubscriptionMatch(saved.ID)
+		response["matching"] = true
+	} else if payload.AllChapters {
 		s.registerInitialDownloadNotice(r.Context(), saved)
 		queued, skipped, queueErr := s.scheduler.QueueAllManual(r.Context(), saved)
 		if queueErr != nil {

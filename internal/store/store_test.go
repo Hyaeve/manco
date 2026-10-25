@@ -616,6 +616,45 @@ func TestCreateDownloadJobKeepsCompletedStatus(t *testing.T) {
 	}
 }
 
+func TestPendingBangumiSubscriptionPersistsAndMatchesKind(t *testing.T) {
+	repository := openTestStore(t)
+	ctx := context.Background()
+	saved, err := repository.UpsertSubscription(ctx, model.Subscription{
+		SourceID:        "bangumi",
+		ComicID:         "42",
+		OriginSourceID:  "bangumi-novel",
+		OriginComicID:   "42",
+		OriginSourceURL: "https://bgm.tv/subject/42",
+		MatchKind:       "book",
+		MatchStatus:     "pending",
+		Title:           "测试小说",
+		Cover:           "https://lain.bgm.tv/cover.jpg",
+		Enabled:         true,
+		AutoDownload:    true,
+		DownloadDir:     "/downloads",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.OriginSourceID != "bangumi-novel" || saved.MatchKind != "book" || saved.MatchStatus != "pending" {
+		t.Fatalf("pending match fields = %#v", saved)
+	}
+	items, total, err := repository.ListSubscriptionsPage(ctx, SubscriptionFilter{MatchKind: "book"}, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(items) != 1 || items[0].ID != saved.ID {
+		t.Fatalf("book page = %#v total=%d", items, total)
+	}
+	counts, err := repository.SubscriptionBangumiKindCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts["book"] != 1 {
+		t.Fatalf("book count = %d", counts["book"])
+	}
+}
+
 func TestOpenBackfillsCronForLegacySubscriptions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manco.db")
 	database, err := sql.Open("sqlite", path)

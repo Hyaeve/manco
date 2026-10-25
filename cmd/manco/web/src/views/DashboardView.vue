@@ -631,15 +631,16 @@ function formatNextRun(value) {
 }
 
 .overview-hero-content {
+  --overview-hero-cover-width: clamp(138px, 13vw, 168px);
   position: absolute;
   inset: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: clamp(138px, 13vw, 168px) minmax(0, 1fr);
+  grid-template-columns: var(--overview-hero-cover-width) minmax(0, 1fr);
   gap: 20px;
   height: 100%;
   min-height: 0;
-  align-items: center;
+  align-items: end;
   padding: 18px 26px 22px;
   will-change: opacity, filter, transform;
 }
@@ -648,7 +649,7 @@ function formatNextRun(value) {
   position: relative;
   align-self: end;
   justify-self: start;
-  width: clamp(138px, 13vw, 168px);
+  width: var(--overview-hero-cover-width);
   aspect-ratio: 2 / 3;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.82);
@@ -697,36 +698,48 @@ function formatNextRun(value) {
 }
 
 .overview-hero-copy {
-  display: grid;
-  align-content: center;
+  display: flex;
+  min-height: 0;
+  height: calc(var(--overview-hero-cover-width) * 1.5);
+  align-self: end;
+  flex-direction: column;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .overview-hero-copy h1 {
+  display: -webkit-box;
+  flex: 0 0 auto;
   margin: 0;
+  overflow: hidden;
   color: var(--text);
   font-size: clamp(24px, 2.1vw, 32px);
   font-weight: 760;
   line-height: 1.15;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .overview-hero-authors {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 .overview-hero-copy p {
   display: -webkit-box;
+  flex: 1 1 auto;
   max-width: 660px;
   margin: 2px 0 5px;
+  min-height: 0;
   overflow: hidden;
   color: var(--text);
   font-size: 15px;
   line-height: 1.6;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 4;
 }
 
 .overview-hero-tags :deep(.tag-pill) {
@@ -742,15 +755,18 @@ function formatNextRun(value) {
 
 .overview-hero-tags {
   display: flex;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: 6px;
-  max-height: 48px;
+  max-height: 26px;
   margin-bottom: 0;
   overflow: hidden;
 }
 
 .overview-hero-link {
+  flex: 0 0 auto;
   justify-self: start;
+  margin-top: auto;
 }
 
 .overview-hero-dots {
@@ -1300,6 +1316,7 @@ function formatNextRun(value) {
   }
 
   .overview-hero-content {
+    --overview-hero-cover-width: 92px;
     grid-template-columns: 92px minmax(0, 1fr);
     gap: 14px;
     padding: 20px 16px 22px;
@@ -1307,11 +1324,10 @@ function formatNextRun(value) {
 
   .overview-hero-poster {
     align-self: end;
-    width: 92px;
   }
 
   .overview-hero-copy {
-    gap: 8px;
+    gap: 3px;
   }
 
   .overview-hero-copy h1 {
@@ -1327,11 +1343,12 @@ function formatNextRun(value) {
     margin-bottom: 1px;
     font-size: 12px;
     line-height: 1.55;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2;
   }
 
   .overview-hero-tags {
     gap: 4px;
+    max-height: 22px;
   }
 
   .overview-hero-tags span {

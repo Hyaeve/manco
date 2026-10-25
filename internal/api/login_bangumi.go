@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"sort"
@@ -17,7 +18,7 @@ import (
 const (
 	bangumiAPIRoot            = "https://api.bgm.tv"
 	bangumiCacheTTL           = 30 * time.Minute
-	bangumiItemLimit          = 8
+	bangumiItemLimit          = 10
 	bangumiCoverMaxSize       = 4 << 20
 	bangumiCoverCacheMaxBytes = 16 << 20
 )
@@ -46,15 +47,25 @@ type bangumiCalendarSubject struct {
 	NameCN  string `json:"name_cn"`
 	Summary string `json:"summary"`
 	Type    int    `json:"type"`
+	Date    string `json:"date"`
+	Eps     int    `json:"eps"`
 	Images  struct {
 		Large  string `json:"large"`
 		Common string `json:"common"`
 	} `json:"images"`
+	Rating struct {
+		Score float64 `json:"score"`
+		Rank  int     `json:"rank"`
+	} `json:"rating"`
+	Tags []struct {
+		Name string `json:"name"`
+	} `json:"tags"`
 	Collection struct {
 		Wish    int `json:"wish"`
 		Collect int `json:"collect"`
 		Doing   int `json:"doing"`
 	} `json:"collection"`
+	CalendarDayRank int `json:"-"`
 }
 
 type bangumiCoverCacheEntry struct {
@@ -113,37 +124,21 @@ func (s *Server) loginBangumiItems(ctx context.Context) ([]bangumiLoginItem, err
 	if len(s.loginBangumiCacheItems) > 0 && time.Since(s.loginBangumiAt) < bangumiCacheTTL {
 		items := append([]bangumiLoginItem(nil), s.loginBangumiCacheItems...)
 		s.loginBangumiMu.Unlock()
-		return items, nil
+		return sampleBangumiLoginItems(items, bangumiItemLimit), nil
 	}
 	s.loginBangumiMu.Unlock()
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, bangumiAPIRoot+"/calendar", nil)
+	subjects, err := s.randomBangumiSubjects(ctx, bangumiItemLimit*2, 20)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", bangumiUserAgent)
-	request.Header.Set("Accept", "application/json")
-	client := http.DefaultClient
-	if s.registry != nil {
-		client = s.registry.Client()
+	items := make([]bangumiLoginItem, 0, len(subjects))
+	for _, subject := range subjects {
+		if item, ok := bangumiLoginSubjectItem(subject); ok {
+			items = append(items, item)
+		}
 	}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("Bangumi calendar returned HTTP %d", response.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
-	if err != nil {
-		return nil, err
-	}
-	items, err := parseBangumiCalendar(raw, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	items = s.enrichBangumiItems(ctx, client, items)
+	items = s.enrichBangumiItems(ctx, s.bangumiHTTPClient(), items)
 	if len(items) == 0 {
 		return nil, nil
 	}
@@ -155,7 +150,45 @@ func (s *Server) loginBangumiItems(ctx context.Context) ([]bangumiLoginItem, err
 		s.loginBangumiCovers[item.ID] = item.Cover
 	}
 	s.loginBangumiMu.Unlock()
-	return items, nil
+	return sampleBangumiLoginItems(items, bangumiItemLimit), nil
+}
+
+func sampleBangumiLoginItems(items []bangumiLoginItem, count int) []bangumiLoginItem {
+	if len(items) <= count {
+		result := append([]bangumiLoginItem(nil), items...)
+		rand.Shuffle(len(result), func(i, j int) {
+			result[i], result[j] = result[j], result[i]
+		})
+		return result
+	}
+	indexes := rand.Perm(len(items))
+	result := make([]bangumiLoginItem, 0, count)
+	for _, index := range indexes[:count] {
+		result = append(result, items[index])
+	}
+	return result
+}
+
+func bangumiLoginSubjectItem(subject bangumiCalendarSubject) (bangumiLoginItem, bool) {
+	title := strings.TrimSpace(subject.NameCN)
+	if title == "" {
+		title = strings.TrimSpace(subject.Name)
+	}
+	cover := strings.TrimSpace(subject.Images.Large)
+	if cover == "" {
+		cover = strings.TrimSpace(subject.Images.Common)
+	}
+	cover, validCover := normalizeBangumiImageURL(cover)
+	if subject.ID <= 0 || title == "" || !validCover {
+		return bangumiLoginItem{}, false
+	}
+	return bangumiLoginItem{
+		ID:      subject.ID,
+		Title:   title,
+		Summary: strings.TrimSpace(subject.Summary),
+		URL:     fmt.Sprintf("https://bgm.tv/subject/%d", subject.ID),
+		Cover:   cover,
+	}, true
 }
 
 func parseBangumiCalendar(raw []byte, now time.Time) ([]bangumiLoginItem, error) {
@@ -300,13 +333,7 @@ func (s *Server) enrichBangumiItems(ctx context.Context, client *http.Client, it
 		}(index)
 	}
 	wg.Wait()
-	filtered := enriched[:0]
-	for _, item := range enriched {
-		if strings.TrimSpace(item.Summary) != "" {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
+	return enriched
 }
 
 func (s *Server) loginBangumiCover(ctx context.Context, subjectID int) ([]byte, string, error) {

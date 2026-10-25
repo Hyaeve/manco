@@ -122,7 +122,7 @@ async function submit() {
       target="_blank"
       rel="noopener noreferrer"
     >
-      <span>Bangumi · 近期注目</span>
+      <span>Bangumi · 随机推荐</span>
       <strong>{{ activeBangumi.title }}</strong>
       <p>{{ activeBangumi.summary }}</p>
     </a>

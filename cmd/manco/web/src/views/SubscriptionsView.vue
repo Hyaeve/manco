@@ -94,8 +94,10 @@ const form = ref({
 
 // 有排队/进行中的章节时才轮询刷新；这是全库轻量计数，不受当前分页影响。
 const hasActive = computed(() => activePending.value > 0)
+const hasPendingMatch = computed(() => items.value.some((item) => isPendingBangumiMatch(item)))
 
 function itemKind(item) {
+  if (isPendingBangumiMatch(item)) return item.matchKind || 'comic'
   const kind = sources.value[item.sourceId]?.kind
   return kind === 'book' || kind === 'other' ? kind : 'comic'
 }
@@ -354,7 +356,7 @@ function stopPolling() {
 function startPolling() {
   stopPolling()
   timer = window.setInterval(() => {
-    if (hasActive.value && !loading.value && !loadingMoreSubscriptions.value) load(true, false)
+    if ((hasActive.value || hasPendingMatch.value) && !loading.value && !loadingMoreSubscriptions.value) load(true, false)
   }, 5000)
 }
 
@@ -630,11 +632,25 @@ function cover(item) {
 }
 
 function sourceIcon(item) {
+  if (isPendingBangumiMatch(item)) return '/source-icons/bangumi.svg'
   return sources.value[item.sourceId]?.icon || ''
 }
 
 function sourceLabel(item) {
+  if (isPendingBangumiMatch(item)) return 'Bangumi'
   return sources.value[item.sourceId]?.name || item.sourceId
+}
+
+function isPendingBangumiMatch(item) {
+  return item?.sourceId === 'bangumi'
+    || ['pending', 'unmatched', 'error'].includes(String(item?.matchStatus || ''))
+}
+
+function beforeSubscriptionNavigate(item) {
+  if (!isPendingBangumiMatch(item)) return true
+  const target = String(item?.originSourceUrl || '').trim()
+  if (target) window.open(target, '_blank', 'noopener,noreferrer')
+  return false
 }
 
 function chapterCount(item) {
@@ -958,6 +974,7 @@ function batchDelete() {
           class="subscription-cover"
           :class="{ blurred: item.coverBlur }"
           :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+          :before-navigate="() => beforeSubscriptionNavigate(item)"
         >
           <img v-if="cover(item)" :src="cover(item)" :alt="item.title" loading="lazy" decoding="async" />
           <BookOpen v-else :size="24" />
@@ -967,13 +984,17 @@ function batchDelete() {
             <ContentLink
               class="subscription-title"
               :to="{ name: 'comic', params: { sourceId: item.sourceId, comicId: item.comicId } }"
+              :before-navigate="() => beforeSubscriptionNavigate(item)"
               :title="item.title"
             >
               {{ cardTitle(item) }}
             </ContentLink>
           </div>
           <span class="subscription-sub">{{ item.author || '未知作者' }}</span>
-          <span class="subscription-sub">
+          <span v-if="isPendingBangumiMatch(item)" class="subscription-sub">
+            等待匹配内容源 · {{ item.matchError || '下次计划检查时重试' }}
+          </span>
+          <span v-else class="subscription-sub">
             <template v-if="chapterCount(item) > 0">共 {{ chapterCount(item) }} 话 · </template>最新章节：{{ item.lastChapterTitle || '尚未记录' }}
           </span>
           <div class="subscription-line">

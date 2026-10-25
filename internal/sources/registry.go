@@ -327,6 +327,7 @@ func (r *Registry) AllowedImageHost(host string) bool {
 		return false
 	}
 	for _, suffix := range []string{
+		".bgm.tv",
 		".18comic.vip", ".18comic.org", ".18comic.cc", ".18mh.org",
 		".jmapiproxy.cc", ".jmapiproxy1.cc", ".jmapiproxy2.cc", ".jmapiproxy3.cc",
 		".jmapinodeudzn.net",

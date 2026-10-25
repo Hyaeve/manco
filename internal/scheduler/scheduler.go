@@ -36,6 +36,12 @@ type Notifier interface {
 	SubscriptionChecked(ctx context.Context, subscription model.Subscription, queued int, titles []string)
 }
 
+// Matcher resolves provisional subscriptions such as Bangumi entries to a
+// concrete executable content source.
+type Matcher interface {
+	MatchSubscription(ctx context.Context, subscription model.Subscription) (model.Subscription, bool, error)
+}
+
 // SubscriptionCheckResult reports what one subscription check discovered.
 type SubscriptionCheckResult struct {
 	NewChapters int
@@ -49,12 +55,17 @@ type Scheduler struct {
 	intervalNanos atomic.Int64
 	logger        *log.Logger
 	notifier      Notifier
+	matcher       Matcher
 	afterUpdate   func(context.Context)
 }
 
 // SetNotifier installs a routine check notifier.
 func (s *Scheduler) SetNotifier(notifier Notifier) {
 	s.notifier = notifier
+}
+
+func (s *Scheduler) SetMatcher(matcher Matcher) {
+	s.matcher = matcher
 }
 
 // SetAfterUpdate installs a callback used to refresh the mounted config
@@ -149,6 +160,19 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 
 func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, queuePriority int) (SubscriptionCheckResult, error) {
 	result := SubscriptionCheckResult{}
+	if strings.EqualFold(strings.TrimSpace(subscription.SourceID), "bangumi") {
+		if s.matcher == nil {
+			return result, errors.New("Bangumi 内容源匹配器不可用")
+		}
+		matched, ok, err := s.matcher.MatchSubscription(ctx, subscription)
+		if err != nil {
+			return result, err
+		}
+		if !ok {
+			return result, nil
+		}
+		subscription = matched
+	}
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
 		return result, err

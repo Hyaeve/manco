@@ -34,6 +34,13 @@ type Subscription struct {
 	ID                  int64      `json:"id"`
 	SourceID            string     `json:"sourceId"`
 	ComicID             string     `json:"comicId"`
+	OriginSourceID      string     `json:"originSourceId,omitempty"`
+	OriginComicID       string     `json:"originComicId,omitempty"`
+	OriginSourceURL     string     `json:"originSourceUrl,omitempty"`
+	MatchKind           string     `json:"matchKind,omitempty"`
+	MatchStatus         string     `json:"matchStatus,omitempty"`
+	MatchError          string     `json:"matchError,omitempty"`
+	MatchAttemptAt      *time.Time `json:"matchAttemptAt,omitempty"`
 	Title               string     `json:"title"`
 	Cover               string     `json:"cover"`
 	LocalCover          string     `json:"localCover,omitempty"`

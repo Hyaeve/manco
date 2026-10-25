@@ -114,6 +114,14 @@ export const api = {
     }
     return request(`/api/sources/${encodeURIComponent(id)}/browse?${params.toString()}`, { signal })
   },
+  bangumiBrowse: (feed, page = 1, limit = 42, signal) => {
+    const params = new URLSearchParams({
+      feed: String(feed || ''),
+      page: String(page),
+      limit: String(limit),
+    })
+    return request(`/api/bangumi/discover?${params.toString()}`, { signal })
+  },
   comic: (id, comicId) =>
     request(`/api/sources/${encodeURIComponent(id)}/comics/${encodeURIComponent(comicId)}`),
   chapterPreview: (id, comicId, chapter) =>

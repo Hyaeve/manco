@@ -88,6 +88,17 @@ type stubChapters struct {
 	chapters []model.Chapter
 }
 
+type stubMatcher struct {
+	calls   int
+	matched model.Subscription
+	ok      bool
+}
+
+func (m *stubMatcher) MatchSubscription(_ context.Context, _ model.Subscription) (model.Subscription, bool, error) {
+	m.calls++
+	return m.matched, m.ok, nil
+}
+
 func (s *stubChapters) Info() model.SourceInfo {
 	return model.SourceInfo{ID: "stub", Name: "测试源"}
 }
@@ -116,6 +127,42 @@ func newTestScheduler(chapters []model.Chapter, subscriptions *stubSubscriptions
 	registry := sources.NewRegistry(nil, nil, nil)
 	registry.Register(&stubChapters{chapters: chapters})
 	return New(registry, subscriptions, downloads, 0, log.New(io.Discard, "", 0))
+}
+
+func TestPendingBangumiSubscriptionIsMatchedBeforeCheck(t *testing.T) {
+	subscriptions := &stubSubscriptions{items: []model.Subscription{{
+		ID:            1,
+		SourceID:      "bangumi",
+		ComicID:       "42",
+		MatchKind:     source.KindComic,
+		MatchStatus:   "pending",
+		Title:         "待匹配作品",
+		Enabled:       true,
+		AutoDownload:  true,
+		LastChapterID: "",
+		DownloadDir:   "/downloads",
+		CreatedAt:     time.Now().Add(-time.Hour),
+	}}}
+	downloads := &stubDownloads{}
+	scheduler := newTestScheduler(testChapters(), subscriptions, downloads)
+	matcher := &stubMatcher{
+		ok: true,
+		matched: model.Subscription{
+			ID: 1, SourceID: "stub", ComicID: "comic-1", MatchKind: source.KindComic,
+			MatchStatus: "matched", Title: "待匹配作品", Enabled: true, AutoDownload: true,
+			DownloadDir: "/downloads", CreatedAt: time.Now().Add(-time.Hour),
+		},
+	}
+	scheduler.SetMatcher(matcher)
+	if _, err := scheduler.CheckOneDetailed(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if matcher.calls != 1 {
+		t.Fatalf("matcher calls = %d, want 1", matcher.calls)
+	}
+	if len(subscriptions.updates) != 1 || subscriptions.updates[0].LastChapterID != "3" {
+		t.Fatalf("baseline updates = %#v", subscriptions.updates)
+	}
 }
 
 func testChapters() []model.Chapter {
