@@ -2517,8 +2517,14 @@
   -webkit-backdrop-filter: none;
 }
 
-.login-page.has-bangumi .login-logo {
-  margin: 0 0 20px;
+.login-page.has-bangumi .login-brand {
+  width: min(360px, 100%);
+  gap: 6px;
+  margin: 0 0 30px;
+}
+
+.login-page.has-bangumi .login-brand .brand-tagline {
+  font-size: 13px;
 }
 
 .login-page.has-bangumi .login-title {
@@ -2533,8 +2539,8 @@
 }
 
 .login-page.has-bangumi .login-form {
-  gap: 14px;
-  margin-top: 28px;
+  gap: 18px;
+  margin-top: 32px;
 }
 
 .login-page.has-bangumi .login-form .input,
@@ -2694,6 +2700,11 @@
     align-self: center;
     width: min(430px, calc(100% - 40px));
     padding: 34px 0 42px;
+  }
+
+  .login-page.has-bangumi .login-brand {
+    width: min(310px, 100%);
+    margin-bottom: 24px;
   }
 
   .login-bangumi-dots {

@@ -610,6 +610,7 @@ func TestCompareVersions(t *testing.T) {
 		{name: "equal", left: "v0.1.4", right: "0.1.4", want: 0},
 		{name: "hundred base middle", left: "v0.101.0", right: "v0.100.99", want: 1},
 		{name: "longer patch", left: "v1.2.0", right: "v1.2", want: 0},
+		{name: "small version", left: "v0.9.0.1", right: "v0.9.0", want: 1},
 		{name: "prerelease suffix ignored", left: "v0.1.4-rc1", right: "v0.1.4", want: 0},
 	}
 	for _, test := range tests {

@@ -1230,6 +1230,42 @@ tbody tr:hover {
   margin: 0 auto;
 }
 
+.login-brand {
+  display: flex;
+  width: min(320px, 100%);
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 auto 24px;
+}
+
+.login-brand .brand-lockup {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.login-brand .brand-lockup-dark {
+  display: none;
+}
+
+[data-theme='dark'] .login-brand .brand-lockup-light {
+  display: none;
+}
+
+[data-theme='dark'] .login-brand .brand-lockup-dark {
+  display: block;
+}
+
+.login-brand .brand-tagline {
+  padding-left: 37.5%;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .login-title {
   display: flex;
   flex-direction: column;
@@ -1250,8 +1286,8 @@ tbody tr:hover {
 .login-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 20px;
+  gap: 16px;
+  margin-top: 24px;
 }
 
 .login-form .input {

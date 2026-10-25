@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import MancoBrand from './components/MancoBrand.vue'
 import { api } from './api'
 import { useAuthStore } from './stores/auth'
 import { dismissNotice, notices } from './stores/notices'
@@ -407,12 +408,7 @@ function activityCover(entry) {
     <div v-if="menuOpen" class="nav-overlay" @click="menuOpen = false" />
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="brand">
-        <span class="brand-mark">
-          <img class="brand-lockup brand-lockup-light" src="/brand-lockup.png" alt="Manco 漫画书籍订阅下载" />
-          <img class="brand-lockup brand-lockup-dark" src="/brand-lockup-plate.png" alt="Manco 漫画书籍订阅下载" />
-          <!-- 副标题对齐横条图里 “Manco” 字标的左边，而不是整条图的左边。 -->
-          <small class="brand-tagline">漫画书籍 · 订阅下载</small>
-        </span>
+        <MancoBrand />
       </div>
       <nav aria-label="主导航">
         <div class="nav-group">

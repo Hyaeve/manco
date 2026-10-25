@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Loader2, LogIn, UserPlus } from 'lucide-vue-next'
 import { api } from '../api'
-import MancoLogo from '../components/MancoLogo.vue'
+import MancoBrand from '../components/MancoBrand.vue'
 import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
 
@@ -143,7 +143,7 @@ async function submit() {
       />
     </div>
     <div class="login-card">
-      <MancoLogo class="login-logo" :size="72" />
+      <MancoBrand class="login-brand" />
       <div class="login-title">
         <h1>{{ setupRequired ? '创建账号' : '登录' }}</h1>
         <span v-if="setupRequired">首次使用</span>
