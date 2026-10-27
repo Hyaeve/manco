@@ -31,6 +31,18 @@ type SubscriptionDownloadCompletedNotice struct {
 	NextCheckLabel string
 }
 
+type BangumiMatchedNotice struct {
+	Title         string
+	OriginalTitle string
+	Source        string
+	Author        string
+	Description   string
+	Status        string
+	CoverURL      string
+	CoverFile     string
+	CoverBlur     bool
+}
+
 type SubscriptionArchiveNotice struct {
 	Title          string
 	Source         string
@@ -115,6 +127,60 @@ func (s *Service) SubscriptionChecked(ctx context.Context, subscription model.Su
 	sourceNames := s.notificationSourceNames(ctx)
 	text := renderSubscriptionChecked(subscription, sourceNames[subscription.SourceID], queued, titles)
 	s.notifyPhotoAll(ctx, subscription.Cover, text, subscription.CoverBlur)
+}
+
+func (s *Service) BangumiMatched(ctx context.Context, notice BangumiMatchedNotice) {
+	if !s.Enabled() {
+		return
+	}
+	caption := renderBangumiMatchedNotice(notice)
+	s.mu.RLock()
+	chats := append([]string(nil), s.cfg.ChatIDs...)
+	s.mu.RUnlock()
+	for _, chat := range chats {
+		if path := strings.TrimSpace(notice.CoverFile); path != "" {
+			if err := s.sendPhotoFile(ctx, chat, path, caption, notice.CoverBlur); err == nil {
+				continue
+			}
+		}
+		if photo := telegramPhotoURL(notice.CoverURL); photo != "" {
+			payload := map[string]any{
+				"chat_id":    chat,
+				"photo":      photo,
+				"caption":    caption,
+				"parse_mode": "HTML",
+			}
+			if notice.CoverBlur {
+				payload["has_spoiler"] = true
+			}
+			if _, err := s.callMethod(ctx, "sendPhoto", payload); err == nil {
+				continue
+			}
+		}
+		s.sendPersistentMessage(ctx, chat, caption, nil)
+	}
+}
+
+func renderBangumiMatchedNotice(notice BangumiMatchedNotice) string {
+	title := fallback(strings.TrimSpace(notice.Title), "未命名作品")
+	source := fallback(strings.TrimSpace(notice.Source), "未知内容源")
+	lines := []string{
+		"<b>Bangumi 匹配成功</b>",
+		notificationWorkTitle(title, source),
+		"内容源：" + html.EscapeString(source),
+		"作者：" + html.EscapeString(fallback(strings.TrimSpace(notice.Author), "未知作者")),
+	}
+	originalTitle := strings.TrimSpace(notice.OriginalTitle)
+	if originalTitle != "" && originalTitle != title {
+		lines = append(lines, "Bangumi 名称："+html.EscapeString(originalTitle))
+	}
+	if status := strings.TrimSpace(notice.Status); status != "" {
+		lines = append(lines, "作品状态："+html.EscapeString(status))
+	}
+	if description := cleanComicSummary(title, notice.Description); description != "" {
+		lines = append(lines, "简介："+html.EscapeString(truncate(description, 180)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderSubscriptionChecked(subscription model.Subscription, sourceName string, queued int, titles []string) string {

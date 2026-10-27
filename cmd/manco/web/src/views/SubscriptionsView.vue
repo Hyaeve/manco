@@ -534,7 +534,7 @@ function openEditor(item) {
 async function saveEditor() {
   if (!editing.value) return
   // Cron 留空表示这个订阅不做定时检查，不再强制填写。
-  if (!form.value.downloadDir.trim()) {
+  if (!form.value.downloadDir.trim() && !isBangumiOrigin(editing.value)) {
     notify('请选择下载位置', 'warning')
     return
   }
@@ -560,7 +560,7 @@ async function saveEditor() {
     })
     if (enablingMarker) markerResult = await api.backfillChapterMarkers(editing.value.id)
     Object.assign(editing.value, updated)
-    rememberSubscriptionDownloadDir(updated.downloadDir)
+    if (updated.downloadDir) rememberSubscriptionDownloadDir(updated.downloadDir)
     if (enablingMarker) {
       const renamed = Number(markerResult?.renamed || 0)
       const failed = Number(markerResult?.failed || 0)
@@ -644,6 +644,11 @@ function sourceLabel(item) {
 function isPendingBangumiMatch(item) {
   return item?.sourceId === 'bangumi'
     || ['pending', 'unmatched', 'error'].includes(String(item?.matchStatus || ''))
+}
+
+function isBangumiOrigin(item) {
+  return item?.sourceId === 'bangumi'
+    || String(item?.originSourceId || '').toLowerCase().startsWith('bangumi-')
 }
 
 function beforeSubscriptionNavigate(item) {
@@ -1003,7 +1008,15 @@ function batchDelete() {
           </div>
           <div class="subscription-line">
             <FolderOpen :size="14" />
-            <span>{{ item.downloadDir || '未设置下载目录' }}</span>
+            <span>
+              {{
+                item.followSourceDownloadDir
+                  ? (isPendingBangumiMatch(item)
+                    ? '匹配后跟随内容源默认目录'
+                    : `跟随内容源默认目录${item.effectiveDownloadDir ? `：${item.effectiveDownloadDir}` : ''}`)
+                  : (item.downloadDir || '未设置下载目录')
+              }}
+            </span>
           </div>
           <div class="subscription-line">
             <History :size="14" />
@@ -1092,8 +1105,8 @@ function batchDelete() {
             v-model:suffix-value="form.seriesDir"
             :suffix="editing?.title"
             :convert-to-simplified="form.convertToSimplified"
-            :allow-default="false"
-            placeholder="选择下载位置"
+            :allow-default="isBangumiOrigin(editing)"
+            :placeholder="isBangumiOrigin(editing) ? '留空则跟随匹配内容源默认位置' : '选择下载位置'"
           />
         </label>
         <div class="function-option-grid">

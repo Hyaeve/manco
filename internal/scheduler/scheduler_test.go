@@ -221,6 +221,38 @@ func TestCheckOneRefreshesSnapshotAfterSuccessfulUpdate(t *testing.T) {
 	}
 }
 
+func TestDownloadDirResolverAppliesToQueuedJobs(t *testing.T) {
+	subscriptions := &stubSubscriptions{items: []model.Subscription{{
+		ID:               1,
+		SourceID:         "stub",
+		ComicID:          "1",
+		Title:            "测试作品",
+		Enabled:          true,
+		AutoDownload:     true,
+		LastChapterID:    "1",
+		LastChapterTitle: "第1话",
+		LastChapterOrder: 1,
+		DownloadDir:      "",
+	}}}
+	downloads := &stubDownloads{}
+	scheduler := newTestScheduler(testChapters(), subscriptions, downloads)
+	scheduler.SetDownloadDirResolver(func(_ context.Context, subscription model.Subscription) (string, error) {
+		if subscription.SourceID != "stub" {
+			t.Fatalf("resolver source = %q, want stub", subscription.SourceID)
+		}
+		return "/resolved/source-default", nil
+	})
+	scheduler.RunOnce(context.Background())
+	if len(downloads.jobs) != 2 {
+		t.Fatalf("queued %d jobs, want 2", len(downloads.jobs))
+	}
+	for _, job := range downloads.jobs {
+		if job.DownloadDir != "/resolved/source-default" {
+			t.Fatalf("job download dir = %q, want resolved source default", job.DownloadDir)
+		}
+	}
+}
+
 func TestNewChaptersAreQueuedOldestFirst(t *testing.T) {
 	subscriptions := &stubSubscriptions{items: []model.Subscription{{
 		ID:               1,

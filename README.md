@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="cmd/manco/web/public/brand-lockup.png" alt="Manco 完整图标与字标" width="420">
+  <img src="cmd/manco/web/public/readme-brand-lockup.png" alt="Manco 完整图标与字标" width="420">
 </p>
 
 # Manco

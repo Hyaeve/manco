@@ -42,6 +42,8 @@ type Matcher interface {
 	MatchSubscription(ctx context.Context, subscription model.Subscription) (model.Subscription, bool, error)
 }
 
+type DownloadDirResolver func(ctx context.Context, subscription model.Subscription) (string, error)
+
 // SubscriptionCheckResult reports what one subscription check discovered.
 type SubscriptionCheckResult struct {
 	NewChapters int
@@ -49,14 +51,15 @@ type SubscriptionCheckResult struct {
 }
 
 type Scheduler struct {
-	registry      *sources.Registry
-	subscriptions Subscriptions
-	downloads     Downloads
-	intervalNanos atomic.Int64
-	logger        *log.Logger
-	notifier      Notifier
-	matcher       Matcher
-	afterUpdate   func(context.Context)
+	registry            *sources.Registry
+	subscriptions       Subscriptions
+	downloads           Downloads
+	intervalNanos       atomic.Int64
+	logger              *log.Logger
+	notifier            Notifier
+	matcher             Matcher
+	downloadDirResolver DownloadDirResolver
+	afterUpdate         func(context.Context)
 }
 
 // SetNotifier installs a routine check notifier.
@@ -66,6 +69,10 @@ func (s *Scheduler) SetNotifier(notifier Notifier) {
 
 func (s *Scheduler) SetMatcher(matcher Matcher) {
 	s.matcher = matcher
+}
+
+func (s *Scheduler) SetDownloadDirResolver(resolver DownloadDirResolver) {
+	s.downloadDirResolver = resolver
 }
 
 // SetAfterUpdate installs a callback used to refresh the mounted config
@@ -172,6 +179,9 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 			return result, nil
 		}
 		subscription = matched
+	}
+	if err := s.resolveDownloadDir(ctx, &subscription); err != nil {
+		return result, err
 	}
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
@@ -281,6 +291,9 @@ var ErrNoChapters = errors.New("订阅作品没有可下载章节")
 // download is disabled. It also advances the subscription baseline so the
 // scheduled checker does not report the same chapter as newly published.
 func (s *Scheduler) QueueLatest(ctx context.Context, subscription model.Subscription) (model.DownloadJob, error) {
+	if err := s.resolveDownloadDir(ctx, &subscription); err != nil {
+		return model.DownloadJob{}, err
+	}
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
 		return model.DownloadJob{}, err
@@ -335,6 +348,9 @@ func (s *Scheduler) QueueAllManual(ctx context.Context, subscription model.Subsc
 }
 
 func (s *Scheduler) queueAll(ctx context.Context, subscription model.Subscription, queuePriority int) (queued, skipped int, err error) {
+	if err := s.resolveDownloadDir(ctx, &subscription); err != nil {
+		return 0, 0, err
+	}
 	item, err := s.registry.Get(subscription.SourceID)
 	if err != nil {
 		return 0, 0, err
@@ -384,6 +400,18 @@ func (s *Scheduler) queueAll(ctx context.Context, subscription model.Subscriptio
 	}
 	s.downloads.Notify()
 	return queued, skipped, nil
+}
+
+func (s *Scheduler) resolveDownloadDir(ctx context.Context, subscription *model.Subscription) error {
+	if subscription == nil || s.downloadDirResolver == nil {
+		return nil
+	}
+	downloadDir, err := s.downloadDirResolver(ctx, *subscription)
+	if err != nil {
+		return err
+	}
+	subscription.DownloadDir = downloadDir
+	return nil
 }
 
 // RunDue checks subscriptions whose weekly cron schedule has come due.

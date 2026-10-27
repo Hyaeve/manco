@@ -164,6 +164,57 @@ func TestNotificationWorkTitleUsesSourceAbbreviation(t *testing.T) {
 	}
 }
 
+func TestRenderBangumiMatchedNotice(t *testing.T) {
+	text := renderBangumiMatchedNotice(BangumiMatchedNotice{
+		Title:         "葬送的芙莉莲",
+		OriginalTitle: "葬送のフリーレン",
+		Source:        "包子漫画",
+		Author:        "山田钟人",
+		Description:   "作品讲述：魔王讨伐结束后，精灵魔法使芙莉莲踏上新的旅程。",
+		Status:        "连载中",
+	})
+	for _, want := range []string{
+		"<b>Bangumi 匹配成功</b>",
+		"<b>葬送的芙莉莲（包子）</b>",
+		"内容源：包子漫画",
+		"作者：山田钟人",
+		"Bangumi 名称：葬送のフリーレン",
+		"作品状态：连载中",
+		"简介：魔王讨伐结束后，精灵魔法使芙莉莲踏上新的旅程。",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("matched notice missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestBangumiMatchedUsesCoverBlur(t *testing.T) {
+	var payload map[string]any
+	service := New(log.New(io.Discard, "", 0))
+	service.cfg.Enabled = true
+	service.cfg.Token = "test-token"
+	service.cfg.ChatIDs = []string{"1"}
+	service.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode telegram payload: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true,"result":{"message_id":42}}`)),
+		}, nil
+	})}
+	service.BangumiMatched(context.Background(), BangumiMatchedNotice{
+		Title:     "测试作品",
+		Source:    "包子漫画",
+		CoverURL:  "https://example.test/cover.jpg",
+		CoverBlur: true,
+	})
+	if payload["has_spoiler"] != true {
+		t.Fatalf("matched cover blur not forwarded to Telegram: %+v", payload)
+	}
+}
+
 func TestRenderSubscriptionCheckedLayout(t *testing.T) {
 	text := renderSubscriptionChecked(model.Subscription{
 		Title:    "堕落物语2",

@@ -15,8 +15,9 @@ import (
 )
 
 type subscriptionMatchSource struct {
-	info  model.SourceInfo
-	items []model.Comic
+	info   model.SourceInfo
+	items  []model.Comic
+	detail model.Comic
 }
 
 func (s *subscriptionMatchSource) Info() model.SourceInfo { return s.info }
@@ -27,7 +28,7 @@ func (s *subscriptionMatchSource) Browse(context.Context, source.Account, model.
 	return model.SearchResult{}, nil
 }
 func (s *subscriptionMatchSource) Detail(context.Context, source.Account, string) (model.Comic, error) {
-	return model.Comic{}, nil
+	return s.detail, nil
 }
 func (s *subscriptionMatchSource) Chapters(context.Context, source.Account, string) ([]model.Chapter, error) {
 	return nil, nil
@@ -84,5 +85,38 @@ func TestMatchBangumiSubscriptionSelectsBestContentSource(t *testing.T) {
 	}
 	if matched.OriginSourceID != "bangumi-manga" || matched.OriginComicID != "42" {
 		t.Fatalf("origin fields = %#v", matched)
+	}
+}
+
+func TestBangumiMatchedComicUsesSourceDetail(t *testing.T) {
+	repository, err := store.Open(filepath.Join(t.TempDir(), "detail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	registry := sources.NewRegistry(nil, nil, repository)
+	registry.Register(&subscriptionMatchSource{
+		info: model.SourceInfo{ID: "match-comic", Name: "包子漫画", Kind: source.KindComic, CanSearch: true},
+		detail: model.Comic{
+			SourceID:    "match-comic",
+			ID:          "comic-42",
+			Title:       "葬送的芙莉莲",
+			Cover:       "https://example.test/cover.jpg",
+			Author:      "山田钟人",
+			Description: "作品讲述：魔王讨伐结束后的旅程。",
+			Status:      "连载中",
+			SourceURL:   "https://example.test/comic-42",
+		},
+	})
+	server := &Server{store: repository, registry: registry}
+	comic, sourceName := server.bangumiMatchedComic(context.Background(), subscriptionMatchCandidate{
+		sourceID: "match-comic",
+		comic:    model.Comic{ID: "comic-42", Title: "Bangumi 旧标题"},
+	})
+	if sourceName != "包子漫画" {
+		t.Fatalf("source name = %q", sourceName)
+	}
+	if comic.Title != "葬送的芙莉莲" || comic.Description == "" || comic.Cover == "" {
+		t.Fatalf("matched comic detail = %#v", comic)
 	}
 }

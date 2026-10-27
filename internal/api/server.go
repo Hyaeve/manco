@@ -3983,10 +3983,16 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	downloadDir, err := s.cleanDownloadDir(payload.DownloadDir)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	originSourceID := strings.TrimSpace(payload.SourceID)
+	bangumiSubmission := strings.HasPrefix(strings.ToLower(originSourceID), "bangumi-")
+	downloadDir := ""
+	if !bangumiSubmission || strings.TrimSpace(payload.DownloadDir) != "" {
+		var err error
+		downloadDir, err = s.cleanDownloadDir(payload.DownloadDir)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	convertToSimplified := s.loadSettings(r.Context()).ConvertToSimplified
 	chapterMarker := payload.ChapterMarker != nil && *payload.ChapterMarker
@@ -3997,9 +4003,7 @@ func (s *Server) handleCreateSubscription(w http.ResponseWriter, r *http.Request
 	if payload.ConvertToSimplified != nil {
 		convertToSimplified = *payload.ConvertToSimplified
 	}
-	bangumiSubmission := strings.HasPrefix(strings.ToLower(strings.TrimSpace(payload.SourceID)), "bangumi-")
 	matchKind := ""
-	originSourceID := strings.TrimSpace(payload.SourceID)
 	sourceID := originSourceID
 	if bangumiSubmission {
 		sourceID = "bangumi"
@@ -4236,8 +4240,8 @@ func (s *Server) processInitialDownloadNotices(ctx context.Context) {
 }
 
 func (s *Server) localCoverFileForSubscription(subscription model.Subscription) string {
-	root, err := s.cleanDownloadDir(subscription.DownloadDir)
-	if err != nil {
+	root, err := s.ResolveSubscriptionDownloadDir(context.Background(), subscription)
+	if err != nil || strings.TrimSpace(root) == "" {
 		return ""
 	}
 	series := strings.TrimSpace(subscription.SeriesDir)
@@ -4331,10 +4335,14 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if payload.DownloadDir != nil {
-		downloadDir, err = s.cleanDownloadDir(*payload.DownloadDir)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
+		if strings.TrimSpace(*payload.DownloadDir) == "" && isBangumiOriginSubscription(existing) {
+			downloadDir = ""
+		} else {
+			downloadDir, err = s.cleanDownloadDir(*payload.DownloadDir)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 	}
 	if payload.ConvertToSimplified != nil {
@@ -4581,6 +4589,30 @@ func (s *Server) cleanDownloadDir(raw string) (string, error) {
 		return "", errors.New("下载位置不能是容器根目录")
 	}
 	return cleaned, nil
+}
+
+func isBangumiOriginSubscription(subscription model.Subscription) bool {
+	origin := strings.ToLower(strings.TrimSpace(subscription.OriginSourceID))
+	sourceID := strings.ToLower(strings.TrimSpace(subscription.SourceID))
+	return sourceID == "bangumi" || strings.HasPrefix(origin, "bangumi-")
+}
+
+func (s *Server) ResolveSubscriptionDownloadDir(ctx context.Context, subscription model.Subscription) (string, error) {
+	customDir := strings.TrimSpace(subscription.DownloadDir)
+	if customDir != "" || !isBangumiOriginSubscription(subscription) {
+		return s.cleanDownloadDir(customDir)
+	}
+	sourceID := strings.TrimSpace(subscription.SourceID)
+	if sourceID == "" || strings.EqualFold(sourceID, "bangumi") {
+		return "", nil
+	}
+	defaultDir := ""
+	if s.store != nil {
+		if account, err := s.store.SourceAccount(ctx, sourceID); err == nil {
+			defaultDir = s.sourceDownloadSettings(account.Extra).DefaultDownloadDir
+		}
+	}
+	return s.cleanDownloadDir(defaultDir)
 }
 
 func (s *Server) handleDownloadDirectories(w http.ResponseWriter, r *http.Request) {
@@ -5121,9 +5153,11 @@ func subscriptionSeriesDirName(value, title string, convertToSimplified bool) st
 // 作品文件夹迁移到新位置，并把该作品下载任务的目录与文件路径改指到新路径。
 // 目标目录已存在时不覆盖，仅保留现有数据。
 func (s *Server) syncSubscriptionLocalDir(ctx context.Context, existing model.Subscription, newDownloadDir, newSeriesDir string) {
-	oldRoot, errOld := s.cleanDownloadDir(existing.DownloadDir)
-	newRoot, errNew := s.cleanDownloadDir(newDownloadDir)
-	if errOld != nil || errNew != nil {
+	newSubscription := existing
+	newSubscription.DownloadDir = newDownloadDir
+	oldRoot, errOld := s.ResolveSubscriptionDownloadDir(ctx, existing)
+	newRoot, errNew := s.ResolveSubscriptionDownloadDir(ctx, newSubscription)
+	if errOld != nil || errNew != nil || strings.TrimSpace(oldRoot) == "" || strings.TrimSpace(newRoot) == "" {
 		return
 	}
 	oldSeries := strings.TrimSpace(existing.SeriesDir)
@@ -5242,8 +5276,8 @@ func (s *Server) localMetadataForJob(job model.DownloadJob) localJobMetadata {
 }
 
 func (s *Server) localCoverForSubscription(subscription model.Subscription) string {
-	root, err := s.cleanDownloadDir(subscription.DownloadDir)
-	if err != nil {
+	root, err := s.ResolveSubscriptionDownloadDir(context.Background(), subscription)
+	if err != nil || strings.TrimSpace(root) == "" {
 		return ""
 	}
 	series := strings.TrimSpace(subscription.SeriesDir)
@@ -5328,6 +5362,11 @@ func resolveLocalCover(root, folder string) string {
 }
 
 func (s *Server) subscriptionWithCovers(ctx context.Context, subscription model.Subscription) model.Subscription {
+	subscription.FollowSourceDownloadDir = isBangumiOriginSubscription(subscription) &&
+		strings.TrimSpace(subscription.DownloadDir) == ""
+	if effectiveDir, err := s.ResolveSubscriptionDownloadDir(ctx, subscription); err == nil {
+		subscription.EffectiveDownloadDir = effectiveDir
+	}
 	s.allowImageURL(subscription.SourceID, subscription.Cover)
 	subscription.LocalCover = s.localCoverForSubscription(subscription)
 	indexedCover := ""
@@ -7743,8 +7782,8 @@ func (s *Server) materializeSubscriptionCover(subscription model.Subscription) {
 }
 
 func (s *Server) subscriptionLocalMetadata(subscription model.Subscription) (string, string) {
-	root, err := s.cleanDownloadDir(subscription.DownloadDir)
-	if err != nil {
+	root, err := s.ResolveSubscriptionDownloadDir(context.Background(), subscription)
+	if err != nil || strings.TrimSpace(root) == "" {
 		return "", ""
 	}
 	series := strings.TrimSpace(subscription.SeriesDir)

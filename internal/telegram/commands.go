@@ -2254,7 +2254,14 @@ func cleanComicSummary(title, summary string) string {
 		}
 	}
 	summary = strings.TrimLeft(summary, " \t\r\n,，:：;；。.!！?？-—")
-	for _, prefix := range []string{"作品简介：", "作品简介:", "内容简介：", "内容简介:", "简介：", "简介:"} {
+	for _, prefix := range []string{
+		"作品简介：", "作品简介:",
+		"内容简介：", "内容简介:",
+		"作品讲述了：", "作品讲述了:",
+		"作品讲述：", "作品讲述:",
+		"故事讲述：", "故事讲述:",
+		"简介：", "简介:",
+	} {
 		if strings.HasPrefix(summary, prefix) {
 			summary = strings.TrimSpace(strings.TrimPrefix(summary, prefix))
 			break

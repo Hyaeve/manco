@@ -24,7 +24,7 @@ import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import RoundedSelect from '../components/RoundedSelect.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { askConfirm } from '../stores/confirm'
-import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
+import { rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
 import { notify } from '../stores/notices'
 import { rememberComicPreview } from '../stores/comicPreview'
 import {
@@ -759,9 +759,7 @@ function defaultSubscriptionCron() {
 
 async function batchSubscribeSelected() {
   const rows = visibleItems.value.filter((item) => selectedItems.value.has(discoveryKey(item)))
-  const downloadDir = activeKind.value === 'bangumi'
-    ? activeSourceDefaultDir.value || lastSubscriptionDownloadDir()
-    : activeSourceDefaultDir.value
+  const downloadDir = activeKind.value === 'bangumi' ? '' : activeSourceDefaultDir.value
   if (!rows.length || batchSubscribing.value) return
   if (activeKind.value !== 'bangumi' && !downloadDir) {
     notify('当前内容源未设置默认下载目录，无法批量订阅', 'warning')
@@ -770,7 +768,7 @@ async function batchSubscribeSelected() {
   const confirmed = await askConfirm({
     title: '批量加入订阅',
     message: activeKind.value === 'bangumi'
-      ? `确定将所选 ${rows.length} 部 Bangumi 作品加入订阅计划吗？添加后会先匹配漫画或书籍内容源，未匹配时将在下次计划检查时重试。`
+      ? `确定将所选 ${rows.length} 部 Bangumi 作品加入订阅计划吗？下载目录将跟随匹配到的内容源默认位置；未匹配时会在下次计划检查时重试。`
       : `确定订阅所选 ${rows.length} 部作品吗？将使用当前内容源默认下载目录：${downloadDir}${batchCoverBlur.value ? '，并开启封面模糊。' : '。'}`,
     confirmText: '批量订阅',
   })

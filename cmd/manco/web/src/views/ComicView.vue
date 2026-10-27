@@ -207,7 +207,10 @@ onMounted(async () => {
         .catch(() => null)
     }
     existingSubscription.value = matchedSubscription
-    if (sourceDefaultDownloadDir.value) {
+    if (isBangumiComic.value) {
+      // Bangumi 先留空，匹配到具体内容源后再跟随该源的默认下载目录。
+      subForm.value.downloadDir = ''
+    } else if (sourceDefaultDownloadDir.value) {
       // 该内容源设了默认下载位置时优先使用它。
       subForm.value.downloadDir = sourceDefaultDownloadDir.value
       downloadForm.value.downloadDir = sourceDefaultDownloadDir.value
@@ -428,7 +431,9 @@ function openSubscribe() {
   error.value = ''
   subForm.value = {
     cronExpr: defaultCron(),
-    downloadDir: sourceDefaultDownloadDir.value || subForm.value.downloadDir || lastSubscriptionDownloadDir(),
+    downloadDir: isBangumiComic.value
+      ? ''
+      : sourceDefaultDownloadDir.value || subForm.value.downloadDir || lastSubscriptionDownloadDir(),
     seriesDir: '',
     convertToSimplified: true,
     chapterMarker: false,
@@ -459,7 +464,7 @@ async function confirmSubscribe() {
     notify('自动追更需要填写 Cron 表达式', 'warning')
     return
   }
-  if (!subForm.value.downloadDir.trim()) {
+  if (!isBangumiComic.value && !subForm.value.downloadDir.trim()) {
     notify('请选择下载位置', 'warning')
     return
   }
@@ -487,7 +492,7 @@ async function confirmSubscribe() {
       coverBlur: Boolean(subForm.value.coverBlur),
     })
     subscribeOpen.value = false
-    rememberSubscriptionDownloadDir(subForm.value.downloadDir)
+    if (subForm.value.downloadDir.trim()) rememberSubscriptionDownloadDir(subForm.value.downloadDir)
     existingSubscription.value = result?.item || { sourceId, comicId: comic.value.id }
     const queued = Number(result?.queued || 0)
     notify(
@@ -813,8 +818,8 @@ async function downloadSelected() {
             v-model:suffix-value="subForm.seriesDir"
             :suffix="comic?.title"
             :convert-to-simplified="subForm.convertToSimplified"
-            :allow-default="false"
-            placeholder="选择下载位置"
+            :allow-default="isBangumiComic"
+            :placeholder="isBangumiComic ? '留空则跟随匹配内容源默认位置' : '选择下载位置'"
             @change="rememberSubscriptionDownloadDir"
           />
         </label>

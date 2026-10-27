@@ -13,6 +13,7 @@ import (
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
 	"github.com/hyaeve/manco/internal/store"
+	"github.com/hyaeve/manco/internal/telegram"
 )
 
 const (
@@ -147,11 +148,58 @@ func (s *Server) MatchSubscription(ctx context.Context, subscription model.Subsc
 	if err != nil {
 		return subscription, false, err
 	}
+	if s.telegram != nil && s.telegram.Enabled() {
+		matchedComic, sourceName := s.bangumiMatchedComic(ctx, best)
+		coverFile := ""
+		if s.discover != nil {
+			coverFile = s.discover.CachedCoverPath(best.sourceID, best.comic.ID)
+		}
+		s.telegram.BangumiMatched(ctx, telegram.BangumiMatchedNotice{
+			Title:         matchedComic.Title,
+			OriginalTitle: subscription.Title,
+			Source:        sourceName,
+			Author:        source.FirstNonEmpty(matchedComic.Author, updated.Author),
+			Description:   matchedComic.Description,
+			Status:        matchedComic.Status,
+			CoverURL:      source.FirstNonEmpty(matchedComic.Cover, updated.Cover),
+			CoverFile:     coverFile,
+			CoverBlur:     updated.CoverBlur,
+		})
+	}
 	s.logger.Printf(
 		"api: matched Bangumi subscription %q to %s/%s (score %.2f)",
 		subscription.Title, best.sourceID, best.comic.ID, best.score,
 	)
 	return updated, true, nil
+}
+
+func (s *Server) bangumiMatchedComic(ctx context.Context, candidate subscriptionMatchCandidate) (model.Comic, string) {
+	comic := candidate.comic
+	if strings.TrimSpace(comic.SourceID) == "" {
+		comic.SourceID = candidate.sourceID
+	}
+	adapter, err := s.registry.Get(candidate.sourceID)
+	if err != nil {
+		return comic, candidate.sourceID
+	}
+	sourceName := source.FirstNonEmpty(adapter.Info().Name, candidate.sourceID)
+	account, err := s.registry.Account(ctx, candidate.sourceID)
+	if err != nil {
+		return comic, sourceName
+	}
+	detailCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	detail, err := adapter.Detail(detailCtx, account, candidate.comic.ID)
+	if err != nil {
+		return comic, sourceName
+	}
+	comic.Title = source.FirstNonEmpty(detail.Title, comic.Title)
+	comic.Cover = source.FirstNonEmpty(detail.Cover, comic.Cover)
+	comic.Author = source.FirstNonEmpty(detail.Author, comic.Author)
+	comic.Description = source.FirstNonEmpty(detail.Description, comic.Description)
+	comic.Status = source.FirstNonEmpty(detail.Status, comic.Status)
+	comic.SourceURL = source.FirstNonEmpty(detail.SourceURL, comic.SourceURL)
+	return comic, sourceName
 }
 
 func subscriptionMatchKind(subscription model.Subscription) string {
