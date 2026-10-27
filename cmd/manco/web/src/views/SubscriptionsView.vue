@@ -632,7 +632,7 @@ function cover(item) {
 }
 
 function sourceIcon(item) {
-  if (isPendingBangumiMatch(item)) return '/source-icons/bangumi.svg'
+  if (isPendingBangumiMatch(item)) return '/source-icons/bangumi.png'
   return sources.value[item.sourceId]?.icon || ''
 }
 

@@ -7,7 +7,7 @@ export function coverGridColumnsForWidth(width) {
   const previousColumns = Math.floor(
     (Math.max(0, width) + COVER_GRID_GAP) / (PREVIOUS_COVER_CARD_MIN_WIDTH + COVER_GRID_GAP),
   )
-  return Math.max(2, previousColumns + 1)
+  return Math.max(2, previousColumns - 1)
 }
 
 export function estimatedCoverGridColumns(viewportWidth = window.innerWidth) {

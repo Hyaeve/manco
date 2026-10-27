@@ -6790,3 +6790,11 @@ svg.source-editor-icon {
 .local-library-card.card {
   border: 1px solid transparent;
 }
+
+.bangumi-brand-icon {
+  display: block;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}

@@ -15,7 +15,6 @@ import {
   RefreshCw,
   Rss,
   Search,
-  Sparkles,
   X,
 } from 'lucide-vue-next'
 import { api } from '../api'
@@ -841,7 +840,7 @@ function latestLabel(item) {
       <div class="inline discover-head-left">
         <div class="segmented" role="tablist" aria-label="资源类型">
           <button type="button" :class="{ active: activeKind === 'bangumi' }" @click="switchKind('bangumi')">
-            <Sparkles :size="18" />
+            <img class="bangumi-brand-icon" src="/source-icons/bangumi.png" alt="" aria-hidden="true" />
             Bangumi <span class="segmented-count">{{ kindCount('bangumi') }}</span>
           </button>
           <button type="button" :class="{ active: activeKind === 'comic' }" @click="switchKind('comic')">

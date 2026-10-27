@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Blocks,
   BookOpen,
@@ -37,6 +37,9 @@ const sourceTab = ref('comic')
 const heroIndex = ref(0)
 const heroHovering = ref(false)
 const heroDirection = ref('next')
+const heroTagsRef = ref(null)
+const heroTagMeasureRef = ref(null)
+const heroVisibleTags = ref([])
 let heroTimer = 0
 const HERO_ROTATION_MS = 16000
 
@@ -77,8 +80,17 @@ watch(
   },
 )
 
+watch(
+  () => [heroKey.value, ...(heroComic.value?.tags || [])],
+  () => {
+    heroVisibleTags.value = []
+    nextTick(updateHeroVisibleTags)
+  },
+)
+
 onMounted(() => {
   window.addEventListener(SOURCES_CHANGED_EVENT, refreshSources)
+  window.addEventListener('resize', updateHeroVisibleTags)
   void loadDashboardSection(api.stats(), (statsPayload) => {
     stats.value = statsPayload || {}
   }, statsLoading)
@@ -100,8 +112,32 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener(SOURCES_CHANGED_EVENT, refreshSources)
+  window.removeEventListener('resize', updateHeroVisibleTags)
   stopHeroRotation()
 })
+
+function updateHeroVisibleTags() {
+  nextTick(() => {
+    const container = heroTagsRef.value
+    const measure = heroTagMeasureRef.value
+    if (!container || !measure) {
+      heroVisibleTags.value = []
+      return
+    }
+    const available = container.clientWidth
+    const gap = 6
+    let used = 0
+    let count = 0
+    for (const element of measure.children) {
+      const width = element.getBoundingClientRect().width
+      const next = used + (count ? gap : 0) + width
+      if (next > available + 0.5) break
+      used = next
+      count += 1
+    }
+    heroVisibleTags.value = (heroComic.value?.tags || []).slice(0, count)
+  })
+}
 
 async function refreshSources() {
   if (!sources.value.length) sourcesLoading.value = true
@@ -270,11 +306,17 @@ function formatNextRun(value) {
                   </div>
                   <div class="overview-hero-summary" :class="{ blurred: heroComic.coverBlur }">
                     <div class="overview-hero-description">{{ heroComic.description || '暂无简介' }}</div>
-                    <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
-                      <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag" class="badge tag-pill">
+                    <div v-if="heroComic.tags?.length" ref="heroTagsRef" class="overview-hero-tags" aria-label="作品标签">
+                      <span v-for="tag in heroVisibleTags" :key="tag" class="badge tag-pill">
                         <Tag :size="12" />
                         <span>{{ tag }}</span>
                       </span>
+                      <div ref="heroTagMeasureRef" class="overview-hero-tags-measure" aria-hidden="true">
+                        <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag" class="badge tag-pill">
+                          <Tag :size="12" />
+                          <span>{{ tag }}</span>
+                        </span>
+                      </div>
                     </div>
                   </div>
                   <ContentLink class="btn secondary small overview-hero-link" to="/local">
@@ -921,11 +963,10 @@ function formatNextRun(value) {
 
 .overview-hero-tags :deep(.tag-pill) {
   display: inline-flex;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
   white-space: nowrap;
 }
 
@@ -934,6 +975,7 @@ function formatNextRun(value) {
 }
 
 .overview-hero-tags {
+  position: relative;
   display: flex;
   flex: 0 0 26px;
   max-width: 100%;
@@ -941,6 +983,17 @@ function formatNextRun(value) {
   align-items: center;
   gap: 6px;
   overflow: hidden;
+}
+
+.overview-hero-tags-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: max-content;
+  height: 0;
+  min-height: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .overview-hero-link {
