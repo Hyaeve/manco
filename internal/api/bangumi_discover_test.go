@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hyaeve/manco/internal/diskcache"
 	"github.com/hyaeve/manco/internal/sources"
+	"github.com/hyaeve/manco/internal/store"
 )
 
 func TestBangumiFeedCatalog(t *testing.T) {
@@ -120,6 +124,86 @@ func TestSearchBangumiSubjectsUsesBookFilter(t *testing.T) {
 	}
 	if requestPayload["keyword"] != "链锯人" || requestPayload["sort"] != "match" {
 		t.Fatalf("request payload = %#v", requestPayload)
+	}
+}
+
+func TestBangumiSubjectByID(t *testing.T) {
+	client := &http.Client{Transport: bangumiRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/v0/subjects/7" {
+			t.Fatalf("request path = %q", request.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"id":7,
+				"type":1,
+				"name":"链锯人",
+				"summary":"作品简介",
+				"date":"2018-12-03",
+				"images":{"large":"https://lain.bgm.tv/7.jpg"},
+				"rating":{"score":8.7,"rank":12},
+				"tags":[{"name":"漫画"}]
+			}`)),
+		}, nil
+	})}
+	server := &Server{registry: sources.NewRegistry(client, nil, nil)}
+	subject, err := server.bangumiSubjectByID(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subject.ID != 7 || subject.Type != 1 || subject.Name != "链锯人" {
+		t.Fatalf("subject = %+v", subject)
+	}
+}
+
+func TestBangumiAuthorizationUsesPersonalAccessToken(t *testing.T) {
+	repository, err := store.Open(filepath.Join(t.TempDir(), "manco.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.SetSetting(context.Background(), "bangumi_access_token", "test-token"); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodGet, bangumiAPIRoot+"/v0/subjects/7", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	(&Server{store: repository}).applyBangumiAuthorization(context.Background(), request)
+	if got := request.Header.Get("Authorization"); got != "Bearer test-token" {
+		t.Fatalf("Authorization = %q", got)
+	}
+}
+
+func TestBangumiFeedPageUsesPersistentResponseCache(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: bangumiRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"data":[{"id":7,"type":1,"name":"链锯人","images":{"large":"https://lain.bgm.tv/7.jpg"},"tags":[{"name":"漫画"}]}],
+				"total":1
+			}`)),
+		}, nil
+	})}
+	responseCache, err := diskcache.Open(filepath.Join(t.TempDir(), "response-cache"), 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := sources.NewRegistry(client, nil, nil)
+	firstServer := &Server{registry: registry, cache: responseCache}
+	if _, _, err := firstServer.bangumiFeedPage(context.Background(), bangumiFeedDefinitions[0], 1, 20); err != nil {
+		t.Fatal(err)
+	}
+	secondServer := &Server{registry: registry, cache: responseCache}
+	if _, _, err := secondServer.bangumiFeedPage(context.Background(), bangumiFeedDefinitions[0], 1, 20); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("Bangumi API requests = %d, want 1", requests)
 	}
 }
 

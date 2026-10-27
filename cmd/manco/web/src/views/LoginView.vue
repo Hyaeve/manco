@@ -17,11 +17,15 @@ const error = ref('')
 const loading = ref(false)
 const setupRequired = ref(false)
 const bangumiItems = ref([])
+const featureMode = ref('bangumi')
 const bangumiIndex = ref(0)
 const bangumiDirection = ref('next')
 let bangumiTimer = 0
 
 const activeBangumi = computed(() => bangumiItems.value[bangumiIndex.value] || null)
+const featureEyebrow = computed(() => featureMode.value === 'subscription'
+  ? '订阅计划 · 作品推荐'
+  : 'Bangumi · 随机推荐')
 const bangumiBackground = computed(() => activeBangumi.value?.cover
   ? { backgroundImage: `url("${activeBangumi.value.cover}")` }
   : {})
@@ -41,16 +45,29 @@ onUnmounted(() => {
 })
 
 async function loadBangumiBackground() {
+  let items = []
   try {
     const payload = await api.loginBangumi()
-    bangumiItems.value = Array.isArray(payload.items) ? payload.items : []
-    bangumiIndex.value = 0
-    preloadBangumiCover(0)
-    preloadBangumiCover(1)
-    startBangumiRotation()
+    items = Array.isArray(payload.items) ? payload.items : []
   } catch {
-    bangumiItems.value = []
+    items = []
   }
+  if (items.length) {
+    featureMode.value = 'bangumi'
+  } else {
+    try {
+      const fallback = await api.loginSubscriptions()
+      items = Array.isArray(fallback.items) ? fallback.items : []
+    } catch {
+      items = []
+    }
+    featureMode.value = items.length ? 'subscription' : 'fallback'
+  }
+  bangumiItems.value = items
+  bangumiIndex.value = 0
+  preloadBangumiCover(0)
+  preloadBangumiCover(1)
+  startBangumiRotation()
 }
 
 function startBangumiRotation() {
@@ -110,14 +127,13 @@ async function submit() {
 <template>
   <div
     class="login-page split-layout"
-    :class="{ 'has-bangumi': activeBangumi, 'has-fallback-visual': !activeBangumi }"
+    :class="{ 'has-bangumi': featureMode === 'bangumi' && activeBangumi }"
   >
     <div class="login-bangumi-scene" aria-hidden="true">
-      <div v-if="!activeBangumi" class="login-fallback-visual" />
-      <Transition v-if="activeBangumi" :name="`login-bangumi-${bangumiDirection}`">
+      <Transition v-if="activeBangumi" appear :name="`login-bangumi-${bangumiDirection}`">
         <div :key="activeBangumi.id" class="login-bangumi-backdrop" :style="bangumiBackground" />
       </Transition>
-      <div class="login-bangumi-shade" />
+      <div v-if="activeBangumi" class="login-bangumi-shade" />
     </div>
     <Transition :name="`login-bangumi-copy-${bangumiDirection}`" mode="out-in">
       <div
@@ -125,14 +141,14 @@ async function submit() {
         :key="activeBangumi.id"
         class="login-bangumi-feature"
       >
-        <span>Bangumi · 随机推荐</span>
+        <span>{{ featureEyebrow }}</span>
         <strong>{{ activeBangumi.title }}</strong>
         <p>{{ activeBangumi.summary }}</p>
       </div>
     </Transition>
     <Transition :name="`login-bangumi-copy-${bangumiDirection}`" mode="out-in">
       <a
-        v-if="activeBangumi"
+        v-if="activeBangumi?.url"
         :key="activeBangumi.id"
         class="login-bangumi-link"
         :href="activeBangumi.url"

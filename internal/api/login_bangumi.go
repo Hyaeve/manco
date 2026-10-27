@@ -8,11 +8,14 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hyaeve/manco/internal/source"
 )
 
 const (
@@ -114,6 +117,99 @@ func (s *Server) handleLoginBangumiCover(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	_, _ = w.Write(data)
+}
+
+func (s *Server) handleLoginSubscriptions(w http.ResponseWriter, r *http.Request) {
+	subscriptions, err := s.store.ListSubscriptions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, bangumiItemLimit)
+	for _, subscription := range subscriptions {
+		if subscription.CoverBlur {
+			continue
+		}
+		item := s.subscriptionWithCovers(r.Context(), subscription)
+		if s.subscriptionCovers == nil {
+			continue
+		}
+		if _, ok := s.subscriptionCovers.Lookup(item.SourceID, item.ComicID); !ok {
+			go s.materializeSubscriptionCover(subscription)
+			continue
+		}
+		author, description := s.subscriptionLocalMetadata(item)
+		kind := subscriptionMatchKind(item)
+		if adapter, sourceErr := s.registry.Get(item.SourceID); sourceErr == nil {
+			kind = source.KindOf(adapter.Info())
+		}
+		tags := []string{}
+		if s.discover != nil {
+			if detail, ok := s.discover.Get(item.SourceID, kind, item.ComicID); ok {
+				if strings.TrimSpace(description) == "" {
+					description = detail.Comic.Description
+				}
+				if strings.TrimSpace(author) == "" {
+					author = detail.Comic.Author
+				}
+				tags = append(tags, detail.Comic.Tags...)
+			}
+		}
+		coverPath := "/api/login/subscription-cover?" + url.Values{
+			"sourceId": []string{item.SourceID},
+			"comicId":  []string{item.ComicID},
+		}.Encode()
+		items = append(items, map[string]any{
+			"id":         item.ID,
+			"title":      item.Title,
+			"summary":    description,
+			"author":     source.FirstNonEmpty(author, item.Author),
+			"tags":       tags,
+			"cover":      coverPath,
+			"url":        "",
+			"sourceName": loginSourceName(s, item.SourceID),
+			"kind":       "subscription",
+		})
+		if len(items) >= bangumiItemLimit {
+			break
+		}
+	}
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) handleLoginSubscriptionCover(w http.ResponseWriter, r *http.Request) {
+	if s.subscriptionCovers == nil {
+		http.NotFound(w, r)
+		return
+	}
+	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
+	comicID := strings.TrimSpace(r.URL.Query().Get("comicId"))
+	file, err := s.subscriptionCovers.OpenCover(sourceID, comicID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeContent(w, r, filepath.Base(info.Name()), info.ModTime(), file)
+}
+
+func loginSourceName(s *Server, sourceID string) string {
+	if s != nil && s.registry != nil {
+		if adapter, err := s.registry.Get(sourceID); err == nil {
+			return adapter.Info().Name
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(sourceID)), "bangumi-") {
+		return "Bangumi"
+	}
+	return "内容源"
 }
 
 func (s *Server) loginBangumiItems(ctx context.Context) ([]bangumiLoginItem, error) {
@@ -304,6 +400,7 @@ func (s *Server) enrichBangumiItems(ctx context.Context, client *http.Client, it
 			}
 			request.Header.Set("User-Agent", bangumiUserAgent)
 			request.Header.Set("Accept", "application/json")
+			s.applyBangumiAuthorization(ctx, request)
 			response, err := client.Do(request)
 			if err != nil {
 				return

@@ -34,6 +34,7 @@ export const api = {
     request('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
   setup: () => request('/api/auth/setup'),
   loginBangumi: () => request('/api/login/bangumi'),
+  loginSubscriptions: () => request('/api/login/subscriptions'),
   register: (payload) => request('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
   me: () => request('/api/auth/me'),

@@ -42,6 +42,8 @@ defineOptions({ name: 'DiscoverView' })
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v3'
 const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
+const SOURCE_GRID_GAP = 12
+const PREVIOUS_SOURCE_CARD_MIN_WIDTH = 132
 const BANGUMI_FEEDS = [
   { id: 'bangumi-recent', feed: 'recent', name: '近期注目', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
   { id: 'bangumi-airing', feed: 'airing', name: '连载中', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
@@ -113,12 +115,13 @@ function kindOf(source) {
 }
 
 function responsiveGridColumns(width = window.innerWidth) {
-  if (width <= 460) return 2
-  if (width <= 650) return 3
-  if (width <= 920) return 4
-  if (width <= 1180) return 5
-  if (width <= 1500) return 6
-  return 7
+  const shellWidth = width <= 960 ? width : width - 248
+  return columnsAfterAddingOne(Math.max(0, shellWidth - 32))
+}
+
+function columnsAfterAddingOne(width) {
+  const previousColumns = Math.floor((width + SOURCE_GRID_GAP) / (PREVIOUS_SOURCE_CARD_MIN_WIDTH + SOURCE_GRID_GAP))
+  return Math.max(2, previousColumns + 1)
 }
 
 function readSavedFilters() {
@@ -316,6 +319,7 @@ onMounted(() => {
 
 onActivated(() => {
   restoreSourceStripScroll(readDiscoverNav())
+  nextTick(measureGridColumns)
 })
 
 onDeactivated(() => {
@@ -360,8 +364,9 @@ function measureGridColumns() {
   nextTick(() => {
     const element = gridRef.value
     if (!element) return
-    const tracks = window.getComputedStyle(element).gridTemplateColumns.split(/\s+/).filter(Boolean)
-    if (tracks.length) gridColumns.value = tracks.length
+    const columns = columnsAfterAddingOne(element.clientWidth)
+    gridColumns.value = columns
+    element.style.setProperty('--discover-grid-columns', String(columns))
   })
 }
 
@@ -734,7 +739,6 @@ function handleDiscoverCardClick(event, item, index) {
     handleDiscoverItemClick(event, item, index)
     return
   }
-  if (isBangumiItem(item)) return
   openComic(item)
 }
 
@@ -742,12 +746,8 @@ function isBangumiItem(item) {
   return String(item?.sourceId || '').startsWith('bangumi-')
 }
 
-function beforeDiscoverNavigate(item) {
-  if (discoverSelecting.value) return false
-  if (!isBangumiItem(item)) return true
-  const target = String(item.sourceUrl || '').trim()
-  if (target) window.open(target, '_blank', 'noopener,noreferrer')
-  return false
+function beforeDiscoverNavigate() {
+  return !discoverSelecting.value
 }
 
 function toggleAllDiscoverItems() {

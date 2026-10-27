@@ -134,6 +134,8 @@ type Server struct {
 	bangumiCalendarMu       sync.Mutex
 	bangumiCalendarCache    []bangumiCalendarSubject
 	bangumiCalendarAt       time.Time
+	bangumiCoverMu          sync.Mutex
+	bangumiCoverJobs        map[string]bool
 
 	// 本地仓库扫描结果短缓存：NAS 目录扫描很慢，刷新页面不应该重扫一遍。
 	libraryMu    sync.Mutex
@@ -181,6 +183,7 @@ type Settings struct {
 	TelegramEnabled       bool
 	TelegramToken         string
 	TelegramChatIDs       []string
+	BangumiAccessToken    string
 }
 
 type Options struct {
@@ -288,6 +291,9 @@ func (s *Server) loadSettings(ctx context.Context) Settings {
 	if value, err := s.store.Setting(ctx, "telegram_token"); err == nil {
 		current.TelegramToken = strings.TrimSpace(value)
 	}
+	if value, err := s.store.Setting(ctx, "bangumi_access_token"); err == nil {
+		current.BangumiAccessToken = strings.TrimSpace(value)
+	}
 	if value, err := s.store.Setting(ctx, "telegram_chats"); err == nil && strings.TrimSpace(value) != "" {
 		var ids []string
 		if json.Unmarshal([]byte(value), &ids) == nil {
@@ -369,6 +375,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/auth/me", s.requireAuth(s.handleMe))
 	mux.HandleFunc("GET /api/login/bangumi", s.handleLoginBangumi)
 	mux.HandleFunc("GET /api/login/bangumi/cover", s.handleLoginBangumiCover)
+	mux.HandleFunc("GET /api/login/subscriptions", s.handleLoginSubscriptions)
+	mux.HandleFunc("GET /api/login/subscription-cover", s.handleLoginSubscriptionCover)
 	mux.HandleFunc("GET /api/bangumi/discover", s.requireAuth(s.handleBangumiDiscover))
 	mux.HandleFunc("GET /api/bangumi/search", s.requireAuth(s.handleBangumiSearch))
 
@@ -3061,11 +3069,16 @@ func isBrowseControlParam(key string) bool {
 }
 
 func (s *Server) handleComic(w http.ResponseWriter, r *http.Request) {
+	sourceID := strings.ToLower(strings.TrimSpace(r.PathValue("id")))
+	if strings.HasPrefix(sourceID, "bangumi-") {
+		s.handleBangumiComic(w, r, sourceID)
+		return
+	}
 	item, account, ok := s.resolveSource(w, r)
 	if !ok {
 		return
 	}
-	sourceID := item.Info().ID
+	sourceID = item.Info().ID
 	kind := source.KindOf(item.Info())
 	comicID := r.PathValue("comicId")
 	if s.discover != nil {
@@ -7240,6 +7253,7 @@ func (s *Server) settingsResponse(ctx context.Context, username string) map[stri
 		"telegramEnabled":       current.TelegramEnabled,
 		"telegramToken":         current.TelegramToken,
 		"telegramChatIds":       current.TelegramChatIDs,
+		"bangumiAccessToken":    current.BangumiAccessToken,
 	}
 }
 
@@ -7288,6 +7302,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		TelegramEnabled       *bool          `json:"telegramEnabled"`
 		TelegramToken         *string        `json:"telegramToken"`
 		TelegramChatIDs       []string       `json:"telegramChatIds"`
+		BangumiAccessToken    *string        `json:"bangumiAccessToken"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -7546,6 +7561,12 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		raw, _ := json.Marshal(normalized)
 		if err := s.store.SetSetting(r.Context(), "telegram_chats", string(raw)); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if payload.BangumiAccessToken != nil {
+		if err := s.store.SetSetting(r.Context(), "bangumi_access_token", strings.TrimSpace(*payload.BangumiAccessToken)); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

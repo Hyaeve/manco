@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="cmd/manco/web/public/brand-lockup.png" alt="Manco 完整图标与字标" width="420">
+</p>
+
 # Manco
 
 自托管的漫画 / 书籍订阅下载器。Go 后端 + Vue 3 前端，单镜像部署，容器端口 `15600`。

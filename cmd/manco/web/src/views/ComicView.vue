@@ -93,6 +93,7 @@ const sourceDefaultDownloadDir = computed(() => {
 })
 const sourceDefaultCoverBlur = computed(() => Boolean(sourceAccounts.value[sourceId]?.settings?.coverBlur))
 const isSubscribed = computed(() => Boolean(existingSubscription.value))
+const isBangumiComic = computed(() => String(sourceId || '').toLowerCase().startsWith('bangumi-'))
 const comic = computed(() => detail.value?.comic || null)
 const comicAuthors = computed(() => splitAuthors(comic.value?.author))
 const sourcePageUrl = computed(() => String(comic.value?.sourceUrl || '').trim())
@@ -463,6 +464,7 @@ async function confirmSubscribe() {
       title: comic.value.title,
       cover: comic.value.cover,
       author: comic.value.author,
+      sourceUrl: comic.value.sourceUrl,
       autoDownload: autoDownload.value,
       enabled: true,
       baseline: subForm.value.allChapters ? '' : last?.id || '',
@@ -586,7 +588,13 @@ async function downloadSelected() {
         <div class="detail-info-head">
           <h2>{{ comic.title }}</h2>
           <div class="detail-actions">
-            <button class="btn download-btn" type="button" :disabled="busy || !selected.size" @click="openDownloadModal">
+            <button
+              v-if="!isBangumiComic"
+              class="btn download-btn"
+              type="button"
+              :disabled="busy || !selected.size"
+              @click="openDownloadModal"
+            >
               <Loader2 v-if="busy" :size="16" class="spin" />
               <Download v-else :size="16" />
               下载 ({{ selected.size }})
@@ -631,7 +639,7 @@ async function downloadSelected() {
       </div>
     </div>
 
-    <section class="detail-chapters">
+    <section v-if="!isBangumiComic" class="detail-chapters">
       <div class="detail-chapter-head">
         <button
           class="btn ghost small select-all-btn"

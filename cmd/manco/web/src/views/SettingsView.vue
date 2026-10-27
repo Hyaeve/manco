@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Github,
   Languages,
+  KeyRound,
   Loader2,
   Network,
   RefreshCw,
@@ -40,6 +41,7 @@ const form = reactive({
   telegramEnabled: false,
   telegramToken: '',
   telegramChatIds: '',
+  bangumiAccessToken: '',
   maxChapterConcurrency: 10,
   maxPageConcurrency: 2,
   batchSize: 30,
@@ -82,6 +84,7 @@ async function load() {
     form.telegramEnabled = Boolean(payload.telegramEnabled)
     form.telegramToken = payload.telegramToken || ''
     form.telegramChatIds = Array.isArray(payload.telegramChatIds) ? payload.telegramChatIds.join(', ') : ''
+    form.bangumiAccessToken = payload.bangumiAccessToken || ''
     form.maxChapterConcurrency = Number(payload.maxChapterConcurrency) || 10
     form.maxPageConcurrency = Number(payload.maxPageConcurrency) || 2
     form.batchSize = Number(payload.batchSize) || 0
@@ -112,6 +115,7 @@ async function saveAccount() {
     const payload = {
       username: form.username,
       sessionTtlDays: Number(form.sessionTtlDays) || 30,
+      bangumiAccessToken: form.bangumiAccessToken.trim(),
     }
     if (passwordChanged.value) {
       payload.newPassword = form.currentPassword
@@ -305,6 +309,26 @@ async function checkUpdate() {
               <span>会话存活期（天）</span>
               <input v-model.number="form.sessionTtlDays" class="input" type="number" min="1" max="3650" />
             </label>
+            <div class="field settings-field-span-2">
+              <div class="bangumi-key-head">
+                <span class="inline settings-inline-label"><KeyRound :size="15" /> Bangumi Key</span>
+                <a
+                  class="bangumi-key-apply"
+                  href="https://next.bgm.tv/demo/access-token"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  申请个人 Key
+                  <ExternalLink :size="12" />
+                </a>
+              </div>
+              <PasswordInput
+                v-model="form.bangumiAccessToken"
+                autocomplete="off"
+                placeholder="留空使用公共请求"
+              />
+            </div>
+            <p class="muted small settings-field-span-2">填写 Bangumi 个人 Access Token 可降低公共接口限流影响。</p>
           </div>
         </article>
 
