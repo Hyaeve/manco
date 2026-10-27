@@ -273,7 +273,7 @@ function formatNextRun(value) {
                     <div v-if="heroComic.tags?.length" class="overview-hero-tags" aria-label="作品标签">
                       <span v-for="tag in heroComic.tags.slice(0, 10)" :key="tag" class="badge tag-pill">
                         <Tag :size="12" />
-                        {{ tag }}
+                        <span>{{ tag }}</span>
                       </span>
                     </div>
                   </div>
@@ -888,19 +888,35 @@ function formatNextRun(value) {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
+  transition: color 0.32s ease, text-shadow 0.32s ease;
 }
 
 .overview-hero-summary.blurred {
-  filter: blur(5px) saturate(0.92);
-  opacity: 0.72;
   pointer-events: none;
   user-select: none;
 }
 
-.overview-hero-content:hover .overview-hero-summary.blurred,
-.overview-hero-content:focus-within .overview-hero-summary.blurred {
-  filter: none;
-  opacity: 1;
+.overview-hero-summary.blurred .overview-hero-description {
+  color: transparent;
+  text-shadow:
+    0 0 4px color-mix(in srgb, var(--text) 72%, transparent),
+    0 0 9px color-mix(in srgb, var(--text) 34%, transparent);
+}
+
+.overview-hero-summary.blurred .tag-pill > span {
+  color: transparent;
+  text-shadow:
+    0 0 4px color-mix(in srgb, var(--primary-strong) 72%, transparent),
+    0 0 8px color-mix(in srgb, var(--primary-strong) 32%, transparent);
+  transition: color 0.32s ease, text-shadow 0.32s ease;
+}
+
+.overview-hero-content:hover .overview-hero-summary.blurred .overview-hero-description,
+.overview-hero-content:focus-within .overview-hero-summary.blurred .overview-hero-description,
+.overview-hero-content:hover .overview-hero-summary.blurred .tag-pill > span,
+.overview-hero-content:focus-within .overview-hero-summary.blurred .tag-pill > span {
+  color: inherit;
+  text-shadow: none;
 }
 
 .overview-hero-tags :deep(.tag-pill) {
