@@ -29,6 +29,11 @@ import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '..
 import { notify } from '../stores/notices'
 import { rememberComicPreview } from '../stores/comicPreview'
 import {
+  COVER_GRID_ROWS_PER_PAGE,
+  coverGridColumnsForWidth,
+  estimatedCoverGridColumns,
+} from '../utils/coverGrid'
+import {
   discoverPanelsExpired,
   markDiscoverPanelsLoaded,
   readDiscoverNav,
@@ -42,8 +47,6 @@ defineOptions({ name: 'DiscoverView' })
 
 const FILTER_STORAGE_KEY = 'manco.discover.filters.v3'
 const VIEW_STORAGE_KEY = 'manco.discover.view.v1'
-const SOURCE_GRID_GAP = 12
-const PREVIOUS_SOURCE_CARD_MIN_WIDTH = 132
 const BANGUMI_FEEDS = [
   { id: 'bangumi-recent', feed: 'recent', name: '近期注目', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
   { id: 'bangumi-airing', feed: 'airing', name: '连载中', kind: 'bangumi', homepage: 'https://bgm.tv/', canSearch: true, filters: [], filtersLoaded: true },
@@ -74,7 +77,7 @@ const sourceStripRef = ref(null)
 const gridRef = ref(null)
 const stripCanLeft = ref(false)
 const stripCanRight = ref(false)
-const gridColumns = ref(responsiveGridColumns())
+const gridColumns = ref(estimatedCoverGridColumns())
 const refreshRevealing = ref(false)
 const requestStates = new Map()
 let refreshRevealTimer = 0
@@ -88,7 +91,9 @@ const kindCount = computed(() => (kind) => kind === 'bangumi'
 const sources = computed(() => activeKind.value === 'bangumi'
   ? BANGUMI_FEEDS
   : allSources.value.filter((source) => !source.hidden && kindOf(source) === activeKind.value))
-const pageSize = computed(() => (viewMode.value === 'list' ? 30 : Math.max(1, gridColumns.value * 7)))
+const pageSize = computed(() => (
+  viewMode.value === 'list' ? 30 : Math.max(1, gridColumns.value * COVER_GRID_ROWS_PER_PAGE)
+))
 
 // Kototoro 的排序能力会作为 sort 筛选组返回；没有声明的来源统一提供“最新”，
 // 并把排序器固定放在网格/列表按钮左侧。
@@ -112,16 +117,6 @@ const activeSortGroup = computed(() => {
 function kindOf(source) {
   if (source.kind === 'book' || source.kind === 'other' || source.kind === 'bangumi') return source.kind
   return 'comic'
-}
-
-function responsiveGridColumns(width = window.innerWidth) {
-  const shellWidth = width <= 960 ? width : width - 248
-  return columnsAfterAddingOne(Math.max(0, shellWidth - 32))
-}
-
-function columnsAfterAddingOne(width) {
-  const previousColumns = Math.floor((width + SOURCE_GRID_GAP) / (PREVIOUS_SOURCE_CARD_MIN_WIDTH + SOURCE_GRID_GAP))
-  return Math.max(2, previousColumns + 1)
 }
 
 function readSavedFilters() {
@@ -364,9 +359,9 @@ function measureGridColumns() {
   nextTick(() => {
     const element = gridRef.value
     if (!element) return
-    const columns = columnsAfterAddingOne(element.clientWidth)
+    const columns = coverGridColumnsForWidth(element.clientWidth)
     gridColumns.value = columns
-    element.style.setProperty('--discover-grid-columns', String(columns))
+    element.style.setProperty('--cover-grid-columns', String(columns))
   })
 }
 
@@ -989,6 +984,7 @@ function latestLabel(item) {
           ref="gridRef"
           class="source-comic-grid source-comic-grid-7"
           :class="{ 'refresh-reveal': refreshRevealing }"
+          :style="{ '--cover-grid-columns': gridColumns }"
         >
           <ContentLink
             v-for="(item, index) in visibleItems"

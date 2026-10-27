@@ -576,28 +576,28 @@ function formatNextRun(value) {
 }
 
 .overview-hero-skeleton {
-  --overview-hero-cover-width: clamp(138px, 13vw, 168px);
   position: relative;
   z-index: 1;
   display: grid;
   height: 100%;
-  grid-template-columns: var(--overview-hero-cover-width) minmax(0, 1fr);
-  align-items: end;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
   gap: 20px;
-  padding: 18px 26px 22px;
+  padding: 22px 26px;
 }
 
 .overview-hero-skeleton-poster {
-  width: var(--overview-hero-cover-width);
+  width: auto;
+  height: 100%;
   aspect-ratio: 2 / 3;
-  align-self: end;
+  align-self: stretch;
   border-radius: 10px;
 }
 
 .overview-hero-skeleton-copy {
   display: flex;
-  height: calc(var(--overview-hero-cover-width) * 1.5);
-  align-self: end;
+  height: 100%;
+  align-self: stretch;
   flex-direction: column;
   gap: 8px;
 }
@@ -767,25 +767,25 @@ function formatNextRun(value) {
 }
 
 .overview-hero-content {
-  --overview-hero-cover-width: clamp(138px, 13vw, 168px);
   position: absolute;
   inset: 0;
   z-index: 1;
   display: grid;
-  grid-template-columns: var(--overview-hero-cover-width) minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 20px;
   height: 100%;
   min-height: 0;
-  align-items: end;
-  padding: 18px 26px 22px;
+  align-items: stretch;
+  padding: 22px 26px;
   will-change: opacity, filter, transform;
 }
 
 .overview-hero-poster {
   position: relative;
-  align-self: end;
+  align-self: stretch;
   justify-self: start;
-  width: var(--overview-hero-cover-width);
+  width: auto;
+  height: 100%;
   aspect-ratio: 2 / 3;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.82);
@@ -836,8 +836,8 @@ function formatNextRun(value) {
 .overview-hero-copy {
   display: flex;
   min-height: 0;
-  height: calc(var(--overview-hero-cover-width) * 1.5);
-  align-self: end;
+  height: 100%;
+  align-self: stretch;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
@@ -1580,17 +1580,13 @@ function formatNextRun(value) {
   }
 
   .overview-hero-content {
-    --overview-hero-cover-width: 92px;
-    grid-template-columns: 92px minmax(0, 1fr);
     gap: 14px;
-    padding: 20px 16px 22px;
+    padding: 20px 16px;
   }
 
   .overview-hero-skeleton {
-    --overview-hero-cover-width: 92px;
-    grid-template-columns: 92px minmax(0, 1fr);
     gap: 14px;
-    padding: 20px 16px 22px;
+    padding: 20px 16px;
   }
 
   .overview-skeleton-title {
@@ -1610,10 +1606,6 @@ function formatNextRun(value) {
   .overview-skeleton-button {
     width: 104px;
     height: 28px;
-  }
-
-  .overview-hero-poster {
-    align-self: end;
   }
 
   .overview-hero-copy {

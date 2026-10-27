@@ -1213,6 +1213,7 @@
   font-weight: 650;
   text-decoration: none;
   transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+  cursor: pointer;
 }
 
 .bangumi-key-apply:hover,
@@ -1989,7 +1990,7 @@
 }
 
 .source-comic-grid.source-comic-grid-7 {
-  grid-template-columns: repeat(var(--discover-grid-columns, 7), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--cover-grid-columns, 7), minmax(0, 1fr));
 }
 
 .source-comic-card .comic-body {
@@ -2415,22 +2416,17 @@
   padding-right: 0;
 }
 
-/* 本地库：桌面端一行七张，与探索发现网格保持一致。 */
+/* 本地库与探索发现共用列数和封面规格。 */
 .local-library-grid {
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(var(--cover-grid-columns, 7), minmax(0, 1fr));
+  gap: 12px;
 }
 
 .local-chapter-grid {
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
 }
 
-@media (max-width: 1400px) {
-  .local-library-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}
-
 @media (max-width: 1100px) {
-  .local-library-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .source-add-toolbar .rounded-select { flex-basis: 32%; max-width: 32%; }
 }
 
@@ -2439,7 +2435,6 @@
   .discover-head { flex-wrap: wrap; }
   .discover-search.source-search { flex: 1 1 100%; width: 100%; }
   .chapter-grid { grid-template-columns: minmax(0, 1fr); }
-  .local-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* 本地库多选：右键进入，底部胶囊工具栏执行批量操作。 */
@@ -2619,13 +2614,17 @@
   align-items: center;
   gap: 6px;
   padding: 0 8px;
+  border: 0;
   overflow: hidden;
+  background: transparent;
   color: rgba(255, 253, 246, 0.86);
   font-size: 12px;
   line-height: 1.35;
   text-decoration: none;
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  text-align: left;
   transition: color 0.18s ease;
+  cursor: pointer;
 }
 
 .login-bangumi-link:hover,
@@ -3172,11 +3171,15 @@
   gap: 6px;
   margin-top: 8px;
   padding: 6px 8px;
+  border: 0;
   border-radius: 8px;
+  background: transparent;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.35;
+  text-align: left;
   text-decoration: none;
+  cursor: pointer;
   transition:
     color 0.16s ease,
     background-color 0.16s ease;
@@ -4196,7 +4199,7 @@
 /* v0.1.14：本地库网格、作品详情、任务列表与运行日志细化 */
 .local-library-grid {
   align-items: start;
-  gap: 16px 14px;
+  gap: 12px;
 }
 .local-library-card.card {
   display: flex;
@@ -4215,7 +4218,7 @@
 .local-library-card .local-library-cover {
   position: relative;
   width: 100%;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: 1 / 1.4143;
   overflow: visible;
   border-radius: 10px;
   background: var(--surface-muted);
@@ -6775,4 +6778,15 @@ svg.source-editor-icon {
   .topbar .global-search { flex: 1 1 0; width: auto; min-width: 0; }
   .global-search kbd { display: none; }
   .topbar-actions { flex: 0 0 auto; }
+}
+
+/* 探索发现与本地仓库共用封面网格间距，确保同宽下封面尺寸完全一致。 */
+.source-comic-grid.source-comic-grid-7,
+.local-library-grid {
+  --cover-grid-gap: 14px;
+  gap: var(--cover-grid-gap);
+}
+
+.local-library-card.card {
+  border: 1px solid transparent;
 }

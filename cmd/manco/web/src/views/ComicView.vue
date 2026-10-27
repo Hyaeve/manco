@@ -29,6 +29,7 @@ import FunctionOption from '../components/FunctionOption.vue'
 import { notify } from '../stores/notices'
 import { comicPreview } from '../stores/comicPreview'
 import { lastSubscriptionDownloadDir, rememberSubscriptionDownloadDir } from '../stores/subscriptionPreferences'
+import { openExternalUrl } from '../utils/externalLink'
 import { splitAuthors } from '../utils/metadata'
 import { paginateTextPages } from '../utils/reader'
 
@@ -279,6 +280,14 @@ function goBack() {
   } else {
     router.push({ name: 'discover' })
   }
+}
+
+function openSourcePage() {
+  openExternalUrl(sourcePageUrl.value)
+}
+
+function openPreviewVideo() {
+  openExternalUrl(previewVideoUrl.value)
 }
 
 function searchAuthor(name) {
@@ -573,16 +582,16 @@ async function downloadSelected() {
         <img v-if="comic.cover" :src="cover()" :alt="comic.title" />
         <span v-else class="cover-fallback"><BookOpen :size="28" /></span>
         </div>
-        <a
+        <button
           v-if="sourcePageUrl"
           class="detail-source-link"
-          :href="sourcePageUrl"
-          target="_blank"
-          rel="noopener noreferrer"
+          type="button"
+          aria-label="在新窗口打开作品原站"
+          @click="openSourcePage"
         >
           <ExternalLink :size="13" />
           <span>{{ sourcePageUrl }}</span>
-        </a>
+        </button>
       </div>
       <div class="detail-info">
         <div class="detail-info-head">
@@ -728,9 +737,9 @@ async function downloadSelected() {
           playsinline
           preload="metadata"
         />
-        <a class="btn secondary small" :href="previewVideoUrl" target="_blank" rel="noreferrer">
+        <button class="btn secondary small" type="button" @click="openPreviewVideo">
           新窗口播放
-        </a>
+        </button>
       </div>
       <div v-else-if="previewKind === 'images' && previewCurrentImage" class="reader-page-stage">
         <img

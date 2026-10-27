@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   ArrowDown,
   ArrowUp,
@@ -31,6 +31,12 @@ import WindowedGrid from '../components/WindowedGrid.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
 import { dirBasename, splitAuthors } from '../utils/metadata'
+import {
+  COVER_GRID_ROWS_PER_PAGE,
+  coverGridColumnsForWidth,
+  estimatedCoverGridColumns,
+} from '../utils/coverGrid'
+import { openExternalUrl } from '../utils/externalLink'
 import { paginateTextPages } from '../utils/reader'
 import { SOURCES_CHANGED_EVENT } from '../utils/sourceEvents'
 
@@ -65,6 +71,7 @@ const chapterSortOptions = [
 const rootOrder = ref([])
 const activeRoot = ref('')
 const heroTint = ref('')
+const libraryGridRef = ref(null)
 
 // 本地仓库排序：默认标题升序，排序字段与方向组合持久化。
 const SORT_STORAGE_KEY = 'manco.library.sort.v1'
@@ -200,6 +207,10 @@ onUnmounted(() => {
   libraryController?.abort()
 })
 
+onActivated(() => {
+  nextTick(measureLibraryColumns)
+})
+
 async function refreshSourceKinds() {
   await reloadLibrary()
 }
@@ -210,11 +221,11 @@ onDeactivated(() => {
   libraryController?.abort()
 })
 
-// 本地仓库分页：每页最多七行，列数随视口变化，翻页时保留多选快照。
-const LIBRARY_ROWS_PER_PAGE = 7
+// 本地仓库分页：每页最多七行，列数随实际网格宽度变化，翻页时保留多选快照。
+const LIBRARY_ROWS_PER_PAGE = COVER_GRID_ROWS_PER_PAGE
 const totalItems = ref(0)
 const libraryPage = ref(1)
-const libraryColumns = ref(estimatedLibraryColumns())
+const libraryColumns = ref(estimatedCoverGridColumns())
 const libraryPageLoading = ref(false)
 let libraryRequestGeneration = 0
 let libraryController = null
@@ -225,13 +236,6 @@ const libraryTotalPages = computed(() =>
 )
 const libraryOffset = computed(() => (libraryPage.value - 1) * libraryPageSize.value)
 const libraryBusy = computed(() => loading.value || libraryPageLoading.value)
-
-function estimatedLibraryColumns() {
-  if (window.innerWidth <= 760) return 2
-  if (window.innerWidth <= 1100) return 4
-  if (window.innerWidth <= 1400) return 5
-  return 7
-}
 
 function libraryRequestOptions() {
   return {
@@ -283,6 +287,7 @@ async function fetchLibraryPage(page = 1, initial = false) {
     if (generation === libraryRequestGeneration) {
       loading.value = false
       libraryPageLoading.value = false
+      nextTick(measureLibraryColumns)
     }
   }
 }
@@ -311,7 +316,14 @@ function goToLibraryPage(page) {
 }
 
 function handleLibraryResize() {
-  const nextColumns = estimatedLibraryColumns()
+  nextTick(measureLibraryColumns)
+}
+
+function measureLibraryColumns() {
+  const element = libraryGridRef.value
+  if (!element) return
+  const nextColumns = coverGridColumnsForWidth(element.clientWidth)
+  element.style.setProperty('--cover-grid-columns', String(nextColumns))
   if (nextColumns === libraryColumns.value) return
   const oldPageSize = libraryColumns.value * LIBRARY_ROWS_PER_PAGE
   const firstItemIndex = (libraryPage.value - 1) * oldPageSize
@@ -322,6 +334,9 @@ function handleLibraryResize() {
 }
 
 watch([kind, activeRoot, sortMode, sortDesc], resetLibrary)
+watch(active, (value) => {
+  if (!value) nextTick(measureLibraryColumns)
+})
 watch(query, () => {
   if (queryTimer) window.clearTimeout(queryTimer)
   queryTimer = window.setTimeout(resetLibrary, 260)
@@ -705,6 +720,10 @@ function downloadReaderFile() {
   if (!reader.value) return
   window.location.href = api.localFileUrl(reader.value.file.path, true)
 }
+
+function openReaderFileInNewWindow() {
+  openExternalUrl(api.localFileUrl(reader.value?.file?.path))
+}
 </script>
 
 <template>
@@ -862,8 +881,10 @@ function downloadReaderFile() {
     </div>
     <div
       v-else
+      ref="libraryGridRef"
       class="local-library-grid"
       :class="{ 'is-page-loading': libraryBusy }"
+      :style="{ '--cover-grid-columns': libraryColumns }"
       :aria-busy="libraryBusy"
     >
       <button
@@ -967,9 +988,9 @@ function downloadReaderFile() {
             playsinline
             preload="metadata"
           />
-          <a class="btn secondary small" :href="api.localFileUrl(reader.file.path)" target="_blank" rel="noreferrer">
+          <button class="btn secondary small" type="button" @click="openReaderFileInNewWindow">
             新窗口播放
-          </a>
+          </button>
         </div>
         <iframe
           v-else-if="readerPdf && reader.file"

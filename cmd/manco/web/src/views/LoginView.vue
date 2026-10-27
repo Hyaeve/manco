@@ -6,6 +6,7 @@ import { api } from '../api'
 import MancoBrand from '../components/MancoBrand.vue'
 import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
+import { openExternalUrl } from '../utils/externalLink'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -98,6 +99,10 @@ function preloadBangumiCover(index) {
   image.src = cover
 }
 
+function openActiveBangumiLink() {
+  openExternalUrl(activeBangumi.value?.url)
+}
+
 async function submit() {
   error.value = ''
   if (!username.value || !password.value) {
@@ -147,17 +152,17 @@ async function submit() {
       </div>
     </Transition>
     <Transition :name="`login-bangumi-copy-${bangumiDirection}`" mode="out-in">
-      <a
+      <button
         v-if="activeBangumi?.url"
         :key="activeBangumi.id"
         class="login-bangumi-link"
-        :href="activeBangumi.url"
-        target="_blank"
-        rel="noopener noreferrer"
+        type="button"
+        aria-label="在新窗口打开 Bangumi 作品"
+        @click="openActiveBangumiLink"
       >
         <ExternalLink :size="13" />
         <span>{{ activeBangumi.url }}</span>
-      </a>
+      </button>
     </Transition>
     <div
       v-if="activeBangumi && bangumiItems.length > 1"

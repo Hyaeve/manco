@@ -20,6 +20,7 @@ import { useAuthStore } from '../stores/auth'
 import PasswordInput from '../components/PasswordInput.vue'
 import { askConfirm } from '../stores/confirm'
 import { notify } from '../stores/notices'
+import { openExternalUrl } from '../utils/externalLink'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -256,6 +257,14 @@ async function checkUpdate() {
     checkingUpdate.value = false
   }
 }
+
+function openBangumiKeyPage() {
+  openExternalUrl('https://next.bgm.tv/demo/access-token')
+}
+
+function openGitHubProject() {
+  openExternalUrl('https://github.com/Hyaeve/manco')
+}
 </script>
 
 <template>
@@ -312,15 +321,15 @@ async function checkUpdate() {
             <div class="field settings-field-span-2">
               <div class="bangumi-key-head">
                 <span class="inline settings-inline-label"><KeyRound :size="15" /> Bangumi Key</span>
-                <a
+                <button
                   class="bangumi-key-apply"
-                  href="https://next.bgm.tv/demo/access-token"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  type="button"
+                  @keydown.stop
+                  @click="openBangumiKeyPage"
                 >
                   申请个人 Key
                   <ExternalLink :size="12" />
-                </a>
+                </button>
               </div>
               <PasswordInput
                 v-model="form.bangumiAccessToken"
@@ -581,11 +590,11 @@ async function checkUpdate() {
               <RefreshCw v-else :size="15" />
               检查更新
             </button>
-            <a class="btn github-button" href="https://github.com/Hyaeve/manco" target="_blank" rel="noreferrer">
+            <button class="btn github-button" type="button" @click="openGitHubProject">
               <Github :size="15" />
               GitHub
               <ExternalLink :size="13" />
-            </a>
+            </button>
           </div>
         </article>
       </div>
