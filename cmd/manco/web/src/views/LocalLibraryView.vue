@@ -513,7 +513,7 @@ async function deleteSelection() {
 
 function coverUrl(item) {
     if (item.cover) return api.localFileUrl(item.cover, false, 320)
-  if (item.cachedCover) return item.cachedCover
+  if (item.cachedCover) return api.cachedCoverUrl(item.cachedCover)
     if (item.sourceCover) return api.imageUrl(item.sourceCover, item.sourceId, '', 320)
   return ''
 }

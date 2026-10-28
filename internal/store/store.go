@@ -340,6 +340,11 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_download_jobs_directory
+		ON download_jobs(download_dir)`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS idx_download_jobs_active_order
 		ON download_jobs(
 			CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'waiting' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END,
@@ -1089,6 +1094,50 @@ func (s *Store) SubscriptionDownloadDirs(ctx context.Context) ([]string, error) 
 		dirs = append(dirs, dir)
 	}
 	return dirs, rows.Err()
+}
+
+// LocalDownloadDirectories never loads serialized chapter or comic payloads.
+func (s *Store) LocalDownloadDirectories(ctx context.Context) ([]string, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT download_dir FROM (
+			SELECT download_dir, 0 AS origin, MIN(id) AS first_id
+			FROM subscriptions WHERE TRIM(download_dir) <> '' GROUP BY download_dir
+			UNION ALL
+			SELECT download_dir, 1 AS origin, MIN(id) AS first_id
+			FROM download_jobs WHERE TRIM(download_dir) <> '' GROUP BY download_dir
+		) GROUP BY download_dir ORDER BY MIN(origin), MIN(first_id), download_dir`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dirs []string
+	for rows.Next() {
+		var dir string
+		if err := rows.Scan(&dir); err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, dir)
+	}
+	return dirs, rows.Err()
+}
+
+func (s *Store) DownloadCoverFallbacks(ctx context.Context) (map[string]string, error) {
+	rows, err := s.reader().QueryContext(ctx, `
+		SELECT source_id, comic_id, MAX(comic_cover) FROM download_jobs
+		WHERE TRIM(comic_cover) <> '' GROUP BY source_id, comic_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	covers := map[string]string{}
+	for rows.Next() {
+		var sourceID, comicID, cover string
+		if err := rows.Scan(&sourceID, &comicID, &cover); err != nil {
+			return nil, err
+		}
+		covers[sourceID+"\x00"+comicID] = cover
+	}
+	return covers, rows.Err()
 }
 
 func (s *Store) ListTemporarySubscriptions(ctx context.Context) ([]model.Subscription, error) {

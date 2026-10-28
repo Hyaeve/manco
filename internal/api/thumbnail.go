@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -13,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +23,18 @@ import (
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 )
+
+var thumbnailSlots = make(chan struct{}, 2)
+
+type thumbnailCall struct {
+	done chan struct{}
+	data []byte
+	err  error
+}
+
+type thumbnailFetchError struct{}
+
+func (thumbnailFetchError) Error() string { return "cover fetch failed" }
 
 // 封面一律下缩略图：源站封面动辄几千像素，浏览器解码一张就是几十 MB 位图，
 // 网格里几十张直接把内存和滚动帧率拖垮。这里按需缩放并按「文件+尺寸」缓存。
@@ -54,25 +69,162 @@ func (s *Server) serveThumbnail(w http.ResponseWriter, r *http.Request, sourcePa
 	if err != nil || info.IsDir() || info.Size() == 0 {
 		return false
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%d", sourcePath, info.Size(), info.ModTime().UnixNano(), width)))
+	data, err := s.cachedThumbnail(r.Context(), fmt.Sprintf("%s|%d|%d|%d", sourcePath, info.Size(), info.ModTime().UnixNano(), width), func() ([]byte, error) {
+		return buildThumbnail(sourcePath, width)
+	})
+	if err != nil {
+		return false
+	}
+	writeThumbBytes(w, r, data)
+	return true
+}
+
+// The slot is acquired before reading compressed bytes, not just before decoding.
+func (s *Server) cachedThumbnail(ctx context.Context, key string, build func() ([]byte, error)) ([]byte, error) {
+	sum := sha256.Sum256([]byte(key))
 	name := hex.EncodeToString(sum[:12]) + ".jpg"
 	directory := filepath.Join(s.cfg.DataDir, thumbCacheFolder)
 	target := filepath.Join(directory, name)
 	if data, readErr := os.ReadFile(target); readErr == nil && len(data) > 0 {
+		return data, nil
+	}
+	s.thumbnailMu.Lock()
+	if call := s.thumbnailJobs[name]; call != nil {
+		s.thumbnailMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-call.done:
+			return call.data, call.err
+		}
+	}
+	if s.thumbnailJobs == nil {
+		s.thumbnailJobs = map[string]*thumbnailCall{}
+	}
+	call := &thumbnailCall{done: make(chan struct{})}
+	s.thumbnailJobs[name] = call
+	s.thumbnailMu.Unlock()
+	defer func() {
+		s.thumbnailMu.Lock()
+		delete(s.thumbnailJobs, name)
+		close(call.done)
+		s.thumbnailMu.Unlock()
+	}()
+	select {
+	case thumbnailSlots <- struct{}{}:
+		defer func() { <-thumbnailSlots }()
+	case <-ctx.Done():
+		call.err = ctx.Err()
+		return nil, call.err
+	}
+	// Another request may have completed between the initial lookup and registration.
+	if call.data, call.err = os.ReadFile(target); call.err == nil && len(call.data) > 0 {
+		return call.data, nil
+	}
+	call.data, call.err = build()
+	if call.err == nil && s.cfg.DataDir != "" {
+		if err := os.MkdirAll(directory, 0o755); err == nil {
+			if file, err := os.CreateTemp(directory, ".thumb-*"); err == nil {
+				temp := file.Name()
+				_, writeErr := file.Write(call.data)
+				closeErr := file.Close()
+				if writeErr == nil && closeErr == nil {
+					_ = os.Rename(temp, target)
+				}
+				_ = os.Remove(temp)
+			}
+		}
+		s.pruneThumbnails(directory)
+	}
+	return call.data, call.err
+}
+
+func (s *Server) pruneThumbnails(directory string) {
+	s.thumbnailMu.Lock()
+	if time.Since(s.thumbnailPruned) < time.Hour {
+		s.thumbnailMu.Unlock()
+		return
+	}
+	s.thumbnailPruned = time.Now()
+	s.thumbnailMu.Unlock()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		name string
+		size int64
+		at   time.Time
+	}
+	candidates := make([]candidate, 0, len(entries))
+	var total int64
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jpg") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{entry.Name(), info.Size(), info.ModTime()})
+		total += info.Size()
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].at.Before(candidates[j].at) })
+	remaining := len(candidates)
+	for _, item := range candidates {
+		if remaining <= 2048 && total <= 128<<20 && time.Since(item.at) < 7*24*time.Hour {
+			break
+		}
+		if os.Remove(filepath.Join(directory, item.name)) == nil {
+			total -= item.size
+			remaining--
+		}
+	}
+}
+
+func (s *Server) serveRemoteThumbnail(w http.ResponseWriter, r *http.Request, request *http.Request, client *http.Client, width int) bool {
+	headers, _ := json.Marshal(request.Header)
+	// Remote covers can change without changing their URL; rotate the disk key daily.
+	key := fmt.Sprintf("remote|%s|%s|%d|%s", request.URL.String(), headers, width, time.Now().UTC().Format("2006-01-02"))
+	var original []byte
+	var contentType string
+	data, err := s.cachedThumbnail(r.Context(), key, func() ([]byte, error) {
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, thumbnailFetchError{}
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return nil, thumbnailFetchError{}
+		}
+		original, err = io.ReadAll(io.LimitReader(response.Body, (16<<20)+1))
+		if err != nil || len(original) > 16<<20 {
+			original = nil
+			return nil, fmt.Errorf("image exceeds thumbnail input limit")
+		}
+		contentType = response.Header.Get("Content-Type")
+		return buildThumbnailFromReader(bytes.NewReader(original), width)
+	})
+	if err == nil {
 		writeThumbBytes(w, r, data)
 		return true
 	}
-	data, err := buildThumbnail(sourcePath, width)
-	if err != nil {
+	if r.Context().Err() != nil {
+		return true
+	}
+	if _, failed := err.(thumbnailFetchError); failed {
+		writeError(w, http.StatusBadGateway, "封面加载失败，请稍后重试")
+		return true
+	}
+	if len(original) == 0 {
 		return false
 	}
-	if err := os.MkdirAll(directory, 0o755); err == nil {
-		temporary := target + ".part"
-		if err := os.WriteFile(temporary, data, 0o644); err == nil {
-			_ = os.Rename(temporary, target)
-		}
+	if contentType == "" {
+		contentType = http.DetectContentType(original)
 	}
-	writeThumbBytes(w, r, data)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	_, _ = w.Write(original)
 	return true
 }
 

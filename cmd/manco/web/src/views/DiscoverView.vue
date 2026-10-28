@@ -656,7 +656,7 @@ function restoreSourceStripScroll(nav) {
 }
 
 function cover(item) {
-  if (item.cachedCover) return item.cachedCover
+  if (item.cachedCover) return api.cachedCoverUrl(item.cachedCover)
   const source = allSources.value.find((entry) => entry.id === item.sourceId)
   if (String(item.sourceId || '').startsWith('bangumi-')) {
     return api.imageUrl(item.cover, item.sourceId, source?.homepage || 'https://bgm.tv/', 320)

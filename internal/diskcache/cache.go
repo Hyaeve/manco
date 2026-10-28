@@ -95,8 +95,15 @@ func (c *Cache) Get(key string) (json.RawMessage, time.Time, bool) {
 }
 
 func (c *Cache) Set(key string, body any) error {
+	return c.SetTTL(key, body, 0)
+}
+
+func (c *Cache) SetTTL(key string, body any, ttl time.Duration) error {
 	if c == nil || strings.TrimSpace(key) == "" || body == nil {
 		return nil
+	}
+	if ttl <= 0 {
+		ttl = c.ttl
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -128,7 +135,7 @@ func (c *Cache) Set(key string, body any) error {
 	}
 	c.entries[hashed] = indexEntry{
 		StoredAt:  now,
-		ExpiresAt: now.Add(c.ttl),
+		ExpiresAt: now.Add(ttl),
 		Size:      int64(len(raw) + 1),
 	}
 	c.totalBytes += int64(len(raw) + 1)

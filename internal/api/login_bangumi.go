@@ -367,15 +367,6 @@ func normalizeBangumiImageURL(raw string) (string, bool) {
 }
 
 func (s *Server) enrichBangumiItems(ctx context.Context, client *http.Client, items []bangumiLoginItem) []bangumiLoginItem {
-	type detail struct {
-		NameCN  string `json:"name_cn"`
-		Name    string `json:"name"`
-		Summary string `json:"summary"`
-		Images  struct {
-			Common string `json:"common"`
-			Large  string `json:"large"`
-		} `json:"images"`
-	}
 	enriched := make([]bangumiLoginItem, len(items))
 	copy(enriched, items)
 	sem := make(chan struct{}, 4)
@@ -393,25 +384,8 @@ func (s *Server) enrichBangumiItems(ctx context.Context, client *http.Client, it
 			case <-ctx.Done():
 				return
 			}
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet,
-				fmt.Sprintf("%s/v0/subjects/%d", bangumiAPIRoot, enriched[index].ID), nil)
+			payload, err := s.bangumiSubjectByID(ctx, enriched[index].ID)
 			if err != nil {
-				return
-			}
-			request.Header.Set("User-Agent", bangumiUserAgent)
-			request.Header.Set("Accept", "application/json")
-			s.applyBangumiAuthorization(ctx, request)
-			response, err := client.Do(request)
-			if err != nil {
-				return
-			}
-			raw, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<20))
-			_ = response.Body.Close()
-			if readErr != nil || response.StatusCode < 200 || response.StatusCode >= 300 {
-				return
-			}
-			var payload detail
-			if json.Unmarshal(raw, &payload) != nil {
 				return
 			}
 			if title := strings.TrimSpace(payload.NameCN); title != "" {

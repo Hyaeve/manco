@@ -196,14 +196,14 @@ function resumeHeroRotation() {
 
 function localCoverUrl(item, width = 480) {
   if (item?.cover) return api.localFileUrl(item.cover, false, width)
-  if (item?.cachedCover) return item.cachedCover
+  if (item?.cachedCover) return api.cachedCoverUrl(item.cachedCover, width)
   if (item?.sourceCover) return api.imageUrl(item.sourceCover, item?.sourceId, '', width)
   return ''
 }
 
 function subscriptionCover(item, width = 240) {
   if (item?.localCover) return api.localFileUrl(item.localCover, false, width)
-  if (item?.cachedCover) return item.cachedCover
+  if (item?.cachedCover) return api.cachedCoverUrl(item.cachedCover, width)
   return api.imageUrl(item?.cover, item?.sourceId, '', width)
 }
 

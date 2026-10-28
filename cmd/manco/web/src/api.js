@@ -268,4 +268,8 @@ export const api = {
     if (width) params.set('w', String(width))
     return `/api/proxy/image?${params.toString()}`
   },
+  cachedCoverUrl: (url, width = 320) => {
+    if (!url || !width) return url || ''
+    return `${url}${url.includes('?') ? '&' : '?'}w=${encodeURIComponent(width)}`
+  },
 }

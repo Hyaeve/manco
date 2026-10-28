@@ -104,6 +104,43 @@ func TestNamedSourceCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNamedCacheReopenAndPrune(t *testing.T) {
+	root := t.TempDir()
+	cache, err := Open(root, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := model.ComicDetail{
+		Comic:    model.Comic{ID: "named", SourceID: "fixture", Title: "Named title", Author: "Author"},
+		Chapters: []model.Chapter{{ID: "one", Title: "Chapter one"}},
+	}
+	if err := cache.PutNamedWithCover(context.Background(), nil, "fixture", "Named source", "comic", detail, func(context.Context, model.Comic) ([]byte, string, error) {
+		return []byte("cover"), "image/png", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(root, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reopened.Get("fixture", "comic", "named")
+	if !ok || got.Comic.Author != "Author" || len(got.Chapters) != 1 || got.Comic.CachedCover == "" {
+		t.Fatalf("reopened cache lost named detail: %+v, %v", got, ok)
+	}
+	if reopened.CoverPath("fixture", "comic", "named") == "" {
+		t.Fatal("reopened cache lost its local cover")
+	}
+	if err := reopened.Prune(time.Now().Add(2 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Get("fixture", "comic", "named"); ok {
+		t.Fatal("expired named entry was not removed")
+	}
+	if _, err := os.Stat(filepath.Join(root, "comic", "Named source", "Named title")); !os.IsNotExist(err) {
+		t.Fatalf("expired directory still exists: %v", err)
+	}
+}
+
 func TestPutNamedWithCoverUsesMaterializer(t *testing.T) {
 	root := t.TempDir()
 	cache, err := Open(root, time.Hour)

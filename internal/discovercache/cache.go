@@ -338,14 +338,10 @@ func (c *Cache) putWithOptions(ctx context.Context, client *http.Client, sourceI
 }
 
 func (c *Cache) ServeCover(w http.ResponseWriter, r *http.Request, sourceID, kind, comicID string) bool {
-	entry, ok := c.indexed(sourceID, kind, comicID)
-	if !ok {
-		entry, ok = c.findIndexedAnyKind(sourceID, comicID)
-	}
-	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
+	coverPath := c.CoverPath(sourceID, kind, comicID)
+	if coverPath == "" {
 		return false
 	}
-	coverPath := filepath.Join(entry.Path, entry.CoverFile)
 	file, err := os.Open(coverPath)
 	if err != nil {
 		return false
@@ -355,9 +351,25 @@ func (c *Cache) ServeCover(w http.ResponseWriter, r *http.Request, sourceID, kin
 	if err != nil || info.IsDir() {
 		return false
 	}
-	c.touch(entry.Path, time.Now(), entry.UpdatedAt)
-	http.ServeContent(w, r, entry.CoverFile, info.ModTime(), file)
+	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 	return true
+}
+
+func (c *Cache) CoverPath(sourceID, kind, comicID string) string {
+	entry, ok := c.indexed(sourceID, kind, comicID)
+	if !ok {
+		entry, ok = c.findIndexedAnyKind(sourceID, comicID)
+	}
+	if !ok || strings.TrimSpace(entry.CoverFile) == "" {
+		return ""
+	}
+	coverPath := filepath.Join(entry.Path, entry.CoverFile)
+	info, err := os.Stat(coverPath)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	c.touch(entry.Path, time.Now(), entry.UpdatedAt)
+	return coverPath
 }
 
 func (c *Cache) Prune(now time.Time) error {
@@ -371,7 +383,7 @@ func (c *Cache) Prune(now time.Time) error {
 		if err != nil {
 			return nil
 		}
-		if !entry.IsDir() || entry.Name() != "item.json" {
+		if entry.IsDir() || entry.Name() != "item.json" {
 			return nil
 		}
 		dir := filepath.Dir(path)

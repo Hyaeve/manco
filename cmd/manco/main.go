@@ -229,6 +229,7 @@ func run(logger *log.Logger, logs *logbuf.Buffer) error {
 	}
 	bot.Start(ctx)
 	go server.RunInitialDownloadNotifications(ctx)
+	go server.RunBangumiRefresh(ctx)
 	defer bot.Stop()
 	_ = repository.CleanupSessions(ctx, time.Now())
 	// A process restart invalidates all browser sessions, so every client has

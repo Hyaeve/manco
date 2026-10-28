@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="cmd/manco/web/public/readme-brand-lockup.png" alt="Manco 完整图标与字标" width="420">
+  <img src="cmd/manco/web/public/readme-brand-lockup.png" alt="Manco 完整图标与字标" width="100%">
 </p>
 
 # Manco
@@ -100,7 +100,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.9.3 && git push origin v0.9.3   # 构建并发布 :v0.9.3
+git tag v0.9.9 && git push origin v0.9.9   # 构建并发布 :v0.9.9
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 

@@ -3,7 +3,6 @@ package api
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -59,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.9.3"
+	appVersion    = "v0.9.9"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -107,6 +106,11 @@ type Server struct {
 
 	discoverQueueOnce sync.Once
 	discoverQueue     chan discoverCacheTask
+	enrichMu          sync.Mutex
+	enriching         map[string]bool
+	thumbnailMu       sync.Mutex
+	thumbnailJobs     map[string]*thumbnailCall
+	thumbnailPruned   time.Time
 
 	// 作品目录 → 本地 cover 的短期缓存：订阅页每 5 秒轮询一次，逐个
 	// filepath.Glob 在 NAS 上会被放大成「订阅数 × 轮询次数」次目录扫描。
@@ -129,13 +133,12 @@ type Server struct {
 	loginBangumiCovers      map[int]string
 	loginBangumiCoversCache map[int]bangumiCoverCacheEntry
 	loginBangumiAt          time.Time
-	bangumiFeedMu           sync.Mutex
-	bangumiFeedCache        map[string]bangumiFeedCacheEntry
 	bangumiCalendarMu       sync.Mutex
 	bangumiCalendarCache    []bangumiCalendarSubject
 	bangumiCalendarAt       time.Time
 	bangumiCoverMu          sync.Mutex
 	bangumiCoverJobs        map[string]bool
+	bangumiRequests         bangumiRequestCache
 
 	// 本地仓库扫描结果短缓存：NAS 目录扫描很慢，刷新页面不应该重扫一遍。
 	libraryMu    sync.Mutex
@@ -2780,19 +2783,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
 	// 作者、简介和连载状态属于次要字段，不能让它们阻塞搜索结果首屏。
 	// 后台补齐详情并回写搜索/发现缓存，下一次查询即可直接拿到完整信息。
-	enrichedItems := append([]model.Comic(nil), result.Items...)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		s.enrichDiscoverItems(ctx, item, account, enrichedItems)
-		for index := range enrichedItems {
-			enrichedItems[index] = s.annotateDiscover(info.ID, kind, enrichedItems[index])
-		}
-		s.cacheDiscoverItems(info, kind, enrichedItems)
-		enrichedResult := result
-		enrichedResult.Items = enrichedItems
-		_ = s.cache.Set(cacheKey, enrichedResult)
-	}()
+	s.queueDiscoverEnrichment(cacheKey, item, account, result)
 }
 
 func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
@@ -2997,14 +2988,55 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 	info := item.Info()
 	kind := source.KindOf(info)
-	// 列表常常缺作者/简介/连载状态，这里按页补一次详情。
-	s.enrichDiscoverItems(r.Context(), item, account, result.Items)
 	s.cacheDiscoverItems(info, kind, result.Items)
 	for index := range result.Items {
 		result.Items[index] = s.annotateDiscover(info.ID, kind, result.Items[index])
 	}
 	_ = s.cache.Set(cacheKey, result)
 	writeJSON(w, http.StatusOK, convertDiscoverResult(result, convert))
+	s.queueDiscoverEnrichment(cacheKey, item, account, result)
+}
+
+func (s *Server) queueDiscoverEnrichment(cacheKey string, item source.Source, account source.Account, result model.SearchResult) {
+	needed := false
+	for _, comic := range result.Items {
+		if discoverNeedsEnrichment(comic) {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return
+	}
+	s.enrichMu.Lock()
+	if s.enriching == nil {
+		s.enriching = map[string]bool{}
+	}
+	if s.enriching[cacheKey] || len(s.enriching) >= 4 {
+		s.enrichMu.Unlock()
+		return
+	}
+	s.enriching[cacheKey] = true
+	s.enrichMu.Unlock()
+	result.Items = append([]model.Comic(nil), result.Items...)
+	go func() {
+		defer func() {
+			s.enrichMu.Lock()
+			delete(s.enriching, cacheKey)
+			s.enrichMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s.enrichDiscoverItems(ctx, item, account, result.Items)
+		info := item.Info()
+		s.cacheDiscoverItems(info, source.KindOf(info), result.Items)
+		_ = s.cache.Set(cacheKey, result)
+	}()
+}
+
+func discoverNeedsEnrichment(comic model.Comic) bool {
+	return strings.TrimSpace(comic.Cover) == "" || strings.TrimSpace(comic.Author) == "" ||
+		strings.TrimSpace(comic.Description) == "" || strings.TrimSpace(comic.Status) == ""
 }
 
 // enrichDiscoverItems 给浏览/搜索结果补 author/description/status：很多内容源的
@@ -3013,10 +3045,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enrichDiscoverItems(ctx context.Context, item source.Source, account source.Account, items []model.Comic) {
 	missing := make([]int, 0, discoverEnrichLimit)
 	for index := range items {
-		if strings.TrimSpace(items[index].Cover) != "" &&
-			strings.TrimSpace(items[index].Author) != "" &&
-			strings.TrimSpace(items[index].Description) != "" &&
-			strings.TrimSpace(items[index].Status) != "" {
+		if !discoverNeedsEnrichment(items[index]) {
 			continue
 		}
 		missing = append(missing, index)
@@ -3032,27 +3061,33 @@ func (s *Server) enrichDiscoverItems(ctx context.Context, item source.Source, ac
 	var mu sync.Mutex
 	for _, index := range missing {
 		wg.Add(1)
-		sem <- struct{}{}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			wg.Wait()
+			return
+		}
 		go func(index int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			detail, err := s.loadComicDetail(ctx, item, account, items[index].ID)
+			detail, err := item.Detail(ctx, account, items[index].ID)
 			if err != nil {
 				return
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if strings.TrimSpace(items[index].Cover) == "" {
-				items[index].Cover = detail.Comic.Cover
+				items[index].Cover = detail.Cover
 			}
 			if strings.TrimSpace(items[index].Author) == "" {
-				items[index].Author = detail.Comic.Author
+				items[index].Author = detail.Author
 			}
 			if strings.TrimSpace(items[index].Description) == "" {
-				items[index].Description = detail.Comic.Description
+				items[index].Description = detail.Description
 			}
 			if strings.TrimSpace(items[index].Status) == "" {
-				items[index].Status = detail.Comic.Status
+				items[index].Status = detail.Status
 			}
 		}(index)
 	}
@@ -3692,6 +3727,12 @@ func (s *Server) handleDiscoverCover(w http.ResponseWriter, r *http.Request) {
 	sourceID := strings.TrimSpace(r.URL.Query().Get("sourceId"))
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	comicID := strings.TrimSpace(r.URL.Query().Get("comicId"))
+	if width := requestedThumbWidth(r); width > 0 {
+		if coverPath := s.discover.CoverPath(sourceID, kind, comicID); coverPath != "" &&
+			s.serveThumbnail(w, r, coverPath, width) {
+			return
+		}
+	}
 	if sourceID == "" || comicID == "" || !s.discover.ServeCover(w, r, sourceID, kind, comicID) {
 		http.NotFound(w, r)
 	}
@@ -3710,6 +3751,9 @@ func (s *Server) handleSubscriptionCover(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer file.Close()
+	if width := requestedThumbWidth(r); width > 0 && s.serveThumbnail(w, r, file.Name(), width) {
+		return
+	}
 	info, err := file.Stat()
 	if err != nil {
 		http.NotFound(w, r)
@@ -5444,9 +5488,11 @@ func (s *Server) localCoverFallbacks(ctx context.Context) map[string]string {
 			remember(subscription.SourceID, subscription.ComicID, subscription.Cover)
 		}
 	}
-	if jobs, err := s.store.ListDownloadJobs(ctx, 600); err == nil {
-		for _, job := range jobs {
-			remember(job.SourceID, job.ComicID, job.ComicCover)
+	if covers, err := s.store.DownloadCoverFallbacks(ctx); err == nil {
+		for key, cover := range covers {
+			if fallbacks[key] == "" {
+				fallbacks[key] = cover
+			}
 		}
 	}
 	return fallbacks
@@ -5796,17 +5842,9 @@ func (s *Server) localRoots(ctx context.Context) []string {
 		seen[cleaned] = true
 		roots = append(roots, cleaned)
 	}
-	if subscriptions, err := s.store.ListAllSubscriptions(ctx); err == nil {
-		for _, item := range subscriptions {
-			// 本地库目录胶囊按订阅创建顺序排列，包括已归档订阅。
-			add(item.DownloadDir)
-		}
-	}
-	if jobs, err := s.store.ListDownloadJobs(ctx, 600); err == nil {
-		for _, job := range jobs {
-			if job.DownloadDir != "" {
-				add(job.DownloadDir)
-			}
+	if dirs, err := s.store.LocalDownloadDirectories(ctx); err == nil {
+		for _, dir := range dirs {
+			add(dir)
 		}
 	}
 	// 最后补默认下载目录，兼容没有订阅记录的旧文件。
@@ -7957,6 +7995,10 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if width := requestedThumbWidth(r); width > 0 &&
+		s.serveRemoteThumbnail(w, r, request, s.registry.ClientForAccount(imageAccount), width) {
+		return
+	}
 	response, err := s.registry.ClientForAccount(imageAccount).Do(request)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -7970,19 +8012,6 @@ func (s *Server) handleImageProxy(w http.ResponseWriter, r *http.Request) {
 	contentType := response.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
-	}
-	// 列表封面按缩略图下发：封面原图常常几千像素，解码成本远高于网络。
-	if width := requestedThumbWidth(r); width > 0 {
-		if data, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<20)); readErr == nil {
-			if thumb, thumbErr := buildThumbnailFromReader(bytes.NewReader(data), width); thumbErr == nil {
-				writeThumbBytes(w, r, thumb)
-				return
-			}
-			w.Header().Set("Content-Type", contentType)
-			w.Header().Set("Cache-Control", "public, max-age=3600")
-			_, _ = w.Write(data)
-			return
-		}
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=3600")

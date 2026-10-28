@@ -47,22 +47,6 @@ type bangumiFeedPayload struct {
 	Total int                      `json:"total"`
 }
 
-type bangumiFeedCacheEntry struct {
-	items   []model.Comic
-	total   int
-	expires time.Time
-}
-
-type bangumiCachedPage struct {
-	Items []model.Comic `json:"items"`
-	Total int           `json:"total"`
-}
-
-type bangumiCachedSubjectSearch struct {
-	Data  []bangumiCalendarSubject `json:"data"`
-	Total int                      `json:"total"`
-}
-
 func bangumiFeedByID(id string) (bangumiFeedDefinition, bool) {
 	id = strings.ToLower(strings.TrimSpace(id))
 	for _, feed := range bangumiFeedDefinitions {
@@ -120,21 +104,6 @@ func (s *Server) handleBangumiSearch(w http.ResponseWriter, r *http.Request) {
 	if limit > 100 {
 		limit = 100
 	}
-	cacheKey := fmt.Sprintf("bangumi-search:v2:%d:%d:%s", page, limit, keyword)
-	if raw, _, ok := s.cache.Get(cacheKey); ok {
-		var cached bangumiCachedPage
-		if json.Unmarshal(raw, &cached) == nil {
-			items := s.annotateBangumiItems(cached.Items)
-			s.queueBangumiCoverCache(items)
-			writeJSON(w, http.StatusOK, map[string]any{
-				"items":   items,
-				"page":    page,
-				"total":   cached.Total,
-				"hasMore": page*limit < cached.Total,
-			})
-			return
-		}
-	}
 	subjects, total, err := s.searchBangumiSubjects(r.Context(), keyword, "match", map[string]any{
 		"type": []int{1},
 		"nsfw": false,
@@ -152,7 +121,6 @@ func (s *Server) handleBangumiSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	items = s.annotateBangumiItems(items)
 	s.queueBangumiCoverCache(items)
-	_ = s.cache.Set(cacheKey, bangumiCachedPage{Items: items, Total: total})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":   items,
 		"page":    page,
@@ -166,14 +134,6 @@ func (s *Server) handleBangumiComic(w http.ResponseWriter, r *http.Request, sour
 	if err != nil || subjectID <= 0 {
 		writeError(w, http.StatusBadRequest, "无效的 Bangumi 作品 ID")
 		return
-	}
-	kind := bangumiKindForSourceID(sourceID)
-	if s.discover != nil {
-		if cached, ok := s.discover.Get(sourceID, kind, strconv.Itoa(subjectID)); ok &&
-			strings.TrimSpace(cached.Comic.Description) != "" {
-			writeJSON(w, http.StatusOK, convertComicDetail(cached, s.loadSettings(r.Context()).ConvertToSimplified))
-			return
-		}
 	}
 	subject, err := s.bangumiSubjectByID(r.Context(), subjectID)
 	if err != nil {
@@ -197,34 +157,9 @@ func (s *Server) handleBangumiComic(w http.ResponseWriter, r *http.Request, sour
 }
 
 func (s *Server) bangumiSubjectByID(ctx context.Context, subjectID int) (bangumiCalendarSubject, error) {
-	cacheKey := fmt.Sprintf("bangumi-subject:v2:%d", subjectID)
-	if raw, _, ok := s.cache.Get(cacheKey); ok {
-		var cached bangumiCalendarSubject
-		if json.Unmarshal(raw, &cached) == nil && cached.ID == subjectID {
-			return cached, nil
-		}
-	}
-	request, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodGet,
-		fmt.Sprintf("%s/v0/subjects/%d", bangumiAPIRoot, subjectID),
-		nil,
-	)
-	if err != nil {
-		return bangumiCalendarSubject{}, err
-	}
-	request.Header.Set("User-Agent", bangumiUserAgent)
-	request.Header.Set("Accept", "application/json")
-	s.applyBangumiAuthorization(ctx, request)
-	response, err := s.bangumiHTTPClient().Do(request)
-	if err != nil {
-		return bangumiCalendarSubject{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return bangumiCalendarSubject{}, bangumiRequestError("Bangumi 作品", response.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	raw, err := s.bangumiJSON(ctx, bangumiRequest{
+		Path: fmt.Sprintf("/v0/subjects/%d", subjectID), TTL: bangumiStableTTL,
+	}, false)
 	if err != nil {
 		return bangumiCalendarSubject{}, err
 	}
@@ -235,7 +170,6 @@ func (s *Server) bangumiSubjectByID(ctx context.Context, subjectID int) (bangumi
 	if subject.ID != subjectID {
 		return bangumiCalendarSubject{}, errors.New("Bangumi 返回的作品 ID 不匹配")
 	}
-	_ = s.cache.Set(cacheKey, subject)
 	return subject, nil
 }
 
@@ -258,26 +192,6 @@ func bangumiRequestError(operation string, status int) error {
 }
 
 func (s *Server) bangumiFeedPage(ctx context.Context, feed bangumiFeedDefinition, page, limit int) ([]model.Comic, int, error) {
-	cacheKey := fmt.Sprintf("%s:%d:%d", feed.ID, page, limit)
-	s.bangumiFeedMu.Lock()
-	if cached, ok := s.bangumiFeedCache[cacheKey]; ok && time.Now().Before(cached.expires) {
-		items := s.annotateBangumiItems(append([]model.Comic(nil), cached.items...))
-		total := cached.total
-		s.bangumiFeedMu.Unlock()
-		s.queueBangumiCoverCache(items)
-		return items, total, nil
-	}
-	s.bangumiFeedMu.Unlock()
-	diskKey := "bangumi-feed:v2:" + cacheKey
-	if raw, _, ok := s.cache.Get(diskKey); ok {
-		var cached bangumiCachedPage
-		if json.Unmarshal(raw, &cached) == nil {
-			items := s.annotateBangumiItems(cached.Items)
-			s.queueBangumiCoverCache(items)
-			return items, cached.Total, nil
-		}
-	}
-
 	var subjects []bangumiCalendarSubject
 	total := 0
 	var err error
@@ -303,15 +217,6 @@ func (s *Server) bangumiFeedPage(ctx context.Context, feed bangumiFeedDefinition
 	}
 	items = s.annotateBangumiItems(items)
 	s.queueBangumiCoverCache(items)
-	_ = s.cache.Set(diskKey, bangumiCachedPage{Items: items, Total: total})
-	if s.bangumiFeedCache == nil {
-		s.bangumiFeedCache = map[string]bangumiFeedCacheEntry{}
-	}
-	s.bangumiFeedMu.Lock()
-	s.bangumiFeedCache[cacheKey] = bangumiFeedCacheEntry{
-		items: append([]model.Comic(nil), items...), total: total, expires: time.Now().Add(bangumiFeedCacheTTL),
-	}
-	s.bangumiFeedMu.Unlock()
 	return items, total, nil
 }
 
@@ -356,40 +261,43 @@ func (s *Server) searchBangumiSubjects(
 	if err != nil {
 		return nil, 0, err
 	}
-	cacheKey := fmt.Sprintf("bangumi-subject-search:v2:%d:%d:%s", page, limit, string(body))
-	if raw, _, ok := s.cache.Get(cacheKey); ok {
-		var cached bangumiCachedSubjectSearch
-		if json.Unmarshal(raw, &cached) == nil {
-			return cached.Data, cached.Total, nil
+	ttl := bangumiSearchTTL
+	automatic := strings.TrimSpace(keyword) == ""
+	if automatic {
+		ttl = bangumiHotTTL
+		if sortMode == "rank" || sortMode == "score" {
+			ttl = bangumiStableTTL
 		}
 	}
-	address := fmt.Sprintf("%s/v0/search/subjects?limit=%d&offset=%d", bangumiAPIRoot, limit, (page-1)*limit)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, address, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, 0, err
+	// Bangumi's search endpoint caps a request at 20 subjects. Canonical blocks
+	// are shared by login recommendations and different responsive grid sizes.
+	const blockSize = 20
+	offset := max(0, page-1) * limit
+	items := make([]bangumiCalendarSubject, 0, limit)
+	total := 0
+	for block := offset / blockSize * blockSize; len(items) < limit; block += blockSize {
+		raw, err := s.bangumiJSON(ctx, bangumiRequest{
+			Path: fmt.Sprintf("/v0/search/subjects?limit=%d&offset=%d", blockSize, block),
+			Body: body, TTL: ttl,
+		}, automatic)
+		if err != nil {
+			return nil, 0, err
+		}
+		var payload bangumiFeedPayload
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, 0, err
+		}
+		total = payload.Total
+		start := max(0, offset-block)
+		end := min(len(payload.Data), start+limit-len(items))
+		if start < end {
+			items = append(items, payload.Data[start:end]...)
+		}
+		if len(payload.Data) < blockSize || block+blockSize >= total {
+			break
+		}
 	}
-	request.Header.Set("User-Agent", bangumiUserAgent)
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Content-Type", "application/json")
-	s.applyBangumiAuthorization(ctx, request)
-	response, err := s.bangumiHTTPClient().Do(request)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, 0, bangumiRequestError("Bangumi 搜索", response.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
-	if err != nil {
-		return nil, 0, err
-	}
-	var payload bangumiFeedPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, 0, err
-	}
-	_ = s.cache.Set(cacheKey, bangumiCachedSubjectSearch{Data: payload.Data, Total: payload.Total})
-	return payload.Data, payload.Total, nil
+	return items, total, nil
 }
 
 func (s *Server) bangumiCalendarSubjects(ctx context.Context) ([]bangumiCalendarSubject, error) {

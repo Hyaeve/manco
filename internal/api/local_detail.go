@@ -2,6 +2,7 @@ package api
 
 import (
 	"archive/zip"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -94,7 +95,15 @@ func (s *Server) handleLocalCBZThumbnail(w http.ResponseWriter, r *http.Request)
 	if width <= 0 {
 		width = 240
 	}
-	data, thumbErr := buildThumbnailFromReader(io.LimitReader(reader, 32<<20), width)
+	info, err := os.Stat(target)
+	if err != nil {
+		_ = reader.Close()
+		http.NotFound(w, r)
+		return
+	}
+	data, thumbErr := s.cachedThumbnail(r.Context(), fmt.Sprintf("chapter|%s|%d|%d|%s|%d", target, info.Size(), info.ModTime().UnixNano(), first.Name, width), func() ([]byte, error) {
+		return buildThumbnailFromReader(io.LimitReader(reader, 32<<20), width)
+	})
 	_ = reader.Close()
 	if thumbErr == nil {
 		writeThumbBytes(w, r, data)

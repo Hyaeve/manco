@@ -627,7 +627,7 @@ async function remove(item) {
 
 function cover(item) {
   if (item.localCover) return api.localFileUrl(item.localCover, false, 320)
-  if (item.cachedCover) return item.cachedCover
+  if (item.cachedCover) return api.cachedCoverUrl(item.cachedCover)
   return api.imageUrl(item.cover, item.sourceId, '', 320)
 }
 

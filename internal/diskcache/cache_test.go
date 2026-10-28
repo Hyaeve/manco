@@ -47,6 +47,27 @@ func TestCachePersistsWithoutKeepingBodiesInMemory(t *testing.T) {
 	}
 }
 
+func TestSetTTLPreservesDifferentFreshnessWindows(t *testing.T) {
+	cache, err := Open(t.TempDir(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.SetTTL("long-lived", map[string]int{"value": 1}, 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	entry := cache.entries[hashKey("long-lived")]
+	if entry.ExpiresAt.Sub(entry.StoredAt) != 24*time.Hour {
+		t.Fatalf("custom TTL = %v", entry.ExpiresAt.Sub(entry.StoredAt))
+	}
+	if err := cache.Set("default", map[string]int{"value": 2}); err != nil {
+		t.Fatal(err)
+	}
+	entry = cache.entries[hashKey("default")]
+	if entry.ExpiresAt.Sub(entry.StoredAt) != time.Minute {
+		t.Fatalf("default TTL changed: %v", entry.ExpiresAt.Sub(entry.StoredAt))
+	}
+}
+
 func TestCacheEvictsOldestEntries(t *testing.T) {
 	root := t.TempDir()
 	cache, err := Open(root, time.Hour)
