@@ -120,7 +120,7 @@ async function submit() {
     }
     await auth.login(username.value, password.value)
     const target = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
-    router.push(target)
+    router.push(router.resolve(target).name === 'discover' ? { name: 'discover' } : target)
   } catch (err) {
     error.value = err.message
   } finally {

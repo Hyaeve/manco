@@ -64,7 +64,7 @@ const sourceAccounts = ref({})
 const selectedItems = ref(new Set())
 const batchCoverBlur = ref(false)
 const batchSubscribing = ref(false)
-const activeKind = ref('comic')
+const activeKind = ref('bangumi')
 const activeId = ref('')
 const jumpInput = ref('')
 const panels = ref(readDiscoverPanels())
@@ -267,7 +267,7 @@ async function loadSources() {
     sourceAccounts.value = payload.accounts || {}
     applyServerBrowseFilters(payload.browseFilters)
     const requestedKind = ['bangumi', 'comic', 'book', 'other'].includes(route.query.kind) ? route.query.kind : ''
-    activeKind.value = requestedKind || (['bangumi', 'book', 'other'].includes(nav.kind) ? nav.kind : 'comic')
+    activeKind.value = requestedKind || (['bangumi', 'comic', 'book', 'other'].includes(nav.kind) ? nav.kind : 'bangumi')
     const preferred = typeof route.query.source === 'string' ? route.query.source : nav.source || ''
     const found = sources.value.find((source) => source.id === preferred)
     activeId.value = found?.id || sources.value[0]?.id || ''

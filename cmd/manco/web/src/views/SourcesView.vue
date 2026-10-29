@@ -40,6 +40,7 @@ import ComicSourceIcon from '../components/ComicSourceIcon.vue'
 import SitePicker from '../components/SitePicker.vue'
 import SourceIcon from '../components/SourceIcon.vue'
 import { emitSourcesChanged } from '../utils/sourceEvents'
+import { openExternalUrl } from '../utils/externalLink'
 
 const sources = ref([])
 const repositories = ref([])
@@ -2189,6 +2190,33 @@ function onDragEnd() {
                 />
               </label>
             </div>
+            <div v-if="editorSource.id === 'zlibrary'" class="settings-grid source-editor-pair">
+              <label class="field">
+                <span>浏览器 Cookie</span>
+                <textarea
+                  v-model="forms[editorSource.id].cookie"
+                  class="textarea cookie-textarea"
+                  placeholder="验证并登录后复制该网站的请求 Cookie，留空保留已保存值"
+                />
+              </label>
+              <label class="field">
+                <span>User-Agent</span>
+                <input
+                  v-model="forms[editorSource.id].userAgent"
+                  class="input"
+                  placeholder="与完成验证的浏览器保持一致"
+                />
+              </label>
+            </div>
+            <button
+              v-if="editorSource.id === 'zlibrary'"
+              class="btn secondary small"
+              type="button"
+              @click="openExternalUrl(forms[editorSource.id].homeUrl || editorSource.homepage)"
+            >
+              <ExternalLink :size="14" />
+              打开网站验证
+            </button>
             <div v-if="showsAccountLogin(editorSource)" class="settings-grid">
               <label class="field">
                 <span>账号（邮箱或用户名）</span>

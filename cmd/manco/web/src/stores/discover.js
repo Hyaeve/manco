@@ -1,4 +1,5 @@
 const NAV_KEY = 'manco.discover.nav.v1'
+const DEFAULT_NAV = { kind: 'bangumi', source: 'bangumi-recent', page: 1, scrollTop: 0 }
 
 // 探索发现数据缓存：SPA 会话内保留各来源已加载的作品列表，重新进入
 // 该页面时直接复用，避免每次都重新拉取远程内容源。缓存过期后才清空。
@@ -24,16 +25,24 @@ export function resetDiscoverPanels() {
 	panelsLoadedAt = 0
 }
 
+export function resetDiscoverSession() {
+  navState = null
+  resetDiscoverPanels()
+  try {
+    window.sessionStorage.removeItem(NAV_KEY)
+  } catch {}
+}
+
 // 记录发现页的浏览位置，便于从作品详情返回时恢复到原来的栏目、页码与滚动位置。
 export function readDiscoverNav() {
   if (navState) return { ...navState }
   try {
     const value = JSON.parse(window.sessionStorage.getItem(NAV_KEY) || '{}')
-    navState = value && typeof value === 'object' ? value : {}
+    navState = { ...DEFAULT_NAV, ...(value && typeof value === 'object' && !Array.isArray(value) ? value : {}) }
     return { ...navState }
   } catch {
-    navState = {}
-    return {}
+    navState = { ...DEFAULT_NAV }
+    return { ...navState }
   }
 }
 

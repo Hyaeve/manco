@@ -5,17 +5,22 @@ package zlibrary
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/hyaeve/manco/internal/model"
 	"github.com/hyaeve/manco/internal/source"
@@ -35,8 +40,6 @@ const (
 var defaultSites = []string{
 	defaultSite,
 	"https://z-library.sk",
-	"https://z-lib.io",
-	"https://singlelogin.re",
 }
 
 var categoryOptions = []model.FilterOption{
@@ -60,6 +63,10 @@ var sortOptions = []model.FilterOption{
 type Source struct {
 	client       *http.Client
 	directClient *http.Client
+	sessionMu    sync.Mutex
+	jar          http.CookieJar
+	jarKey       [32]byte
+	jarBases     map[string]bool
 }
 
 type session struct {
@@ -316,13 +323,22 @@ func (s *Source) bases(account source.Account) []string {
 func (s *Source) requestJSON(ctx context.Context, account source.Account, method, requestPath string, query, form url.Values, out any) (string, error) {
 	var failures []string
 	for _, base := range s.bases(account) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		raw, err := s.request(ctx, account, base, method, requestPath, query, form)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", base, err))
 			continue
 		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err == nil {
+			if message := payloadError(payload); message != "" {
+				return "", fmt.Errorf("Z-Library: %s", message)
+			}
+		}
 		if err := json.Unmarshal(raw, out); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: 解析响应失败: %v", base, err))
+			failures = append(failures, fmt.Sprintf("%s: API 返回了无效的 JSON 数据", base))
 			continue
 		}
 		return base, nil
@@ -349,7 +365,7 @@ func (s *Source) request(ctx context.Context, account source.Account, base, meth
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", source.DefaultUserAgent)
+	request.Header.Set("User-Agent", source.FirstNonEmpty(account.UserAgent, source.DefaultUserAgent))
 	request.Header.Set("Accept", "application/json,text/plain,*/*")
 	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
 	request.Header.Set("Referer", strings.TrimRight(base, "/")+"/")
@@ -357,12 +373,9 @@ func (s *Source) request(ctx context.Context, account source.Account, base, meth
 	if form != nil {
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	if cookie := cookieHeader(account); cookie != "" {
-		request.Header.Set("Cookie", cookie)
-	}
-	client := source.SourceClient(s.client, &s.directClient, account)
-	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+	client, err := s.requestClient(account, base, false)
+	if err != nil {
+		return nil, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -373,17 +386,108 @@ func (s *Source) request(ctx context.Context, account source.Account, base, meth
 	if err != nil {
 		return nil, err
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message := strings.TrimSpace(string(raw))
-		if message == "" {
-			message = http.StatusText(response.StatusCode)
-		}
-		if len(message) > 500 {
-			message = message[:500]
-		}
-		return nil, fmt.Errorf("HTTP %d: %s", response.StatusCode, message)
+	if err := responseError(response, raw); err != nil {
+		return nil, err
 	}
 	return raw, nil
+}
+
+func responseError(response *http.Response, raw []byte) error {
+	text := strings.ToLower(string(raw[:min(len(raw), 8192)]))
+	html := strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/html") ||
+		strings.HasPrefix(strings.TrimSpace(text), "<")
+	if response.StatusCode == 513 || html && (strings.Contains(text, "diamwall") ||
+		strings.Contains(text, "cf-chl-") || strings.Contains(text, "checking your browser") ||
+		strings.Contains(text, "verifying your browser")) {
+		return verificationError()
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		return errors.New("Z-Library 登录已失效，请在资源拓展中重新登录或更新 Cookie")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("HTTP %d: %s", response.StatusCode, http.StatusText(response.StatusCode))
+	}
+	if html {
+		return errors.New("Z-Library 返回了网页而不是 API 数据，请核对网站地址、登录状态和浏览器验证 Cookie")
+	}
+	return nil
+}
+
+func verificationError() error {
+	return errors.New("Z-Library 需要浏览器验证，请在资源拓展中打开该网站完成验证，保存同一浏览器的 Cookie 和 User-Agent；浏览器与 Manco 应使用相同网络或代理出口")
+}
+
+// Scope the jar to the selected site, including during redirects to file hosts.
+type siteCookieJar struct {
+	http.CookieJar
+	host string
+}
+
+func (j siteCookieJar) Cookies(address *url.URL) []*http.Cookie {
+	if !strings.EqualFold(address.Host, j.host) {
+		return nil
+	}
+	return j.CookieJar.Cookies(address)
+}
+
+func (j siteCookieJar) SetCookies(address *url.URL, cookies []*http.Cookie) {
+	if strings.EqualFold(address.Host, j.host) {
+		j.CookieJar.SetCookies(address, cookies)
+	}
+}
+
+func (s *Source) requestClient(account source.Account, base string, download bool) (*http.Client, error) {
+	address, err := url.Parse(base)
+	if err != nil || address.Host == "" || (address.Scheme != "https" && address.Scheme != "http") || address.User != nil {
+		return nil, errors.New("Z-Library 网站地址无效")
+	}
+	fingerprint, _ := json.Marshal([]any{
+		account.Username, account.Password, account.Token, account.Cookie,
+		account.UserAgent, account.HomeURL, source.AccountUsesProxy(account),
+	})
+	key := sha256.Sum256(fingerprint)
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.jar == nil || s.jarKey != key {
+		jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+		if err != nil {
+			return nil, err
+		}
+		s.jar, s.jarKey, s.jarBases = jar, key, map[string]bool{}
+	}
+	if !s.jarBases[base] {
+		cookies := &http.Request{Header: http.Header{"Cookie": {cookieHeader(account)}}}
+		s.jar.SetCookies(address, cookies.Cookies())
+		s.jarBases[base] = true
+	}
+	// Copy the client, retaining its transport/proxy without changing other sources.
+	client := *source.SourceClient(s.client, &s.directClient, account)
+	client.Jar = siteCookieJar{CookieJar: s.jar, host: address.Host}
+	if client.Timeout == 0 {
+		client.Timeout = 60 * time.Second
+	}
+	parentCheck := client.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return verificationError()
+		}
+		if request.URL.Scheme != "http" && request.URL.Scheme != "https" ||
+			(via[0].URL.Scheme == "https" && request.URL.Scheme != "https") {
+			return errors.New("Z-Library 拒绝不安全的重定向")
+		}
+		if !strings.EqualFold(request.URL.Host, address.Host) {
+			if !download {
+				return errors.New("Z-Library API 跳转至其他域名，请确认网站地址后在内容源设置中更新")
+			}
+			request.Header.Del("Cookie")
+			request.Header.Del("Authorization")
+		}
+		if parentCheck != nil {
+			return parentCheck(request, via)
+		}
+		return nil
+	}
+	return &client, nil
 }
 
 func (s *Source) downloadBytes(ctx context.Context, account source.Account, base, address string) ([]byte, error) {
@@ -391,21 +495,22 @@ func (s *Source) downloadBytes(ctx context.Context, account source.Account, base
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", source.DefaultUserAgent)
+	request.Header.Set("User-Agent", source.FirstNonEmpty(account.UserAgent, source.DefaultUserAgent))
 	request.Header.Set("Accept", "*/*")
 	request.Header.Set("Referer", strings.TrimRight(base, "/")+"/")
-	if cookie := cookieHeader(account); cookie != "" {
-		request.Header.Set("Cookie", cookie)
-	}
-	client := source.SourceClient(s.client, &s.directClient, account)
-	if client == nil {
-		client = &http.Client{Timeout: 120 * time.Second}
+	client, err := s.requestClient(account, base, true)
+	if err != nil {
+		return nil, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
+	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/html") {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return nil, verificationError()
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return nil, fmt.Errorf("下载电子书失败，HTTP %d", response.StatusCode)
@@ -419,6 +524,9 @@ func (s *Source) downloadBytes(ctx context.Context, account source.Account, base
 	}
 	if len(data) == 0 {
 		return nil, errors.New("电子书文件为空")
+	}
+	if err := responseError(response, data); err != nil {
+		return nil, err
 	}
 	return data, nil
 }
@@ -522,14 +630,13 @@ func bookObject(payload map[string]any) map[string]any {
 }
 
 func payloadError(payload map[string]any) string {
-	if success, ok := payload["success"].(bool); ok && !success {
-		return firstMapValue(payload, "error", "message", "errorMessage")
-	}
-	if success := intValue(payload["success"]); success == 0 {
-		if _, exists := payload["success"]; exists {
-			if message := firstMapValue(payload, "error", "message", "errorMessage"); message != "" {
-				return message
-			}
+	if value, exists := payload["success"]; exists {
+		failed := firstValue(value) == "0"
+		if success, ok := value.(bool); ok {
+			failed = !success
+		}
+		if failed {
+			return source.FirstNonEmpty(firstMapValue(payload, "error", "message", "errorMessage"), "API 拒绝请求，请检查登录状态")
 		}
 	}
 	return firstMapValue(payload, "error", "errorMessage")

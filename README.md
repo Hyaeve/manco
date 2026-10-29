@@ -65,6 +65,7 @@ GHCR 镜像为 `linux/amd64`。若拉取提示 `denied`，把 GitHub 包 `manco`
 - 哔咔需要账号密码登录
 - 禁漫天堂、包子漫画免登录可浏览，遇到校验时填写站点域名与 Cookie
 - Z-Library 使用邮箱密码登录，并按源提供的 EPUB、PDF 格式下载
+- Z-Library 遇到浏览器验证时，可在内容源编辑窗口打开网站完成验证，填写该浏览器的请求 Cookie 和 User-Agent 后保存；浏览器与 Manco 应使用相同网络或代理出口。内置请求会保留防护 Cookie，但不会代替人工完成站点验证。
 - 笔趣阁与插件书籍把正文和插图优先打包为 CBZ，CBZ 内使用按章节排序的 XHTML 页面
 - 视频源保留 MP4 等原生文件格式；HLS / DASH 分段流由镜像内置的 FFmpeg 无转码封装为 MKV
 - FFmpeg 使用独立构建的流复制版本，不随最终镜像安装完整转码工具依赖；构建阶段验证 HLS / DASH 转封装。
@@ -100,7 +101,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.9.9 && git push origin v0.9.9   # 构建并发布 :v0.9.9
+git tag v0.10.0 && git push origin v0.10.0   # 构建并发布 :v0.10.0
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 

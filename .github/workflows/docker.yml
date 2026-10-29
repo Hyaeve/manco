@@ -47,6 +47,7 @@ jobs:
         working-directory: cmd/manco/web
         run: |
           npm ci --no-audit --no-fund
+          node --test tests/discover.test.js
           npm run build
 
       - name: go vet

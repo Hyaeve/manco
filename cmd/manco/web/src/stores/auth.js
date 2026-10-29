@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { api } from '../api'
+import { resetDiscoverSession } from './discover'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -22,6 +23,7 @@ export const useAuthStore = defineStore('auth', {
     },
     async login(username, password) {
       const payload = await api.login(username, password)
+      resetDiscoverSession()
       this.user = payload.user
     },
     async logout() {

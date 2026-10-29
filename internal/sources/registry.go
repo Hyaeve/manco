@@ -336,7 +336,7 @@ func (r *Registry) AllowedImageHost(host string) bool {
 		".wowenku.com", ".shencou.com", ".wenruya.com",
 		".gutenberg.org",
 		".biquge345.com",
-		".1lib.sk", ".z-library.sk", ".z-lib.io", ".singlelogin.re", ".z-lib.org", ".zlibrary.to",
+		".1lib.sk", ".z-library.sk", ".z-lib.org", ".zlibrary.to",
 		".webmota.com", ".kukuc.co", ".twmanga.com", ".dinnerku.com", ".twmanhua.com",
 		".picacomic.com", ".go2778.com",
 	} {
