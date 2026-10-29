@@ -3260,11 +3260,26 @@
   border-color: color-mix(in srgb, #9db463 56%, var(--border));
 }
 
-/* 章节排序：纯图标按钮（全选按钮保持图标+文字一体横排） */
-.detail-chapter-head .btn.ghost.small.sort-btn {
+/* 章节工具栏：按钮和章节数量使用同高圆角框。 */
+.detail-chapter-head .chapter-head-control {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.detail-chapter-head .chapter-count {
+  padding-top: 7px;
+  padding-bottom: 7px;
+  line-height: 20px;
+}
+.detail-chapter-head .btn.secondary.small.sort-btn {
   display: grid;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
   place-items: center;
   padding: 0;
 }
@@ -3277,17 +3292,17 @@
   filter: invert(1) brightness(1.2);
   opacity: 0.84;
 }
-.detail-chapter-head .btn.ghost.small.select-all-btn {
+.detail-chapter-head .btn.secondary.small.select-all-btn {
   display: inline-flex;
   flex-direction: row;
   align-items: center;
   gap: 6px;
-  height: 34px;
+  height: 36px;
   padding: 0 12px;
   white-space: nowrap;
 }
 
-.detail-chapter-head .btn.ghost.small.select-all-btn.active {
+.detail-chapter-head .btn.secondary.small.select-all-btn.active {
   border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
   background: var(--primary-soft);
   color: var(--primary-strong);
@@ -6397,6 +6412,75 @@ svg.source-editor-icon {
 .local-root-row .chapter-sort-trigger {
   box-sizing: border-box;
   padding-block: 0;
+}
+
+.subscription-filter-tools {
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 10px;
+}
+
+.subscription-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 240px;
+  min-width: 140px;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.subscription-search:focus-within {
+  border-color: var(--select-highlight-strong);
+}
+
+.subscription-search > svg {
+  flex: 0 0 auto;
+}
+
+.subscription-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.subscription-search input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.subscription-search .icon-btn {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+}
+
+@media (max-width: 640px) {
+  .subscription-filter-row {
+    flex-wrap: wrap;
+  }
+
+  .subscription-filter-row .local-root-strip,
+  .subscription-filter-tools {
+    flex: 1 1 100%;
+  }
+
+  .subscription-search {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
 }
 
 /* 下拉选择器统一用侧栏选中态那块淡黄，替换之前的蓝/灰高亮。 */

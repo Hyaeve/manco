@@ -361,7 +361,7 @@ function previewPlainText(value) {
 }
 
 async function openChapterPreview(chapter) {
-  if (!chapter?.id || !comic.value) return
+  if (isBangumiComic.value || !chapter?.id || !comic.value) return
   const requestSeq = ++previewRequestSeq
   previewOpen.value = true
   previewLoading.value = true
@@ -641,8 +641,8 @@ async function downloadSelected() {
             </button>
           </template>
           <span v-else>未知作者</span>
-          <span v-if="comic.status"> · {{ comic.status }}</span>
-          <span v-if="updatedDateLabel"> · 最后更新 {{ updatedDateLabel }}</span>
+          <span> · {{ String(comic.status || '').trim() || '未知状态' }}</span>
+          <span> · {{ updatedDateLabel ? `最后更新 ${updatedDateLabel}` : '未知更新时间' }}</span>
         </div>
         <div v-if="comic.tags?.length" class="tag-list">
           <span v-for="tag in comic.tags" :key="tag" class="badge tag-pill">
@@ -656,21 +656,23 @@ async function downloadSelected() {
     <section v-if="!isBangumiComic" class="detail-chapters">
       <div class="detail-chapter-head">
         <button
-          class="btn ghost small select-all-btn"
+          class="btn secondary small chapter-head-control select-all-btn"
           :class="{ active: chapterSelectionMode }"
           type="button"
+          :aria-pressed="allSelected"
           @click="toggleAll"
         >
           <component :is="allSelected ? SquareCheck : Square" :size="16" />
           <span>全选</span>
         </button>
-        <button class="btn ghost small sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
-          <img class="chapter-time-sort-icon" :src="sortDesc ? timeSortAsc : timeSortDesc" alt="" />
+        <button class="btn secondary small chapter-head-control sort-btn" type="button" :aria-label="sortDesc ? '最新在前' : '最旧在前'" @click="sortDesc = !sortDesc">
+          <img class="chapter-time-sort-icon" :src="sortDesc ? timeSortDesc : timeSortAsc" alt="" />
         </button>
-        <span v-if="archiveMode" class="muted small">已下载 {{ downloadedCount }} / 共 {{ chapters.length }} 章</span>
-        <span v-else class="muted small">
+        <span v-if="archiveMode" class="muted small chapter-head-control chapter-count">已下载 {{ downloadedCount }} / 共 {{ chapters.length }} 章</span>
+        <span v-else class="muted small chapter-head-control chapter-count">
           共 {{ chapters.length }} 章
           <template v-if="updatedDateLabel"> · 最后更新：{{ updatedDateLabel }}</template>
+          <template v-else> · 未知更新时间</template>
         </span>
         <span class="spacer" />
         <form class="chapter-search" @submit.prevent="applyChapterSearch">
@@ -703,6 +705,13 @@ async function downloadSelected() {
           <span class="chapter-tile-title">{{ chapter.title }}</span>
           <span v-if="chapter.order" class="badge">#{{ chapter.order }}</span>
         </button>
+      </div>
+    </section>
+    <section v-else class="detail-chapters">
+      <div class="detail-chapter-head">
+        <span class="muted small chapter-head-control chapter-count">
+          {{ comic.chapterCount > 0 ? `共 ${comic.chapterCount} 章` : '章节数未知' }}
+        </span>
       </div>
     </section>
   </div>

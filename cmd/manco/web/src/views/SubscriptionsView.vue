@@ -18,6 +18,7 @@ import {
   RefreshCcw,
   RefreshCw,
   Save,
+  Search,
   Sparkles,
   Trash2,
   X,
@@ -44,6 +45,8 @@ const downloadDirs = ref([])
 const activePending = ref(0)
 const kindFilter = ref('all')
 const activeDir = ref('')
+const searchInput = ref('')
+const keyword = ref('')
 const loading = ref(true)
 const busy = ref(0)
 const batchBusy = ref(false)
@@ -82,6 +85,7 @@ let viewSwitchGeneration = 0
 const viewSwitching = ref(false)
 const viewRevealing = ref(true)
 let revealTimer = 0
+let searchTimer = 0
 
 const form = ref({
   cronExpr: '',
@@ -201,10 +205,31 @@ function subscriptionQueryOptions() {
   return {
     kind: kindFilter.value,
     dir: activeDir.value,
+    query: keyword.value,
     sort: sortMode.value,
     desc: sortDesc.value,
   }
 }
+
+function applySearch() {
+  if (searchTimer) window.clearTimeout(searchTimer)
+  searchTimer = 0
+  const next = searchInput.value.trim()
+  if (keyword.value === next) return
+  keyword.value = next
+  clearSubscriptionSelection()
+  reloadSubscriptionList()
+}
+
+function clearSearch() {
+  searchInput.value = ''
+  applySearch()
+}
+
+watch(searchInput, () => {
+  if (searchTimer) window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(applySearch, 260)
+})
 
 async function replaySubscriptionReveal() {
   viewRevealing.value = false
@@ -378,6 +403,7 @@ onUnmounted(() => {
   stopPolling()
   if (scrollFrame) window.cancelAnimationFrame(scrollFrame)
   if (revealTimer) window.clearTimeout(revealTimer)
+  if (searchTimer) window.clearTimeout(searchTimer)
   scrollEl?.removeEventListener('scroll', handlePageScroll)
   window.removeEventListener('resize', onWindowResize)
   window.removeEventListener('click', closeMenus)
@@ -901,8 +927,8 @@ function batchDelete() {
         </ContentLink>
   </div>
 
-  <div v-if="downloadDirs.length" class="local-root-row">
-    <div class="local-root-strip" aria-label="订阅目录">
+  <div class="local-root-row subscription-filter-row">
+    <div v-if="downloadDirs.length" class="local-root-strip" aria-label="订阅目录">
       <button type="button" :class="{ active: !activeDir }" @click="activeDir = ''">全部</button>
       <button
         v-for="dir in downloadDirs"
@@ -915,13 +941,29 @@ function batchDelete() {
         {{ dirLabel(dir) }}
       </button>
     </div>
-    <SortMenu
-      class="local-library-sort"
-      :options="sortOptions"
-      :mode="sortMode"
-      :desc="sortDesc"
-      @change="onSortChange"
-    />
+    <span v-else class="spacer" />
+    <div class="subscription-filter-tools">
+      <form class="subscription-search" role="search" @submit.prevent="applySearch">
+        <Search :size="15" />
+        <input
+          v-model="searchInput"
+          type="search"
+          aria-label="搜索订阅作品或作者"
+          placeholder="搜索作品或作者"
+          @search="applySearch"
+        />
+        <button v-if="searchInput" class="icon-btn" type="button" aria-label="清除订阅搜索" @click="clearSearch">
+          <X :size="14" />
+        </button>
+      </form>
+      <SortMenu
+        class="local-library-sort"
+        :options="sortOptions"
+        :mode="sortMode"
+        :desc="sortDesc"
+        @change="onSortChange"
+      />
+    </div>
   </div>
 
   <div v-if="loading && !items.length" class="empty">
@@ -929,7 +971,7 @@ function batchDelete() {
     <span>加载订阅清单</span>
   </div>
   <CollectionEmptyState
-    v-else-if="!items.length"
+    v-else-if="!items.length && !keyword && !activeDir && kindFilter === 'all'"
     class="page-empty-state"
     variant="subscriptions"
     window-title="订阅信箱"
@@ -941,7 +983,8 @@ function batchDelete() {
     </template>
   </CollectionEmptyState>
   <div v-else-if="!filteredItems.length" class="card empty">
-    <p>当前栏目下没有订阅。</p>
+    <Search v-if="keyword" :size="26" />
+    <p>{{ keyword ? '没有匹配的订阅作品。' : '当前栏目下没有订阅。' }}</p>
   </div>
 
   <div

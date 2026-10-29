@@ -58,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.10.1"
+	appVersion    = "v0.10.2"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -3777,7 +3777,7 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 		total int
 		err   error
 	)
-	if limit > 0 {
+	if limit > 0 || filter.Query != "" {
 		items, total, err = s.store.ListSubscriptionsPage(r.Context(), filter, limit, offset)
 	} else {
 		items, err = s.store.ListSubscriptions(r.Context())
@@ -3855,6 +3855,7 @@ func (s *Server) subscriptionFilterFromRequest(r *http.Request) store.Subscripti
 	query := r.URL.Query()
 	filter := store.SubscriptionFilter{
 		DownloadDir: strings.TrimSpace(query.Get("dir")),
+		Query:       strings.TrimSpace(query.Get("q")),
 		Sort:        strings.ToLower(strings.TrimSpace(query.Get("sort"))),
 		Descending:  true,
 	}

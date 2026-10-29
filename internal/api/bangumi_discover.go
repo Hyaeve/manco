@@ -497,16 +497,21 @@ func bangumiSubjectComic(subject bangumiCalendarSubject, feed bangumiFeedDefinit
 			sourceID = "bangumi-manga"
 		}
 	}
+	chapterCount := subject.Eps
+	if chapterCount <= 0 {
+		chapterCount = max(0, subject.TotalEpisodes)
+	}
 	return model.Comic{
-		SourceID:    sourceID,
-		ID:          strconv.Itoa(subject.ID),
-		Title:       title,
-		Cover:       cover,
-		SourceURL:   fmt.Sprintf("https://bgm.tv/subject/%d", subject.ID),
-		Description: strings.TrimSpace(subject.Summary),
-		Tags:        tags,
-		Status:      status,
-		UpdatedAt:   strings.TrimSpace(subject.Date),
+		SourceID:     sourceID,
+		ID:           strconv.Itoa(subject.ID),
+		Title:        title,
+		Cover:        cover,
+		SourceURL:    fmt.Sprintf("https://bgm.tv/subject/%d", subject.ID),
+		Description:  strings.TrimSpace(subject.Summary),
+		Tags:         tags,
+		Status:       status,
+		ChapterCount: chapterCount,
+		UpdatedAt:    strings.TrimSpace(subject.Date),
 	}, true
 }
 

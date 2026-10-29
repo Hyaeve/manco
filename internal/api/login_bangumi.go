@@ -44,15 +44,16 @@ type bangumiCalendarDay struct {
 }
 
 type bangumiCalendarSubject struct {
-	ID      int    `json:"id"`
-	URL     string `json:"url"`
-	Name    string `json:"name"`
-	NameCN  string `json:"name_cn"`
-	Summary string `json:"summary"`
-	Type    int    `json:"type"`
-	Date    string `json:"date"`
-	Eps     int    `json:"eps"`
-	Images  struct {
+	ID            int    `json:"id"`
+	URL           string `json:"url"`
+	Name          string `json:"name"`
+	NameCN        string `json:"name_cn"`
+	Summary       string `json:"summary"`
+	Type          int    `json:"type"`
+	Date          string `json:"date"`
+	Eps           int    `json:"eps"`
+	TotalEpisodes int    `json:"total_episodes"`
+	Images        struct {
 		Large  string `json:"large"`
 		Common string `json:"common"`
 	} `json:"images"`

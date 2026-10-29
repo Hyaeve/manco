@@ -101,7 +101,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.10.1 && git push origin v0.10.1   # 构建并发布 :v0.10.1
+git tag v0.10.2 && git push origin v0.10.2   # 构建并发布 :v0.10.2
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 

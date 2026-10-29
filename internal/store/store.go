@@ -934,6 +934,7 @@ type SubscriptionFilter struct {
 	ExcludeSourceIDs []string
 	MatchKind        string
 	DownloadDir      string
+	Query            string
 	Sort             string
 	Descending       bool
 	MatchNone        bool
@@ -972,6 +973,10 @@ func subscriptionFilterClause(filter SubscriptionFilter) (string, []any) {
 	if dir := strings.TrimSpace(filter.DownloadDir); dir != "" {
 		clauses = append(clauses, "download_dir = ?")
 		args = append(args, dir)
+	}
+	if query := strings.TrimSpace(filter.Query); query != "" {
+		clauses = append(clauses, "(instr(lower(title), lower(?)) > 0 OR instr(lower(series_dir), lower(?)) > 0 OR instr(lower(author), lower(?)) > 0)")
+		args = append(args, query, query, query)
 	}
 	if kind := strings.ToLower(strings.TrimSpace(filter.MatchKind)); kind == "comic" || kind == "other" {
 		clauses = append(clauses, "(source_id <> 'bangumi' OR match_kind = ?)")

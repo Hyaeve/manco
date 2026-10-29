@@ -152,6 +152,7 @@ export const api = {
     if (offset) params.set('offset', String(offset))
     if (options.kind && options.kind !== 'all') params.set('kind', options.kind)
     if (options.dir) params.set('dir', options.dir)
+    if (options.query) params.set('q', options.query)
     if (options.sort) params.set('sort', options.sort)
     if (typeof options.desc === 'boolean') params.set('desc', options.desc ? '1' : '0')
     const query = params.toString()
