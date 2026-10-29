@@ -314,6 +314,9 @@ func (s *Source) bases(account source.Account) []string {
 		result = append(result, value)
 	}
 	add(account.HomeURL)
+	if len(result) > 0 {
+		return result
+	}
 	for _, site := range defaultSites {
 		add(site)
 	}
@@ -321,6 +324,16 @@ func (s *Source) bases(account source.Account) []string {
 }
 
 func (s *Source) requestJSON(ctx context.Context, account source.Account, method, requestPath string, query, form url.Values, out any) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	account, err := normalizeBrowserAccount(account)
+	if err != nil {
+		return "", err
+	}
+	if account.Cookie != "" && strings.TrimSpace(account.HomeURL) == "" {
+		return "", errors.New("Z-Library 已配置浏览器 Cookie，请同时选择完成验证的网站地址；Cookie 不会自动用于其他域名")
+	}
 	var failures []string
 	for _, base := range s.bases(account) {
 		if err := ctx.Err(); err != nil {
@@ -350,6 +363,10 @@ func (s *Source) requestJSON(ctx context.Context, account source.Account, method
 }
 
 func (s *Source) request(ctx context.Context, account source.Account, base, method, requestPath string, query, form url.Values) ([]byte, error) {
+	account, err := normalizeBrowserAccount(account)
+	if err != nil {
+		return nil, err
+	}
 	if requestPath != loginPath && strings.TrimSpace(account.Token) == "" && strings.TrimSpace(account.Cookie) == "" {
 		return nil, errors.New("Z-Library 尚未登录，请先在资源仓库中登录")
 	}
@@ -379,7 +396,7 @@ func (s *Source) request(ctx context.Context, account source.Account, base, meth
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, browserVerificationFailure(err, response, request, account)
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 32<<20))
@@ -387,7 +404,7 @@ func (s *Source) request(ctx context.Context, account source.Account, base, meth
 		return nil, err
 	}
 	if err := responseError(response, raw); err != nil {
-		return nil, err
+		return nil, browserVerificationFailure(err, response, request, account)
 	}
 	return raw, nil
 }
@@ -414,7 +431,7 @@ func responseError(response *http.Response, raw []byte) error {
 }
 
 func verificationError() error {
-	return errors.New("Z-Library 需要浏览器验证，请在资源拓展中打开该网站完成验证，保存同一浏览器的 Cookie 和 User-Agent；浏览器与 Manco 应使用相同网络或代理出口")
+	return errBrowserVerification
 }
 
 // Scope the jar to the selected site, including during redirects to file hosts.
@@ -491,6 +508,10 @@ func (s *Source) requestClient(account source.Account, base string, download boo
 }
 
 func (s *Source) downloadBytes(ctx context.Context, account source.Account, base, address string) ([]byte, error) {
+	account, err := normalizeBrowserAccount(account)
+	if err != nil {
+		return nil, err
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
@@ -504,12 +525,12 @@ func (s *Source) downloadBytes(ctx context.Context, account source.Account, base
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, browserVerificationFailure(err, response, request, account)
 	}
 	defer response.Body.Close()
 	if strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/html") {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return nil, verificationError()
+		return nil, browserVerificationFailure(verificationError(), response, request, account)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
@@ -526,7 +547,7 @@ func (s *Source) downloadBytes(ctx context.Context, account source.Account, base
 		return nil, errors.New("电子书文件为空")
 	}
 	if err := responseError(response, data); err != nil {
-		return nil, err
+		return nil, browserVerificationFailure(err, response, request, account)
 	}
 	return data, nil
 }

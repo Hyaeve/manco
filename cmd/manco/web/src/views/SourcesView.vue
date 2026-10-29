@@ -2155,11 +2155,11 @@ function onDragEnd() {
           <template v-else>
             <div class="settings-grid source-editor-pair">
               <label class="field">
-                <span>网站地址（留空自动优选）</span>
+                <span>{{ editorSource.id === 'zlibrary' ? '网站地址（浏览器 Cookie 所属域名）' : '网站地址（留空自动优选）' }}</span>
                 <SitePicker
                   v-model="forms[editorSource.id].homeUrl"
                   :options="editorSource.sites || []"
-                  placeholder="留空自动选择，优选可用地址"
+                  :placeholder="editorSource.id === 'zlibrary' ? '使用浏览器 Cookie 时选择验证域名' : '留空自动选择，优选可用地址'"
                 />
               </label>
               <label v-if="isJMComic(editorSource)" class="field">
