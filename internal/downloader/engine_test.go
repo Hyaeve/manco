@@ -525,7 +525,7 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 
 	first := readZip(t, filepath.Join(downloadDir, "测试作品", "第1话.cbz"))
-	assertEntries(t, first, []string{"001.png", "002.png", "003.png", "ComicInfo.xml"})
+	assertEntries(t, first, []string{"001.png", "002.png", "003.png"})
 	if !bytes.Equal(first["001.png"], images["/2.png"]) {
 		t.Fatal("chapter 1 page order was not preserved")
 	}
@@ -534,7 +534,7 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	}
 
 	second := readZip(t, filepath.Join(downloadDir, "测试作品", "第2话.cbz"))
-	assertEntries(t, second, []string{"001.png", "002.png", "ComicInfo.xml"})
+	assertEntries(t, second, []string{"001.png", "002.png"})
 	if !bytes.Equal(second["001.png"], images["/3.png"]) {
 		t.Fatal("chapter 2 first page mismatch")
 	}
@@ -564,38 +564,28 @@ func TestEngineWritesOneCBZPerChapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read comic nfo: %v", err)
 	}
-	// The standalone file describes the series, so it is chapter-independent
-	// (PageCount/Number live only in each chapter's embedded ComicInfo.xml).
+	// ComicInfo is only stored beside the chapter archives and describes the
+	// whole series rather than whichever chapter finished last.
 	for _, value := range []string{"<ComicInfo", "<Title>测试作品</Title>", "<Series>测试作品</Series>", "<Writer>测试作者</Writer>", "<Summary>测试简介</Summary>", "<Genre>测试,漫画</Genre>"} {
 		if !bytes.Contains(nfo, []byte(value)) {
 			t.Fatalf("ComicInfo.xml is missing %q: %s", value, nfo)
 		}
 	}
-	for _, value := range []string{"<PageCount>", "<Pages>", "<Status>"} {
+	for _, value := range []string{"<Number>", "<PageCount>", "<Pages>", "<Status>"} {
 		if bytes.Contains(nfo, []byte(value)) {
 			t.Fatalf("standalone ComicInfo.xml contains chapter-only %q: %s", value, nfo)
 		}
 	}
-	embedded, ok := first["ComicInfo.xml"]
-	if !ok {
-		t.Fatal("CBZ is missing embedded ComicInfo.xml")
-	}
 	for _, value := range []string{
 		"<Series>测试作品</Series>",
-		"<PageCount>3</PageCount>",
-		`<Pages>`,
-		`<Page Image="0" Type="Story"></Page>`,
 		"<Manga>YesAndRightToLeft</Manga>",
 		"<LanguageISO>zh-Hans</LanguageISO>",
 		"<Genre>测试,漫画</Genre>",
 		"<Tags>测试,漫画</Tags>",
 	} {
-		if !bytes.Contains(embedded, []byte(value)) {
-			t.Fatalf("embedded ComicInfo.xml is missing %q: %s", value, embedded)
+		if !bytes.Contains(nfo, []byte(value)) {
+			t.Fatalf("series ComicInfo.xml is missing %q: %s", value, nfo)
 		}
-	}
-	if bytes.Contains(embedded, []byte("<Status>")) {
-		t.Fatalf("ComicInfo.xml contains a non-v2.1 Status element: %s", embedded)
 	}
 
 	// KMRS reads the series summary only from series.json. Keep it strict enough
@@ -777,7 +767,7 @@ func TestEnsureSeriesMetadataWritesNFOForOtherSource(t *testing.T) {
 	}
 }
 
-func TestSyncSeriesTitleRewritesSidecarsAndArchiveMetadata(t *testing.T) {
+func TestSyncSeriesTitleRewritesSidecarsAndEPUBButPreservesCBZ(t *testing.T) {
 	root := t.TempDir()
 	seriesDir := filepath.Join(root, "夏日深处")
 	if err := os.MkdirAll(seriesDir, 0o755); err != nil {
@@ -823,6 +813,25 @@ func TestSyncSeriesTitleRewritesSidecarsAndArchiveMetadata(t *testing.T) {
 		{"ComicInfo.xml", `<?xml version="1.0"?><ComicInfo><Title>第1话</Title><Series>旧名称</Series></ComicInfo>`},
 		{"001.jpg", "image"},
 	})
+	writeArchive(filepath.Join(seriesDir, "第2话.cbz"), [][2]string{{"001.jpg", "image"}})
+	cbzFiles := map[string][]byte{}
+	cbzTimes := map[string]time.Time{}
+	for _, name := range []string{"第1话.cbz", "第2话.cbz"} {
+		path := filepath.Join(seriesDir, name)
+		fixedTime := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+		if err := os.Chtimes(path, fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		cbzFiles[name], err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cbzTimes[name] = info.ModTime()
+	}
 	writeArchive(filepath.Join(seriesDir, "第1章.epub"), [][2]string{
 		{"mimetype", "application/epub+zip"},
 		{"OEBPS/content.opf", `<?xml version="1.0"?><package><metadata><dc:title>旧名称</dc:title></metadata></package>`},
@@ -852,9 +861,19 @@ func TestSyncSeriesTitleRewritesSidecarsAndArchiveMetadata(t *testing.T) {
 	if err := xml.Unmarshal(nfoRaw, &renamedNFO); err != nil || renamedNFO.Title != "夏日深处" || renamedNFO.OriginalTitle != "夏日深处" {
 		t.Fatalf("NFO title was not synchronized: %+v, %v", renamedNFO, err)
 	}
-	cbz := readZip(t, filepath.Join(seriesDir, "第1话.cbz"))
-	if !bytes.Contains(cbz["ComicInfo.xml"], []byte("<Series>夏日深处</Series>")) || !bytes.Contains(cbz["ComicInfo.xml"], []byte("<Title>第1话</Title>")) {
-		t.Fatalf("embedded CBZ metadata mismatch: %s", cbz["ComicInfo.xml"])
+	for name, original := range cbzFiles {
+		path := filepath.Join(seriesDir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(raw, original) || !info.ModTime().Equal(cbzTimes[name]) {
+			t.Fatalf("directory rename rewrote chapter archive %s", name)
+		}
 	}
 	epub := readZip(t, filepath.Join(seriesDir, "第1章.epub"))
 	if !bytes.Contains(epub["OEBPS/content.opf"], []byte("<dc:title>夏日深处</dc:title>")) {
@@ -951,7 +970,6 @@ func TestMergedComicDownloadWritesOneOrderedCBZ(t *testing.T) {
 		"002-0001.png",
 		"003-0001.png",
 		"003-0002.png",
-		"ComicInfo.xml",
 	})
 	order := []struct {
 		entry string
@@ -967,9 +985,6 @@ func TestMergedComicDownloadWritesOneOrderedCBZ(t *testing.T) {
 		if !bytes.Equal(archive[check.entry], images[check.want]) {
 			t.Fatalf("merged entry %s does not match %s", check.entry, check.want)
 		}
-	}
-	if !bytes.Contains(archive["ComicInfo.xml"], []byte("<PageCount>5</PageCount>")) {
-		t.Fatalf("merged ComicInfo.xml has wrong page count: %s", archive["ComicInfo.xml"])
 	}
 	completed, ok := store.find(job.ID)
 	if !ok || completed.Status != "completed" || completed.TotalPages != 5 || completed.CompletedPages != 5 {
@@ -1044,7 +1059,6 @@ func TestMergedBookDownloadWritesOneCBZ(t *testing.T) {
 	assertEntries(t, archive, []string{
 		"0001.xhtml",
 		"0002.xhtml",
-		"ComicInfo.xml",
 		"style.css",
 		"images/001-0001.png",
 		"images/002-0001.png",
@@ -1056,9 +1070,13 @@ func TestMergedBookDownloadWritesOneCBZ(t *testing.T) {
 		!strings.Contains(string(archive["0002.xhtml"]), `src="images/002-0001.png"`) {
 		t.Fatal("merged book XHTML did not reference CBZ-local images")
 	}
+	seriesInfo, err := os.ReadFile(filepath.Join(downloadDir, "合并小说", "ComicInfo.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, value := range []string{"<Series>合并小说</Series>", "<Writer>测试作者</Writer>", "<Manga>No</Manga>"} {
-		if !bytes.Contains(archive["ComicInfo.xml"], []byte(value)) {
-			t.Fatalf("CBZ ComicInfo.xml is missing %q: %s", value, archive["ComicInfo.xml"])
+		if !bytes.Contains(seriesInfo, []byte(value)) {
+			t.Fatalf("series ComicInfo.xml is missing %q: %s", value, seriesInfo)
 		}
 	}
 }
@@ -1140,7 +1158,6 @@ func TestPluginBookChapterDownloadsAsCBZ(t *testing.T) {
 	firstImageName := "images/00000000_00010001.png"
 	secondImageName := "images/00000000_00010002.png"
 	assertEntries(t, archive, []string{
-		"ComicInfo.xml",
 		"style.css",
 		htmlName,
 		firstImageName,
@@ -1341,7 +1358,6 @@ func TestPlainTextBookDownloadsAsCBZ(t *testing.T) {
 	archive := readZip(t, outputPath)
 	assertEntries(t, archive, []string{
 		"0001.xhtml",
-		"ComicInfo.xml",
 		"style.css",
 	})
 	if !strings.Contains(string(archive["0001.xhtml"]), "第一段正文") ||
@@ -1450,6 +1466,9 @@ func TestDownloadResumesCachedPagesAfterInterruption(t *testing.T) {
 	}
 
 	resumable.setFailSecond(false)
+	if err := os.WriteFile(filepath.Join(jobDir, "ComicInfo.xml"), []byte("old chapter metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := engine.download(ctx, job); err != nil {
 		t.Fatalf("resumed download: %v", err)
 	}
@@ -1461,7 +1480,7 @@ func TestDownloadResumesCachedPagesAfterInterruption(t *testing.T) {
 		t.Fatalf("second page requests = %d, want one failed and one resumed request", secondRequests)
 	}
 	archive := readZip(t, filepath.Join(downloadDir, "断点作品", "第1话.cbz"))
-	assertEntries(t, archive, []string{"001.png", "002.png", "ComicInfo.xml"})
+	assertEntries(t, archive, []string{"001.png", "002.png"})
 	if !bytes.Equal(archive["001.png"], firstPage) || !bytes.Equal(archive["002.png"], secondPage) {
 		t.Fatal("resumed archive content mismatch")
 	}

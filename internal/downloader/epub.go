@@ -31,8 +31,9 @@ type epubImage struct {
 }
 
 // writeBookCBZ packages generated book chapters as XHTML pages plus their
-// illustrations. Native EPUB and PDF files are left unchanged by callers.
-func writeBookCBZ(path string, item source.Source, book model.Comic, chapterTitle string, chapterOrder float64, chapters []epubChapter, images []pageEntry) error {
+// illustrations, without chapter-level ComicInfo. Native EPUB and PDF files
+// are left unchanged by callers.
+func writeBookCBZ(path string, chapters []epubChapter, images []pageEntry) error {
 	if len(chapters) == 0 && len(images) == 0 {
 		return fmt.Errorf("CBZ 至少需要一个页面")
 	}
@@ -51,17 +52,6 @@ func writeBookCBZ(path string, item source.Source, book model.Comic, chapterTitl
 		}
 		chapterBodies[index] = body
 	}
-	infoPayload, err := marshalComicInfo(chapterComicInfo(
-		item,
-		book,
-		chapterTitle,
-		chapterOrder,
-		len(chapters)+len(normalizedImages),
-	))
-	if err != nil {
-		return err
-	}
-
 	temp := path + ".part"
 	file, err := os.Create(temp)
 	if err != nil {
@@ -113,9 +103,6 @@ func writeBookCBZ(path string, item source.Source, book model.Comic, chapterTitl
 		}
 	}
 	if err := write("style.css", []byte(epubStylesheet)); err != nil {
-		return closeWithCleanup(err)
-	}
-	if err := write("ComicInfo.xml", infoPayload); err != nil {
 		return closeWithCleanup(err)
 	}
 	if err := writer.Close(); err != nil {

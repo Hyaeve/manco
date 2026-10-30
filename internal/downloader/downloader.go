@@ -967,17 +967,10 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	e.metaMu.Lock()
-	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, len(pages), countSeriesBookFiles(comicDir))
+	metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, countSeriesBookFiles(comicDir))
 	e.metaMu.Unlock()
 	if metaErr != nil {
 		return fmt.Errorf("download comic metadata: %w", metaErr)
-	}
-	if len(infoPayload) > 0 {
-		infoPath := filepath.Join(tempDir, "ComicInfo.xml")
-		if err := os.WriteFile(infoPath, infoPayload, 0o644); err != nil {
-			return err
-		}
-		entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
 	}
 
 	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
@@ -1177,17 +1170,10 @@ func (e *Engine) downloadMergedComic(ctx context.Context, item source.Source, ac
 	metadata.Title = SafeName(comicTitle)
 	comicDir := filepath.Join(downloadRoot, SafeName(comicTitle))
 	e.metaMu.Lock()
-	infoPayload, metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, chapterTitle, job.ChapterOrder, totalPages, countSeriesBookFiles(comicDir)+1)
+	metaErr := writeComicMetadata(ctx, client, account, item, metadata, comicDir, countSeriesBookFiles(comicDir)+1)
 	e.metaMu.Unlock()
 	if metaErr != nil {
 		return fmt.Errorf("download merged metadata: %w", metaErr)
-	}
-	if len(infoPayload) > 0 {
-		infoPath := filepath.Join(tempDir, "ComicInfo.xml")
-		if err := writeFileAtomic(infoPath, infoPayload); err != nil {
-			return err
-		}
-		entries = append(entries, pageEntry{name: "ComicInfo.xml", path: infoPath})
 	}
 	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
@@ -1310,7 +1296,7 @@ func (e *Engine) downloadMergedBook(ctx context.Context, item source.Source, acc
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
-	if err := writeBookCBZ(outputPath, item, metadata, chapterTitle, job.ChapterOrder, epubChapters, epubImages); err != nil {
+	if err := writeBookCBZ(outputPath, epubChapters, epubImages); err != nil {
 		return err
 	}
 	e.metaMu.Lock()
@@ -1591,10 +1577,6 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 	if isText {
 		if err := writeBookCBZ(
 			outputPath,
-			item,
-			metadata,
-			chapterTitle,
-			job.ChapterOrder,
 			[]epubChapter{{Title: chapterTitle, HTML: plainTextToXHTML(text)}},
 			nil,
 		); err != nil {
@@ -1864,10 +1846,6 @@ func (e *Engine) downloadBookArchive(
 	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
 	if err := writeBookCBZ(
 		outputPath,
-		item,
-		metadata,
-		chapterTitle,
-		job.ChapterOrder,
 		[]epubChapter{{Title: chapterTitle, HTML: html}},
 		epubImages,
 	); err != nil {
@@ -1963,9 +1941,8 @@ func bookFileExtension(filename string) string {
 	return extension
 }
 
-// writeBookMetadata downloads the series cover and refreshes the metadata
-// sidecars. ComicInfo.xml remains the Manco/Komga-friendly series document,
-// while series.json is the schema KMRS actually reads for a series summary.
+// writeBookMetadata downloads a missing cover and ensures the series document
+// without overwriting existing metadata. series.json still refreshes its count.
 func writeBookMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, book model.Comic, comicDir string) error {
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return err
@@ -1979,7 +1956,7 @@ func writeBookMetadata(ctx context.Context, client *http.Client, account source.
 			}
 		}
 	}
-	if _, err := writeSeriesComicInfo(item, book, comicDir); err != nil {
+	if err := ensureSeriesComicInfo(item, book, comicDir); err != nil {
 		return err
 	}
 	return writeSeriesMetadataFiles(book, item.Info(), comicDir)
@@ -2083,23 +2060,65 @@ func marshalOtherNFO(doc OtherNFO) ([]byte, error) {
 	return append([]byte(xml.Header), payload...), nil
 }
 
-// seriesComicInfoDoc builds the standalone series-level ComicInfo document. It
-// reuses the same fields Komga/KMRS aggregate from each chapter so the series
-// view can be populated, then clears the fields that only belong to a chapter.
+// seriesComicInfoDoc describes the whole work. Chapter archives only contain
+// reading content; their order is tracked in filenames and the job store.
 func seriesComicInfoDoc(item source.Source, comic model.Comic) ComicInfo {
-	doc := chapterComicInfo(item, comic, "", 0, 0)
-	doc.Title = source.FirstNonEmpty(comic.Title, comic.ID)
-	doc.Number = ""
-	doc.Count = 0
-	doc.PageCount = 0
-	doc.Pages = nil
-	return doc
+	info := item.Info()
+	manga := "YesAndRightToLeft"
+	if source.KindOf(info) == source.KindBook || source.KindOf(info) == source.KindOther {
+		manga = "No"
+	}
+	genres := comicGenreValues(comic, info)
+	notes := fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID)
+	if status := strings.TrimSpace(comic.Status); status != "" {
+		// ComicInfo v2.1 has no Status element; retain it for the local library.
+		notes += " status=" + url.QueryEscape(status)
+	}
+	title := source.FirstNonEmpty(comic.Title, comic.ID)
+	return ComicInfo{
+		Title:       title,
+		Series:      title,
+		Summary:     plainMetadataText(comic.Description),
+		Notes:       notes,
+		Year:        metadataYear(comic.UpdatedAt),
+		Writer:      comic.Author,
+		Genre:       strings.Join(genres, ","),
+		Tags:        strings.Join(genres, ","),
+		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
+		LanguageISO: "zh-Hans",
+		Manga:       manga,
+		AgeRating:   comicInfoAgeRating(comic, genres),
+	}
 }
 
-// writeSeriesComicInfo writes the standalone series-level ComicInfo.xml. Each
-// chapter CBZ also embeds its own copy. Obsolete OPF/book sidecars are removed,
-// but series.json is retained because it is the only format KMRS uses for the
-// series description.
+// ensureSeriesComicInfo preserves a valid series document across chapter
+// downloads. Only missing, corrupt or legacy chapter-shaped files are replaced;
+// author/summary changes are applied by an explicit scrape instead.
+func ensureSeriesComicInfo(item source.Source, comic model.Comic, comicDir string) error {
+	raw, err := os.ReadFile(filepath.Join(comicDir, "ComicInfo.xml"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && seriesComicInfoCurrent(raw, source.FirstNonEmpty(comic.Title, comic.ID)) {
+		removeObsoleteMetadataFiles(comicDir)
+		return nil
+	}
+	_, err = writeSeriesComicInfo(item, comic, comicDir)
+	return err
+}
+
+func seriesComicInfoCurrent(raw []byte, title string) bool {
+	var info ComicInfo
+	return xml.Unmarshal(raw, &info) == nil &&
+		strings.TrimSpace(info.Title) == title &&
+		strings.TrimSpace(info.Series) == title &&
+		info.Number == "" && info.PageCount == 0 && info.Pages == nil &&
+		!hasHTMLTag(info.Summary)
+}
+
+// writeSeriesComicInfo replaces the standalone series-level ComicInfo.xml for
+// initialization, repair or an explicit scrape. No copy is embedded in chapter
+// CBZs. Obsolete OPF/book sidecars are removed; series.json stays.
 func writeSeriesComicInfo(item source.Source, comic model.Comic, comicDir string) ([]byte, error) {
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
 		return nil, err
@@ -2108,7 +2127,7 @@ func writeSeriesComicInfo(item source.Source, comic model.Comic, comicDir string
 	if err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath.Join(comicDir, "ComicInfo.xml"), payload, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(comicDir, "ComicInfo.xml"), payload); err != nil {
 		return nil, err
 	}
 	removeObsoleteMetadataFiles(comicDir)
@@ -2424,7 +2443,7 @@ func (e *Engine) ScrapeSeriesMetadata(ctx context.Context, subscription model.Su
 
 // SyncSeriesTitle rewrites the metadata title of an existing series directory
 // to match its actual folder name. It is used after a subscription directory
-// rename so sidecars and archive-internal metadata stay aligned.
+// rename. CBZ contents stay untouched; native EPUB titles remain synchronized.
 func (e *Engine) SyncSeriesTitle(subscription model.Subscription) error {
 	root, err := e.jobDownloadDir(model.DownloadJob{DownloadDir: subscription.DownloadDir})
 	if err != nil {
@@ -2512,12 +2531,10 @@ func rewriteSeriesMetadataTitle(comicDir, title string) error {
 		if entry.IsDir() {
 			return nil
 		}
-		switch strings.ToLower(filepath.Ext(entry.Name())) {
-		case ".cbz", ".epub":
-			return rewriteArchiveMetadataTitle(path, title)
-		default:
-			return nil
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".epub") {
+			return rewriteEPUBMetadataTitle(path, title)
 		}
+		return nil
 	})
 }
 
@@ -2526,7 +2543,7 @@ var (
 	epubNCXTitlePattern = regexp.MustCompile(`(?s)<docTitle>\s*<text>.*?</text>\s*</docTitle>`)
 )
 
-func rewriteArchiveMetadataTitle(path, title string) error {
+func rewriteEPUBMetadataTitle(path, title string) error {
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return err
@@ -2537,7 +2554,6 @@ func rewriteArchiveMetadataTitle(path, title string) error {
 		return err
 	}
 	writer := zip.NewWriter(output)
-	archiveExtension := strings.ToLower(filepath.Ext(path))
 	cleanup := func(cause error) error {
 		_ = writer.Close()
 		_ = output.Close()
@@ -2557,15 +2573,7 @@ func rewriteArchiveMetadataTitle(path, title string) error {
 		}
 		name := strings.ToLower(entry.Name)
 		switch {
-		case archiveExtension == ".cbz" && strings.EqualFold(filepath.Base(name), "comicinfo.xml"):
-			var info ComicInfo
-			if xml.Unmarshal(data, &info) == nil {
-				info.Series = title
-				if payload, marshalErr := marshalComicInfo(info); marshalErr == nil {
-					data = payload
-				}
-			}
-		case archiveExtension == ".epub" && (strings.HasSuffix(name, "content.opf") || strings.HasSuffix(name, "toc.ncx")):
+		case strings.HasSuffix(name, "content.opf") || strings.HasSuffix(name, "toc.ncx"):
 			value := string(data)
 			if strings.HasSuffix(name, "content.opf") {
 				value = epubTitlePattern.ReplaceAllString(value, `<dc:title>`+escapeXML(title)+`</dc:title>`)
@@ -2681,6 +2689,11 @@ func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Sub
 	}
 	e.metaMu.Lock()
 	defer e.metaMu.Unlock()
+	if force && kind != source.KindOther {
+		if _, err := writeSeriesComicInfo(item, metadata, comicDir); err != nil {
+			return false, err
+		}
+	}
 	switch kind {
 	case source.KindBook:
 		if err := writeBookMetadata(ctx, client, account, item, metadata, comicDir); err != nil {
@@ -2691,7 +2704,7 @@ func (e *Engine) writeSeriesMetadata(ctx context.Context, subscription model.Sub
 			return false, err
 		}
 	default:
-		if _, err := writeComicMetadata(ctx, client, account, item, metadata, comicDir, "", 0, 0, countSeriesBookFiles(comicDir)); err != nil {
+		if err := writeComicMetadata(ctx, client, account, item, metadata, comicDir, countSeriesBookFiles(comicDir)); err != nil {
 			return false, err
 		}
 	}
@@ -2759,8 +2772,7 @@ func seriesMetadataTitleCurrent(comicDir, kind string) bool {
 	if err != nil {
 		return false
 	}
-	var info ComicInfo
-	if xml.Unmarshal(raw, &info) != nil || strings.TrimSpace(info.Series) != title {
+	if !seriesComicInfoCurrent(raw, title) {
 		return false
 	}
 	raw, err = os.ReadFile(filepath.Join(comicDir, "series.json"))
@@ -2888,9 +2900,9 @@ func comicGenre(comic model.Comic, info model.SourceInfo) string {
 	return strings.Join(comicGenreValues(comic, info), ",")
 }
 
-func writeComicMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic, comicDir, chapterTitle string, chapterOrder float64, pageCount, totalIssues int) ([]byte, error) {
+func writeComicMetadata(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic, comicDir string, totalIssues int) error {
 	if err := os.MkdirAll(comicDir, 0o755); err != nil {
-		return nil, err
+		return err
 	}
 	coverURL := strings.TrimSpace(comic.Cover)
 	if coverURL != "" || canMaterializeCover(item, coverURL) {
@@ -2899,77 +2911,20 @@ func writeComicMetadata(ctx context.Context, client *http.Client, account source
 			data, err := fetchCoverImage(ctx, client, account, item, comic)
 			if err != nil {
 				if _, pluginSource := item.(source.ImageSource); !pluginSource {
-					return nil, fmt.Errorf("cover: %w", err)
+					return fmt.Errorf("cover: %w", err)
 				}
 			} else {
 				coverPath := filepath.Join(comicDir, "cover"+imageExtension(data, coverURL))
 				if err := os.WriteFile(coverPath, data, 0o644); err != nil {
-					return nil, err
+					return err
 				}
 			}
 		}
 	}
-	chapterDoc := chapterComicInfo(item, comic, chapterTitle, chapterOrder, pageCount)
-	payload, err := marshalComicInfo(chapterDoc)
-	if err != nil {
-		return nil, err
+	if err := ensureSeriesComicInfo(item, comic, comicDir); err != nil {
+		return err
 	}
-	// The standalone ComicInfo.xml describes the series, so it must not depend
-	// on whichever chapter finished last. Chapter-level fields stay in the
-	// per-chapter ComicInfo.xml embedded in each CBZ. series.json is written
-	// separately because KMRS only reads the series summary from that sidecar.
-	if _, err := writeSeriesComicInfo(item, comic, comicDir); err != nil {
-		return nil, err
-	}
-	if err := writeSeriesMetadataFilesWithCount(comic, item.Info(), comicDir, totalIssues); err != nil {
-		return nil, err
-	}
-	return payload, nil
-}
-
-func chapterComicInfo(item source.Source, comic model.Comic, chapterTitle string, chapterOrder float64, pageCount int) ComicInfo {
-	info := item.Info()
-	manga := "YesAndRightToLeft"
-	if source.KindOf(info) == source.KindBook || source.KindOf(info) == source.KindOther {
-		manga = "No"
-	}
-	genres := comicGenreValues(comic, info)
-	tags := genres
-	notes := fmt.Sprintf("Manco source=%s comicId=%s", comic.SourceID, comic.ID)
-	if status := strings.TrimSpace(comic.Status); status != "" {
-		// ComicInfo v2.1 has no Status element, so keep it in Notes as a
-		// url-escaped key/value token for Manco's own local library.
-		notes += " status=" + url.QueryEscape(status)
-	}
-	return ComicInfo{
-		Title:       source.FirstNonEmpty(chapterTitle, comic.Title, comic.ID),
-		Series:      source.FirstNonEmpty(comic.Title, comic.ID),
-		Number:      comicNumber(chapterOrder),
-		Summary:     plainMetadataText(comic.Description),
-		Notes:       notes,
-		Year:        metadataYear(comic.UpdatedAt),
-		Writer:      comic.Author,
-		Publisher:   "",
-		Genre:       strings.Join(genres, ","),
-		Tags:        strings.Join(tags, ","),
-		Web:         comicPageURL(info.Homepage, comic.SourceID, comic.ID),
-		PageCount:   pageCount,
-		LanguageISO: "zh-Hans",
-		Manga:       manga,
-		AgeRating:   comicInfoAgeRating(comic, tags),
-		Pages:       comicInfoPages(pageCount),
-	}
-}
-
-func comicInfoPages(pageCount int) *ComicInfoPages {
-	if pageCount <= 0 {
-		return nil
-	}
-	pages := &ComicInfoPages{Page: make([]ComicInfoPage, pageCount)}
-	for index := range pages.Page {
-		pages.Page[index] = ComicInfoPage{Image: index, Type: "Story"}
-	}
-	return pages
+	return writeSeriesMetadataFilesWithCount(comic, item.Info(), comicDir, totalIssues)
 }
 
 // marshalComicInfo renders a ComicInfo document with the XML header.
@@ -2979,16 +2934,6 @@ func marshalComicInfo(doc ComicInfo) ([]byte, error) {
 		return nil, err
 	}
 	return append([]byte(xml.Header), payload...), nil
-}
-
-func comicNumber(order float64) string {
-	if order <= 0 {
-		return ""
-	}
-	if order == float64(int64(order)) {
-		return strconv.FormatInt(int64(order), 10)
-	}
-	return strconv.FormatFloat(order, 'f', -1, 64)
 }
 
 // comicPageURL builds a best-effort link back to the source detail page.

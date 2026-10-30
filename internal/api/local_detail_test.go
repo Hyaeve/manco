@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hyaeve/manco/internal/config"
@@ -87,6 +88,107 @@ func TestLocalItemAndLazyChapterThumbnail(t *testing.T) {
 	server.handleLocalItem(response, httptest.NewRequest(http.MethodGet, "/api/local/item?path="+url.QueryEscape(localPath(root, "../escape")), nil))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("directory traversal returned %d", response.Code)
+	}
+}
+
+func TestLocalReadingWithoutChapterComicInfo(t *testing.T) {
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 8, 12))); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"comic", "book"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			repository, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer repository.Close()
+			server := &Server{store: repository, cfg: config.Config{DownloadDir: root}}
+			dir := filepath.Join(root, "Series")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			genre := "漫画"
+			imageName := "001.png"
+			pageName, pageKind := imageName, "image"
+			if kind == "book" {
+				genre = "书籍"
+				imageName = "images/001.png"
+				pageName, pageKind = "0001.xhtml", "document"
+			}
+			metadata := "<ComicInfo><Series>Series</Series><Writer>Author</Writer>" +
+				"<Summary>Series summary</Summary><Genre>" + genre + "</Genre></ComicInfo>"
+			if err := os.WriteFile(filepath.Join(dir, "ComicInfo.xml"), []byte(metadata), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var archiveData bytes.Buffer
+			archive := zip.NewWriter(&archiveData)
+			entries := map[string][]byte{imageName: imageData.Bytes()}
+			if kind == "book" {
+				entries[pageName] = []byte(`<html><head><title>Chapter</title></head><body><p>Chapter body</p><img src="images/001.png"/></body></html>`)
+				entries["style.css"] = []byte("body { color: black; }")
+			}
+			for name, raw := range entries {
+				entry, err := archive.Create(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := entry.Write(raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := archive.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "Chapter.cbz"), archiveData.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			server.handleLocalItem(response, httptest.NewRequest(http.MethodGet,
+				"/api/local/item?path="+url.QueryEscape(localPath(root, "Series")), nil))
+			var detail struct{ Item localItemEntry }
+			if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || detail.Item.Kind != kind ||
+				detail.Item.Author != "Author" || detail.Item.Description != "Series summary" ||
+				len(detail.Item.Files) != 1 {
+				t.Fatalf("invalid series detail: %s", response.Body.String())
+			}
+			query := "?path=" + url.QueryEscape(detail.Item.Files[0].Path)
+			response = httptest.NewRecorder()
+			server.handleLocalCBZ(response, httptest.NewRequest(http.MethodGet, "/api/local/cbz"+query, nil))
+			var listing struct {
+				Pages []struct{ Name, Kind string }
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &listing); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || len(listing.Pages) != 1 ||
+				listing.Pages[0].Name != pageName || listing.Pages[0].Kind != pageKind {
+				t.Fatalf("invalid reading pages: %s", response.Body.String())
+			}
+			response = httptest.NewRecorder()
+			server.handleLocalCBZFile(response, httptest.NewRequest(http.MethodGet,
+				"/api/local/cbz/file"+query+"&entry="+url.QueryEscape(imageName), nil))
+			if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), imageData.Bytes()) {
+				t.Fatalf("image content changed: status=%d", response.Code)
+			}
+			if kind == "book" {
+				response = httptest.NewRecorder()
+				server.handleLocalCBZDocument(response, httptest.NewRequest(http.MethodGet,
+					"/api/local/cbz/document"+query+"&entry="+url.QueryEscape(pageName), nil))
+				var chapter struct{ HTML, Title string }
+				if err := json.Unmarshal(response.Body.Bytes(), &chapter); err != nil {
+					t.Fatal(err)
+				}
+				if response.Code != http.StatusOK || !strings.Contains(chapter.HTML, "Chapter body") ||
+					!strings.Contains(chapter.HTML, "/api/local/cbz/file?path=") {
+					t.Fatalf("invalid chapter document: %s", response.Body.String())
+				}
+			}
+		})
 	}
 }
 

@@ -8,6 +8,7 @@
 
 - 从内容源搜索、浏览、订阅作品，发现新章节后自动下载
 - **漫画一话一个 `.cbz`；书籍优先打包为 `.cbz`，源仅提供原生 `.epub` / `.pdf` 时保留原格式**
+- 作品级元数据保存在作品目录的 `ComicInfo.xml`；Manco 新生成的章节 CBZ 不再内嵌章节级 `ComicInfo.xml`，已有压缩包和来源原生电子书不自动重写
 - 支持多内容源、拓展仓库、代理、本地库、运行日志与全局繁转简
 - 配置与数据分离：`/app/config` 存模块化配置，`/app/data` 存数据库、缓存与密钥
 
@@ -101,7 +102,7 @@ go test ./...
 `.github/workflows/docker.yml` 在 push `main` 或推送 `v*` 标签时执行测试并构建 `linux/amd64` 镜像，推送到 `ghcr.io/hyaeve/manco`（`:latest` 或对应版本标签）。
 
 ```bash
-git tag v0.10.2 && git push origin v0.10.2   # 构建并发布 :v0.10.2
+git tag v0.10.3 && git push origin v0.10.3   # 构建并发布 :v0.10.3
 docker compose pull && docker compose up -d  # 升级到新镜像
 ```
 
