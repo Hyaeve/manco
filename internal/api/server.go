@@ -58,7 +58,7 @@ import (
 const (
 	sessionCookie = "manco_session"
 	sessionTTL    = 30 * 24 * time.Hour
-	appVersion    = "v0.10.3"
+	appVersion    = "v0.10.4"
 	// 并发上限：章节是全局同时下载数，图片是单章内并发。原来的 1-8 / 1-16
 	// 是早期「每源并发 × 来源数」时代的经验值，现在全局上限独立了，放宽即可。
 	maxChapterConcurrencyLimit = 32
@@ -4437,7 +4437,7 @@ func (s *Server) handleDownloadAllSubscription(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusNotFound, "订阅不存在")
 		return
 	}
-	queued, removedFiles, clearedJobs, err := s.fullRefreshSubscription(r.Context(), subscription)
+	queued, skipped, replaced, err := s.fullRefreshSubscription(r.Context(), subscription)
 	if err != nil {
 		if errors.Is(err, scheduler.ErrNoChapters) {
 			writeError(w, http.StatusNotFound, err.Error())
@@ -4449,76 +4449,25 @@ func (s *Server) handleDownloadAllSubscription(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":           true,
 		"queued":       queued,
-		"skipped":      0,
-		"removedFiles": removedFiles,
-		"clearedJobs":  clearedJobs,
+		"skipped":      skipped,
+		"removedFiles": 0,
+		"clearedJobs":  replaced,
 	})
 }
 
-// fullRefreshSubscription implements the shared full-refresh semantics: cancel
-// running jobs, delete downloaded chapter files, clear success/failure records
-// and re-queue every chapter from the source. It returns the number of queued
-// chapters and the number of removed files.
-func (s *Server) fullRefreshSubscription(ctx context.Context, subscription model.Subscription) (queued, removedFiles, clearedJobs int, err error) {
-	jobs, err := s.store.DownloadJobsByComic(ctx, subscription.SourceID, subscription.ComicID)
+// fullRefreshSubscription is shared by Web and Telegram. It fetches the current
+// catalog before changing the queue. Existing files are replaced by the worker
+// only after a new download is ready to publish.
+func (s *Server) fullRefreshSubscription(ctx context.Context, subscription model.Subscription) (queued, skipped, replaced int, err error) {
+	jobs, err := s.scheduler.PrepareFullRefresh(ctx, subscription)
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	for _, job := range jobs {
-		if job.Status == "running" {
-			s.engine.Cancel(job.ID)
-		}
+	queued, skipped, replaced, err = s.store.QueueFullRefresh(ctx, subscription, jobs)
+	if err == nil {
+		s.engine.Notify()
 	}
-	for _, job := range jobs {
-		removed, removeErr := s.removeDownloadedChapterFile(job)
-		if removeErr != nil {
-			s.logger.Printf("api: 全量下载清理文件 %s/%s: %v", subscription.SourceID, job.ChapterTitle, removeErr)
-			continue
-		}
-		if removed {
-			removedFiles++
-		}
-	}
-	if _, err := s.store.DeleteDownloadJobsForComic(ctx, subscription.SourceID, subscription.ComicID); err != nil {
-		return 0, removedFiles, len(jobs), err
-	}
-	queued, _, err = s.scheduler.QueueAllManual(ctx, subscription)
-	if err != nil {
-		return 0, removedFiles, len(jobs), err
-	}
-	return queued, removedFiles, len(jobs), nil
-}
-
-// removeDownloadedChapterFile deletes one downloaded chapter file so a full
-// refresh cannot leave stale chapter names or stale image data behind.
-func (s *Server) removeDownloadedChapterFile(job model.DownloadJob) (bool, error) {
-	root, err := s.cleanDownloadDir(job.DownloadDir)
-	if err != nil {
-		return false, err
-	}
-	filePath := strings.TrimSpace(job.FilePath)
-	if filePath == "" {
-		return false, nil
-	}
-	target, err := filepath.Abs(filepath.Clean(filePath))
-	if err != nil {
-		return false, err
-	}
-	root, err = filepath.Abs(filepath.Clean(root))
-	if err != nil {
-		return false, err
-	}
-	within, err := filepath.Rel(root, target)
-	if err != nil || within == ".." || strings.HasPrefix(within, ".."+string(os.PathSeparator)) {
-		return false, errors.New("章节文件不在下载目录内")
-	}
-	if err := os.Remove(target); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
+	return queued, skipped, replaced, err
 }
 
 func (s *Server) handleBackfillChapterMarkers(w http.ResponseWriter, r *http.Request) {

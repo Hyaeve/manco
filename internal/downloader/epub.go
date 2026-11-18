@@ -114,18 +114,7 @@ func writeBookCBZ(path string, chapters []epubChapter, images []pageEntry) error
 		_ = os.Remove(temp)
 		return err
 	}
-	if err := os.Rename(temp, path); err == nil {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	return nil
+	return renameFileReplacing(temp, path)
 }
 
 // writeEPUB creates an EPUB 3 archive. The archive is written to a temporary
@@ -239,18 +228,7 @@ func writeEPUB(path string, book model.Comic, sourceURL string, chapters []epubC
 		_ = os.Remove(temp)
 		return err
 	}
-	if err := os.Rename(temp, path); err == nil {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		_ = os.Remove(temp)
-		return err
-	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	return nil
+	return renameFileReplacing(temp, path)
 }
 
 func normalizeEPUBImages(images []pageEntry) ([]epubImage, error) {

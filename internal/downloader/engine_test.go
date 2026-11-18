@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -46,38 +48,21 @@ func (m *memoryJobs) CreateDownloadJob(_ context.Context, job model.DownloadJob)
 	return job, nil
 }
 
-func (m *memoryJobs) ListQueuedJobs(_ context.Context) ([]model.DownloadJob, error) {
+func (m *memoryJobs) ListRunnableQueuedJobRefs(_ context.Context, blockedSources []string, excludedJobs []int64, limit int) ([]model.QueuedJobRef, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	queued := make([]model.DownloadJob, 0, len(m.jobs))
 	for _, job := range m.jobs {
-		if job.Status == "queued" {
+		if job.Status == "queued" && !slices.Contains(blockedSources, job.SourceID) && !slices.Contains(excludedJobs, job.ID) {
 			queued = append(queued, job)
 		}
 	}
-	return queued, nil
-}
-
-func (m *memoryJobs) ListQueuedJobsPage(_ context.Context, offset, limit int) ([]model.DownloadJob, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	queued := make([]model.DownloadJob, 0, len(m.jobs))
-	for _, job := range m.jobs {
-		if job.Status == "queued" {
-			queued = append(queued, job)
-		}
+	sort.SliceStable(queued, func(i, j int) bool { return queued[i].QueuePriority > queued[j].QueuePriority })
+	refs := make([]model.QueuedJobRef, 0, min(len(queued), limit))
+	for _, job := range queued[:cap(refs)] {
+		refs = append(refs, model.QueuedJobRef{ID: job.ID, SourceID: job.SourceID})
 	}
-	if offset < 0 {
-		offset = 0
-	}
-	if limit < 1 || offset >= len(queued) {
-		return nil, nil
-	}
-	end := offset + limit
-	if end > len(queued) {
-		end = len(queued)
-	}
-	return append([]model.DownloadJob(nil), queued[offset:end]...), nil
+	return refs, nil
 }
 
 func (m *memoryJobs) DownloadJob(_ context.Context, id int64) (model.DownloadJob, error) {
@@ -2056,7 +2041,7 @@ func TestGlobalChapterConcurrencyIsNotMultipliedBySources(t *testing.T) {
 	claimed := 0
 	sources := []string{"a", "b", "c", "d"}
 	for index, sourceID := range sources {
-		if engine.claim(model.DownloadJob{ID: int64(index + 1), SourceID: sourceID}) {
+		if engine.claimJob(int64(index+1), sourceID) {
 			claimed++
 		}
 	}
@@ -2070,22 +2055,22 @@ func TestSetConcurrencyUpdatesGlobalLimitImmediately(t *testing.T) {
 	first := model.DownloadJob{ID: 1, SourceID: "a"}
 	second := model.DownloadJob{ID: 2, SourceID: "b"}
 
-	if !engine.claim(first) {
+	if !engine.claimJob(first.ID, first.SourceID) {
 		t.Fatal("第一个章节应该被认领")
 	}
-	if engine.claim(second) {
+	if engine.claimJob(second.ID, second.SourceID) {
 		t.Fatal("全局上限为 1 时第二个章节不应被认领")
 	}
 
 	engine.SetConcurrency(3, 8)
-	if !engine.claim(second) {
+	if !engine.claimJob(second.ID, second.SourceID) {
 		t.Fatal("提高全局上限后第二个章节应被认领")
 	}
 	// 再提到上限：第三个章节仍然受全局上限约束。
-	if !engine.claim(model.DownloadJob{ID: 3, SourceID: "c"}) {
+	if !engine.claimJob(3, "c") {
 		t.Fatal("全局上限为 3 时第三个章节应被认领")
 	}
-	if engine.claim(model.DownloadJob{ID: 4, SourceID: "d"}) {
+	if engine.claimJob(4, "d") {
 		t.Fatal("全局上限为 3 时第四个章节不应被认领")
 	}
 

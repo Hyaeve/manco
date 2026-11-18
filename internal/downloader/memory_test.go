@@ -23,10 +23,8 @@ type queuedRefTestStore struct {
 	loads int
 }
 
-func (s *queuedRefTestStore) ListQueuedJobRefsPage(_ context.Context, offset, _ int) ([]model.QueuedJobRef, error) {
-	if offset > 0 {
-		return nil, nil
-	}
+func (s *queuedRefTestStore) ListRunnableQueuedJobRefs(context.Context, []string, []int64, int) ([]model.QueuedJobRef, error) {
+	// Return a blocked source to simulate a ref fetched before its slot filled.
 	return []model.QueuedJobRef{{ID: 1, SourceID: "busy"}}, nil
 }
 

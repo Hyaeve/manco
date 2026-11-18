@@ -768,20 +768,17 @@ async function downloadAll(item) {
   openMenu.value = 0
   const confirmed = await askConfirm({
     title: '全量下载',
-    message: `确定对《${item.title}》执行全量下载吗？会删除成功与失败记录、删除作品目录里已存在的章节文件，然后重新拉取并覆盖。`,
+    message: `确定对《${item.title}》执行全量下载吗？已有章节会保留到新文件下载成功，排队中或下载中的章节继续原任务。`,
     confirmText: '全量下载',
-    danger: true,
   })
   if (!confirmed) return
   busy.value = item.id
   try {
     const result = await api.downloadAllSubscription(item.id)
     const queued = Number(result?.queued || 0)
-    const removedFiles = Number(result?.removedFiles || 0)
+    const skipped = Number(result?.skipped || 0)
     notify(
-      [`《${item.title}》已清理旧记录并重新入队 ${queued} 个章节`, removedFiles ? `删除旧章节文件 ${removedFiles} 个` : '']
-        .filter(Boolean)
-        .join('，'),
+      `《${item.title}》已重新入队 ${queued} 章${skipped ? `，${skipped} 章继续原任务` : ''}`,
       'success',
     )
     await load(true)
@@ -831,7 +828,7 @@ function batchCheck() {
 function batchDownloadAll() {
   return runBatch({
     title: '全量下载',
-    message: `确定对所选 ${selectedCount.value} 个订阅执行全量下载吗？会删除成功与失败记录、删除作品目录里已存在的章节文件，然后重新拉取并覆盖。`,
+    message: `确定对所选 ${selectedCount.value} 个订阅执行全量下载吗？已有章节会保留到新文件下载成功。`,
     confirmText: '开始下载',
     action: (item) => api.downloadAllSubscription(item.id),
     successText: '全量下载已入队',

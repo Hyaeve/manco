@@ -39,17 +39,39 @@ func downloadSearchClause(query string) (string, []any) {
 // ListQueuedJobRefsPage scans queue order without reading the large serialized
 // chapter, page, description, and tag payloads for work that is not starting.
 func (s *Store) ListQueuedJobRefsPage(ctx context.Context, offset, limit int) ([]model.QueuedJobRef, error) {
+	return s.listQueuedJobRefs(ctx, nil, nil, offset, limit)
+}
+
+// ListRunnableQueuedJobRefs selects the highest-priority jobs outside the
+// downloader's current source and job exclusions.
+func (s *Store) ListRunnableQueuedJobRefs(ctx context.Context, blockedSources []string, excludedJobs []int64, limit int) ([]model.QueuedJobRef, error) {
+	return s.listQueuedJobRefs(ctx, blockedSources, excludedJobs, 0, limit)
+}
+
+func (s *Store) listQueuedJobRefs(ctx context.Context, blockedSources []string, excludedJobs []int64, offset, limit int) ([]model.QueuedJobRef, error) {
 	if offset < 0 {
 		offset = 0
 	}
 	if limit < 1 {
 		limit = 64
 	}
-	rows, err := s.reader().QueryContext(ctx, `
-		SELECT id, source_id FROM download_jobs
-		WHERE status = 'queued'
-		ORDER BY queue_priority DESC, id ASC
-		LIMIT ? OFFSET ?`, limit, offset)
+	query := `SELECT id, source_id FROM download_jobs WHERE status = 'queued'`
+	args := make([]any, 0, len(blockedSources)+len(excludedJobs)+2)
+	if len(blockedSources) > 0 {
+		query += ` AND source_id NOT IN (` + strings.Repeat("?,", len(blockedSources)-1) + `?)`
+		for _, sourceID := range blockedSources {
+			args = append(args, sourceID)
+		}
+	}
+	if len(excludedJobs) > 0 {
+		query += ` AND id NOT IN (` + strings.Repeat("?,", len(excludedJobs)-1) + `?)`
+		for _, id := range excludedJobs {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY queue_priority DESC, id ASC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := s.reader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

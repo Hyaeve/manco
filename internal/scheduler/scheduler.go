@@ -27,7 +27,7 @@ type Subscriptions interface {
 	ListSubscriptions(ctx context.Context) ([]model.Subscription, error)
 	Subscription(ctx context.Context, id int64) (model.Subscription, error)
 	UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error
-	UpdateSubscriptionChapterCount(ctx context.Context, id int64, count int) error
+	CommitSubscriptionCheck(ctx context.Context, previous model.Subscription, chapter model.Chapter, chapterCount int, comicStatus string, newChapter bool, jobs []model.DownloadJob) error
 }
 
 // Notifier receives routine check results so an external service (for example
@@ -180,6 +180,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 		}
 		subscription = matched
 	}
+	previous := subscription
 	if err := s.resolveDownloadDir(ctx, &subscription); err != nil {
 		return result, err
 	}
@@ -206,18 +207,16 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 	if detail, detailErr := item.Detail(ctx, account, subscription.ComicID); detailErr == nil && strings.TrimSpace(detail.Status) != "" {
 		comicStatus = strings.TrimSpace(detail.Status)
 	}
+	baseline := model.Chapter{ID: subscription.LastChapterID, Title: subscription.LastChapterTitle, Order: subscription.LastChapterOrder}
 	if len(chapters) == 0 {
-		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(comicStatus), false)
+		return result, s.subscriptions.CommitSubscriptionCheck(ctx, previous, baseline, 0, comicStatus, false, nil)
 	}
 	newest := chapters[len(chapters)-1]
-	// 每次成功拉到章节列表都刷新总章节数，供订阅卡片的「共 N 话」使用。
-	if err := s.subscriptions.UpdateSubscriptionChapterCount(ctx, subscription.ID, len(chapters)); err != nil {
-		return result, err
-	}
 	if subscription.LastChapterID == "" {
 		// First observation only records a baseline.
-		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(comicStatus), false)
+		return result, s.subscriptions.CommitSubscriptionCheck(ctx, previous, newest, len(chapters), comicStatus, false, nil)
 	}
+	var jobs []model.DownloadJob
 	queuedTitles := make([]string, 0, 4)
 	for _, chapter := range chapters {
 		if !isNewer(chapter, subscription) {
@@ -225,25 +224,7 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 		}
 		result.NewChapters++
 		if subscription.AutoDownload {
-			_, err := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
-				SourceID:            subscription.SourceID,
-				ComicID:             subscription.ComicID,
-				ComicTitle:          subscriptionSeriesDir(subscription),
-				ComicCover:          subscription.Cover,
-				ComicAuthor:         subscription.Author,
-				ChapterID:           chapter.ID,
-				ChapterTitle:        chapter.Title,
-				ChapterOrder:        chapter.Order,
-				DownloadDir:         subscription.DownloadDir,
-				ConvertToSimplified: subscription.ConvertToSimplified,
-				ChapterMarker:       subscription.ChapterMarker,
-				QueuePriority:       queuePriority,
-			})
-			if err != nil {
-				s.logger.Printf("scheduler: queue %s/%s: %v", subscription.Title, chapter.Title, err)
-				continue
-			}
-			result.Queued++
+			jobs = append(jobs, subscriptionDownloadJob(subscription, chapter, queuePriority))
 			title := strings.TrimSpace(chapter.Title)
 			if title == "" {
 				title = chapter.ID
@@ -251,16 +232,21 @@ func (s *Scheduler) check(ctx context.Context, subscription model.Subscription, 
 			queuedTitles = append(queuedTitles, title)
 		}
 	}
+	newChapter := isNewer(newest, subscription)
+	if newChapter {
+		baseline = newest
+	}
+	if err := s.subscriptions.CommitSubscriptionCheck(ctx, previous, baseline, len(chapters), comicStatus, newChapter, jobs); err != nil {
+		return result, err
+	}
+	result.Queued = len(jobs)
 	if result.Queued > 0 {
 		s.downloads.Notify()
 		if s.notifier != nil {
 			s.notifier.SubscriptionChecked(ctx, subscription, result.Queued, queuedTitles)
 		}
 	}
-	if isNewer(newest, subscription) {
-		return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, newest.ID, newest.Title, newest.Order, comicStatus, completedStatus(comicStatus), true)
-	}
-	return result, s.subscriptions.UpdateSubscriptionCheck(ctx, subscription.ID, subscription.LastChapterID, subscription.LastChapterTitle, subscription.LastChapterOrder, comicStatus, completedStatus(comicStatus), false)
+	return result, nil
 }
 
 func subscriptionSeriesDir(subscription model.Subscription) string {
@@ -348,42 +334,15 @@ func (s *Scheduler) QueueAllManual(ctx context.Context, subscription model.Subsc
 }
 
 func (s *Scheduler) queueAll(ctx context.Context, subscription model.Subscription, queuePriority int) (queued, skipped int, err error) {
-	if err := s.resolveDownloadDir(ctx, &subscription); err != nil {
-		return 0, 0, err
-	}
-	item, err := s.registry.Get(subscription.SourceID)
+	chapters, err := s.subscriptionChapters(ctx, &subscription)
 	if err != nil {
 		return 0, 0, err
-	}
-	account, err := s.registry.Account(ctx, subscription.SourceID)
-	if err != nil {
-		return 0, 0, err
-	}
-	chapters, err := item.Chapters(ctx, account, subscription.ComicID)
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(chapters) == 0 {
-		return 0, 0, ErrNoChapters
 	}
 	for _, chapter := range chapters {
 		if strings.TrimSpace(chapter.ID) == "" {
 			continue
 		}
-		job, createErr := s.downloads.CreateDownloadJob(ctx, model.DownloadJob{
-			SourceID:            subscription.SourceID,
-			ComicID:             subscription.ComicID,
-			ComicTitle:          subscriptionSeriesDir(subscription),
-			ComicCover:          subscription.Cover,
-			ComicAuthor:         subscription.Author,
-			ChapterID:           chapter.ID,
-			ChapterTitle:        chapter.Title,
-			ChapterOrder:        chapter.Order,
-			DownloadDir:         subscription.DownloadDir,
-			ConvertToSimplified: subscription.ConvertToSimplified,
-			ChapterMarker:       subscription.ChapterMarker,
-			QueuePriority:       queuePriority,
-		})
+		job, createErr := s.downloads.CreateDownloadJob(ctx, subscriptionDownloadJob(subscription, chapter, queuePriority))
 		if createErr != nil {
 			return queued, skipped, createErr
 		}
@@ -400,6 +359,67 @@ func (s *Scheduler) queueAll(ctx context.Context, subscription model.Subscriptio
 	}
 	s.downloads.Notify()
 	return queued, skipped, nil
+}
+
+// PrepareFullRefresh resolves the download location and fetches a usable
+// catalog before any existing download jobs are changed.
+func (s *Scheduler) PrepareFullRefresh(ctx context.Context, subscription model.Subscription) ([]model.DownloadJob, error) {
+	chapters, err := s.subscriptionChapters(ctx, &subscription)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]model.DownloadJob, 0, len(chapters))
+	seen := make(map[string]bool, len(chapters))
+	for _, chapter := range chapters {
+		if strings.TrimSpace(chapter.ID) == "" || seen[chapter.ID] {
+			continue
+		}
+		seen[chapter.ID] = true
+		jobs = append(jobs, subscriptionDownloadJob(subscription, chapter, model.QueuePriorityManual))
+	}
+	if len(jobs) == 0 {
+		return nil, ErrNoChapters
+	}
+	return jobs, nil
+}
+
+func (s *Scheduler) subscriptionChapters(ctx context.Context, subscription *model.Subscription) ([]model.Chapter, error) {
+	if err := s.resolveDownloadDir(ctx, subscription); err != nil {
+		return nil, err
+	}
+	item, err := s.registry.Get(subscription.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	account, err := s.registry.Account(ctx, subscription.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	chapters, err := item.Chapters(ctx, account, subscription.ComicID)
+	if err != nil {
+		return nil, err
+	}
+	if len(chapters) == 0 {
+		return nil, ErrNoChapters
+	}
+	return chapters, nil
+}
+
+func subscriptionDownloadJob(subscription model.Subscription, chapter model.Chapter, priority int) model.DownloadJob {
+	return model.DownloadJob{
+		SourceID:            subscription.SourceID,
+		ComicID:             subscription.ComicID,
+		ComicTitle:          subscriptionSeriesDir(subscription),
+		ComicCover:          subscription.Cover,
+		ComicAuthor:         subscription.Author,
+		ChapterID:           chapter.ID,
+		ChapterTitle:        chapter.Title,
+		ChapterOrder:        chapter.Order,
+		DownloadDir:         subscription.DownloadDir,
+		ConvertToSimplified: subscription.ConvertToSimplified,
+		ChapterMarker:       subscription.ChapterMarker,
+		QueuePriority:       priority,
+	}
 }
 
 func (s *Scheduler) resolveDownloadDir(ctx context.Context, subscription *model.Subscription) error {

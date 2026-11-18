@@ -777,7 +777,7 @@ func (s *Service) runAction(ctx context.Context, chat, action string, subscripti
 			s.sendMessage(ctx, chat, "全量下载失败："+err.Error(), nil)
 			return
 		}
-		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》已清理旧记录与文件，重新入队 %d 章。", subscription.Title, queued), nil)
+		s.sendMessage(ctx, chat, fmt.Sprintf("《%s》已重新入队 %d 章，已有章节会保留到新文件下载成功。", subscription.Title, queued), nil)
 	case "delete":
 		if err := s.app.BotDelete(ctx, subscription.ID); err != nil {
 			s.sendMessage(ctx, chat, "删除失败："+err.Error(), nil)

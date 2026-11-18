@@ -69,15 +69,15 @@ type Engine struct {
 	activeBySource           map[string]int
 	retryNotifier            func(context.Context, []model.DownloadJob)
 	heavyImageSem            chan struct{}
-	queueCursor              int
 
-	mu       sync.Mutex
-	metaMu   sync.Mutex
-	detailMu sync.Mutex
-	active   map[int64]context.CancelFunc
-	kick     chan struct{}
-	started  bool
-	details  map[string]*detailCacheEntry
+	mu        sync.Mutex
+	metaMu    sync.Mutex
+	detailMu  sync.Mutex
+	publishMu sync.Mutex
+	active    map[int64]context.CancelFunc
+	kick      chan struct{}
+	started   bool
+	details   map[string]*detailCacheEntry
 }
 
 type detailCacheEntry struct {
@@ -88,12 +88,12 @@ type detailCacheEntry struct {
 }
 
 const (
-	detailCacheTTL      = 5 * time.Minute
-	queuePageSize       = 64
-	queuePagesPerNotify = 8
-	maxHeavyImageLoads  = 1
-	maxDetailCacheSize  = 8
-	maxDescramblePixels = int64(40_000_000)
+	detailCacheTTL          = 5 * time.Minute
+	queueBatchSize          = 64
+	queueBatchesPerDispatch = 8
+	maxHeavyImageLoads      = 1
+	maxDetailCacheSize      = 8
+	maxDescramblePixels     = int64(40_000_000)
 )
 
 // SetConcurrency applies a settings update. New chapters and page requests
@@ -171,8 +171,7 @@ func (e *Engine) SetDownloadPolicy(batchSize, intervalMinutes int, convertToSimp
 // Jobs is the subset of the store used by the downloader.
 type Jobs interface {
 	CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error)
-	ListQueuedJobs(ctx context.Context) ([]model.DownloadJob, error)
-	ListQueuedJobsPage(ctx context.Context, offset, limit int) ([]model.DownloadJob, error)
+	ListRunnableQueuedJobRefs(ctx context.Context, blockedSources []string, excludedJobs []int64, limit int) ([]model.QueuedJobRef, error)
 	DownloadJob(ctx context.Context, id int64) (model.DownloadJob, error)
 	UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error
 	FailDownloadJob(ctx context.Context, id int64, totalPages, completedPages int, jobError string, retryCount int, nextRetryAt *time.Time) error
@@ -455,48 +454,21 @@ func (e *Engine) loop(ctx context.Context) {
 }
 
 func (e *Engine) dispatchQueuedJobs(ctx context.Context) bool {
-	if refs, ok := e.store.(interface {
-		ListQueuedJobRefsPage(context.Context, int, int) ([]model.QueuedJobRef, error)
-	}); ok {
-		return e.dispatchQueuedJobRefs(ctx, refs)
-	}
-	return e.dispatchQueuedJobSnapshots(ctx)
-}
-
-func (e *Engine) dispatchQueuedJobRefs(ctx context.Context, store interface {
-	ListQueuedJobRefsPage(context.Context, int, int) ([]model.QueuedJobRef, error)
-}) bool {
-	for page := 0; page < queuePagesPerNotify; page++ {
-		e.mu.Lock()
-		if e.activeTotal >= e.maxChapterConcurrency {
-			e.mu.Unlock()
+	var considered []int64
+	started := false
+	for batch := 0; batch < queueBatchesPerDispatch; batch++ {
+		blockedSources, excludedJobs, available := e.queueDispatchFilters(considered)
+		if !available {
 			return ctx.Err() == nil
 		}
-		offset := e.queueCursor
-		e.queueCursor += queuePageSize
-		e.mu.Unlock()
-
-		refs, err := store.ListQueuedJobRefsPage(ctx, offset, queuePageSize)
+		refs, err := e.store.ListRunnableQueuedJobRefs(ctx, blockedSources, excludedJobs, queueBatchSize)
 		if err != nil {
-			e.logger.Printf("downloader: list queued job refs: %v", err)
-			return true
-		}
-		if len(refs) == 0 {
-			e.mu.Lock()
-			e.queueCursor = 0
-			e.mu.Unlock()
-			if offset == 0 {
-				return true
-			}
-			continue
-		}
-		if len(refs) < queuePageSize {
-			e.mu.Lock()
-			e.queueCursor = 0
-			e.mu.Unlock()
+			e.logger.Printf("downloader: list runnable queued jobs: %v", err)
+			return ctx.Err() == nil
 		}
 		for _, ref := range refs {
-			if e.inCooldown(ref.SourceID) || !e.claimJob(ref.ID, ref.SourceID) {
+			considered = append(considered, ref.ID)
+			if !e.claimJob(ref.ID, ref.SourceID) {
 				continue
 			}
 			if ctx.Err() != nil {
@@ -520,6 +492,7 @@ func (e *Engine) dispatchQueuedJobRefs(ctx context.Context, store interface {
 				}()
 				e.runJob(ctx, job)
 			}()
+			started = true
 			e.mu.Lock()
 			full := e.activeTotal >= e.maxChapterConcurrency
 			e.mu.Unlock()
@@ -527,69 +500,46 @@ func (e *Engine) dispatchQueuedJobRefs(ctx context.Context, store interface {
 				return true
 			}
 		}
-	}
-	return true
-}
-
-func (e *Engine) dispatchQueuedJobSnapshots(ctx context.Context) bool {
-	for page := 0; page < queuePagesPerNotify; page++ {
-		e.mu.Lock()
-		if e.activeTotal >= e.maxChapterConcurrency {
-			e.mu.Unlock()
+		if len(refs) < queueBatchSize {
 			return ctx.Err() == nil
 		}
-		offset := e.queueCursor
-		e.queueCursor += queuePageSize
-		e.mu.Unlock()
-
-		jobs, err := e.store.ListQueuedJobsPage(ctx, offset, queuePageSize)
-		if err != nil {
-			e.logger.Printf("downloader: list queue page: %v", err)
-			return true
-		}
-		if len(jobs) == 0 {
-			e.mu.Lock()
-			e.queueCursor = 0
-			e.mu.Unlock()
-			if offset == 0 {
-				return true
-			}
-			continue
-		}
-		if len(jobs) < queuePageSize {
-			e.mu.Lock()
-			e.queueCursor = 0
-			e.mu.Unlock()
-		}
-		for _, job := range jobs {
-			job := job
-			if e.inCooldown(job.SourceID) || !e.claim(job) {
-				continue
-			}
-			if ctx.Err() != nil {
-				e.release(job)
-				return false
-			}
-			go func() {
-				defer func() {
-					e.release(job)
-					e.Notify()
-				}()
-				e.runJob(ctx, job)
-			}()
-		}
-		e.mu.Lock()
-		full := e.activeTotal >= e.maxChapterConcurrency
-		e.mu.Unlock()
-		if full {
-			return true
-		}
 	}
-	return true
+	if started {
+		e.Notify()
+	}
+	return ctx.Err() == nil
 }
 
-func (e *Engine) claim(job model.DownloadJob) bool {
-	return e.claimJob(job.ID, job.SourceID)
+// Filter whole blocked sources before applying the batch limit, so a long
+// queue from one source cannot hide runnable jobs from another source.
+func (e *Engine) queueDispatchFilters(considered []int64) ([]string, []int64, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	now := time.Now()
+	if e.activeTotal >= e.maxChapterConcurrency || e.globalInCooldownLocked(now) {
+		return nil, nil, false
+	}
+	blocked := make(map[string]struct{})
+	for sourceID := range e.sourceCooldownUntil {
+		if e.sourceInCooldownLocked(sourceID, now) {
+			blocked[sourceID] = struct{}{}
+		}
+	}
+	for sourceID := range e.activeBySource {
+		if !e.sourceHasSlotLocked(sourceID) {
+			blocked[sourceID] = struct{}{}
+		}
+	}
+	sources := make([]string, 0, len(blocked))
+	for sourceID := range blocked {
+		sources = append(sources, sourceID)
+	}
+	excluded := make([]int64, 0, len(considered)+len(e.active))
+	excluded = append(excluded, considered...)
+	for id := range e.active {
+		excluded = append(excluded, id)
+	}
+	return sources, excluded, true
 }
 
 func (e *Engine) claimJob(id int64, sourceID string) bool {
@@ -598,22 +548,24 @@ func (e *Engine) claimJob(id int64, sourceID string) bool {
 	if _, exists := e.active[id]; exists {
 		return false
 	}
-	if e.activeTotal >= e.maxChapterConcurrency {
-		return false
-	}
-	// 单个来源的上限：显式覆盖优先，否则用全局默认值。这样即使某个来源
-	// 没有单独配置，也不会把全局并发吃满。
-	limit := e.sourceConcurrency[sourceID]
-	if limit <= 0 {
-		limit = e.defaultSourceConcurrency
-	}
-	if limit > 0 && e.activeBySource[sourceID] >= limit {
+	now := time.Now()
+	if e.activeTotal >= e.maxChapterConcurrency || e.globalInCooldownLocked(now) || e.sourceInCooldownLocked(sourceID, now) || !e.sourceHasSlotLocked(sourceID) {
 		return false
 	}
 	e.active[id] = func() {}
 	e.activeTotal++
 	e.activeBySource[sourceID]++
 	return true
+}
+
+func (e *Engine) sourceHasSlotLocked(sourceID string) bool {
+	// 单个来源的上限：显式覆盖优先，否则用全局默认值。这样即使某个来源
+	// 没有单独配置，也不会把全局并发吃满。
+	limit := e.sourceConcurrency[sourceID]
+	if limit <= 0 {
+		limit = e.defaultSourceConcurrency
+	}
+	return limit <= 0 || e.activeBySource[sourceID] < limit
 }
 
 func (e *Engine) release(job model.DownloadJob) {
@@ -626,8 +578,10 @@ func (e *Engine) release(job model.DownloadJob) {
 	if e.activeTotal > 0 {
 		e.activeTotal--
 	}
-	if e.activeBySource[job.SourceID] > 0 {
+	if e.activeBySource[job.SourceID] > 1 {
 		e.activeBySource[job.SourceID]--
+	} else {
+		delete(e.activeBySource, job.SourceID)
 	}
 }
 
@@ -635,15 +589,21 @@ func (e *Engine) release(job model.DownloadJob) {
 func (e *Engine) inCooldown(sourceID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	now := time.Now()
+	return e.globalInCooldownLocked(now) || e.sourceInCooldownLocked(sourceID, now)
+}
+
+func (e *Engine) globalInCooldownLocked(now time.Time) bool {
 	// 全局批量暂停：所有内容源加起来每下载 N 章整体停 M 分钟。
-	if e.batchSize > 0 && time.Now().Before(e.cooldownUntil) {
-		return true
-	}
+	return e.batchSize > 0 && now.Before(e.cooldownUntil)
+}
+
+func (e *Engine) sourceInCooldownLocked(sourceID string, now time.Time) bool {
 	batchSize := e.batchSize
 	if limit, ok := e.sourceBatchSize[sourceID]; ok {
 		batchSize = limit
 	}
-	return batchSize > 0 && time.Now().Before(e.sourceCooldownUntil[sourceID])
+	return batchSize > 0 && now.Before(e.sourceCooldownUntil[sourceID])
 }
 
 // GlobalCooldown 返回全局批量暂停的截止时间（未暂停时为零值）。任务列表用它
@@ -974,6 +934,7 @@ func (e *Engine) download(ctx context.Context, job model.DownloadJob) error {
 	}
 
 	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+	outputPath = replacementOutputPath(job.FilePath, outputPath, false)
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return err
 	}
@@ -1574,6 +1535,7 @@ func (e *Engine) downloadBook(ctx context.Context, item source.Source, account s
 		}
 	}
 	outputPath := filepath.Join(comicDir, ChapterFileName(outputName, job.ChapterOrder, job.ChapterMarker, outputExtension))
+	outputPath = replacementOutputPath(job.FilePath, outputPath, false)
 	if isText {
 		if err := writeBookCBZ(
 			outputPath,
@@ -1704,11 +1666,13 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 	switch {
 	case len(results) == 1:
 		outputPath = filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, results[0].extension))
+		outputPath = replacementOutputPath(job.FilePath, outputPath, false)
 		if err := copyFileAtomic(results[0].path, outputPath); err != nil {
 			return err
 		}
 	case allImages:
 		outputPath = filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+		outputPath = replacementOutputPath(job.FilePath, outputPath, false)
 		entries := make([]pageEntry, 0, len(results))
 		for index, result := range results {
 			entries = append(entries, pageEntry{name: fmt.Sprintf("%03d%s", index+1, result.extension), path: result.path})
@@ -1717,20 +1681,15 @@ func (e *Engine) downloadOther(ctx context.Context, item source.Source, account 
 			return err
 		}
 	default:
-		chapterDir := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ""))
-		if err := os.RemoveAll(chapterDir); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(chapterDir, 0o755); err != nil {
-			return err
-		}
+		outputPath = filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ""))
+		outputPath = replacementOutputPath(job.FilePath, outputPath, true)
+		entries := make([]pageEntry, 0, len(results))
 		for index, result := range results {
-			target := filepath.Join(chapterDir, fmt.Sprintf("%03d%s", index+1, result.extension))
-			if err := copyFileAtomic(result.path, target); err != nil {
-				return err
-			}
+			entries = append(entries, pageEntry{name: fmt.Sprintf("%03d%s", index+1, result.extension), path: result.path})
 		}
-		outputPath = chapterDir
+		if err := e.writeChapterDirectory(ctx, outputPath, entries); err != nil {
+			return err
+		}
 	}
 
 	e.metaMu.Lock()
@@ -1844,6 +1803,7 @@ func (e *Engine) downloadBookArchive(
 		return fmt.Errorf("rewrite chapter HTML: %w", err)
 	}
 	outputPath := filepath.Join(comicDir, ChapterFileName(chapterTitle, job.ChapterOrder, job.ChapterMarker, ".cbz"))
+	outputPath = replacementOutputPath(job.FilePath, outputPath, false)
 	if err := writeBookCBZ(
 		outputPath,
 		[]epubChapter{{Title: chapterTitle, HTML: html}},
@@ -1907,22 +1867,10 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	temp := path + ".part"
 	if err := os.WriteFile(temp, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(temp, path); err == nil {
-		return nil
-	}
-	// Windows does not replace an existing destination during Rename.
-	// Retrying after removing the old file keeps manual retries useful.
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		_ = os.Remove(temp)
 		return err
 	}
-	if err := os.Rename(temp, path); err != nil {
-		_ = os.Remove(temp)
-		return err
-	}
-	return nil
+	return renameFileReplacing(temp, path)
 }
 
 func bookFileBaseName(filename string) string {
@@ -3106,13 +3054,7 @@ func writeReaderAtomic(path string, reader io.Reader) error {
 }
 
 func renameFileReplacing(source, target string) error {
-	if err := os.Rename(source, target); err == nil {
-		return nil
-	}
-	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = os.Remove(source)
-		return err
-	}
+	// A failed rename must leave the previous library artifact in place.
 	if err := os.Rename(source, target); err != nil {
 		_ = os.Remove(source)
 		return err
@@ -3427,18 +3369,7 @@ func copyFileAtomic(sourcePath, targetPath string) error {
 		_ = os.Remove(tempPath)
 		return err
 	}
-	if err := os.Rename(tempPath, targetPath); err == nil {
-		return nil
-	}
-	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		_ = os.Remove(tempPath)
-		return err
-	}
-	if err := os.Rename(tempPath, targetPath); err != nil {
-		_ = os.Remove(tempPath)
-		return err
-	}
-	return nil
+	return renameFileReplacing(tempPath, targetPath)
 }
 
 func fetchCoverImage(ctx context.Context, client *http.Client, account source.Account, item source.Source, comic model.Comic) ([]byte, error) {
@@ -3564,7 +3495,7 @@ func writeZip(path string, entries []pageEntry) error {
 		_ = os.Remove(temp)
 		return err
 	}
-	return os.Rename(temp, path)
+	return renameFileReplacing(temp, path)
 }
 
 func imageExtension(data []byte, address string) string {

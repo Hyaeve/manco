@@ -169,6 +169,7 @@ export const api = {
   deleteSubscription: (id) => request(`/api/subscriptions/${id}`, { method: 'DELETE' }),
   checkSubscription: (id) => request(`/api/subscriptions/${id}/check`, { method: 'POST' }),
   downloadSubscription: (id) => request(`/api/subscriptions/${id}/download`, { method: 'POST' }),
+  // queued counts new attempts; skipped counts chapters with an existing active task.
   downloadAllSubscription: (id) => request(`/api/subscriptions/${id}/download-all`, { method: 'POST' }),
   fillSubscription: (id) => request(`/api/subscriptions/${id}/fill`, { method: 'POST' }),
   scrapeSubscription: (id) => request(`/api/subscriptions/${id}/scrape`, { method: 'POST' }),

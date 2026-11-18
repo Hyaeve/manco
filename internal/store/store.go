@@ -1325,16 +1325,20 @@ func (s *Store) MarkSubscriptionMatchAttempt(ctx context.Context, id int64, stat
 	return err
 }
 
-func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
-	_, err := s.db.ExecContext(ctx, `
+const updateSubscriptionCheckSQL = `
 		UPDATE subscriptions SET last_chapter_id = ?, last_chapter_title = ?, last_chapter_order = ?,
+			chapter_count = CASE WHEN ? > 0 THEN ? ELSE chapter_count END,
 			comic_status = ?,
 			completed_at = CASE WHEN ? = 1 THEN COALESCE(completed_at, CURRENT_TIMESTAMP) ELSE NULL END,
 			last_new_chapter_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE last_new_chapter_at END,
 			archive_warning_at = CASE WHEN ? = 1 THEN NULL ELSE archive_warning_at END,
 			archive_warning_days = CASE WHEN ? = 1 THEN 0 ELSE archive_warning_days END,
 			last_checked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`, chapterID, chapterTitle, chapterOrder, comicStatus, completed, newChapter, newChapter, newChapter, id)
+		WHERE id = ?`
+
+func (s *Store) UpdateSubscriptionCheck(ctx context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
+	_, err := s.db.ExecContext(ctx, updateSubscriptionCheckSQL,
+		chapterID, chapterTitle, chapterOrder, 0, 0, comicStatus, completed, newChapter, newChapter, newChapter, id)
 	return err
 }
 
@@ -1500,17 +1504,26 @@ func (s *Store) DeleteSubscription(ctx context.Context, id int64) error {
 }
 
 func (s *Store) CreateDownloadJob(ctx context.Context, job model.DownloadJob) (model.DownloadJob, error) {
+	if err := upsertDownloadJob(ctx, s.db, job); err != nil {
+		return model.DownloadJob{}, err
+	}
+	return s.DownloadJobByChapter(ctx, job.SourceID, job.ComicID, job.ChapterID)
+}
+
+func upsertDownloadJob(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, job model.DownloadJob) error {
 	mergeChapters, err := json.Marshal(job.MergeChapters)
 	if err != nil {
-		return model.DownloadJob{}, err
+		return err
 	}
 	comicTags, err := json.Marshal(job.ComicTags)
 	if err != nil {
-		return model.DownloadJob{}, err
+		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
-INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, download_dir, convert_to_simplified, chapter_marker, queue_priority, status)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
+	_, err = executor.ExecContext(ctx, `
+INSERT INTO download_jobs(source_id, comic_id, comic_title, comic_cover, comic_author, comic_description, comic_tags_json, chapter_id, chapter_title, chapter_order, merge_chapters_json, download_dir, convert_to_simplified, chapter_marker, queue_priority, file_path, status)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 		ON CONFLICT(source_id, comic_id, chapter_id) DO UPDATE SET
 			comic_title = excluded.comic_title,
 			comic_cover = excluded.comic_cover,
@@ -1531,11 +1544,8 @@ VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')
 			retry_count = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.retry_count ELSE 0 END,
 			next_retry_at = CASE WHEN download_jobs.status IN ('completed', 'running') THEN download_jobs.next_retry_at ELSE NULL END,
 			updated_at = CURRENT_TIMESTAMP`,
-		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ComicDescription, string(comicTags), job.ChapterID, job.ChapterTitle, job.ChapterOrder, string(mergeChapters), job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker, job.QueuePriority)
-	if err != nil {
-		return model.DownloadJob{}, err
-	}
-	return s.DownloadJobByChapter(ctx, job.SourceID, job.ComicID, job.ChapterID)
+		job.SourceID, job.ComicID, job.ComicTitle, job.ComicCover, job.ComicAuthor, job.ComicDescription, string(comicTags), job.ChapterID, job.ChapterTitle, job.ChapterOrder, string(mergeChapters), job.DownloadDir, job.ConvertToSimplified, job.ChapterMarker, job.QueuePriority, job.FilePath)
+	return err
 }
 
 func (s *Store) DownloadJobByChapter(ctx context.Context, sourceID, comicID, chapterID string) (model.DownloadJob, error) {
@@ -1740,12 +1750,21 @@ func (s *Store) SetDownloadJobLocation(ctx context.Context, id int64, downloadDi
 }
 
 func (s *Store) UpdateDownloadJob(ctx context.Context, id int64, status string, totalPages, completedPages int, filePath, jobError string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE download_jobs SET status = ?, total_pages = ?, completed_pages = ?, file_path = ?, error = ?, updated_at = CURRENT_TIMESTAMP,
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE download_jobs SET status = ?, total_pages = ?, completed_pages = ?,
+			file_path = CASE WHEN ? = '' AND ? <> 'completed' THEN file_path ELSE ? END,
+			error = ?, updated_at = CURRENT_TIMESTAMP,
 			queue_priority = CASE WHEN ? IN ('completed', 'failed', 'canceled') THEN 0 ELSE queue_priority END,
 			started_at = CASE WHEN ? = 'running' THEN COALESCE(started_at, CURRENT_TIMESTAMP) ELSE started_at END,
 			finished_at = CASE WHEN ? IN ('completed', 'failed', 'canceled') THEN CURRENT_TIMESTAMP ELSE finished_at END
-		WHERE id = ?`, status, totalPages, completedPages, filePath, jobError, status, status, status, id)
+		WHERE id = ?`, status, totalPages, completedPages, filePath, status, filePath, jobError, status, status, status, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err == nil && affected == 0 {
+		return ErrNotFound
+	}
 	return err
 }
 
@@ -1930,8 +1949,7 @@ func parseSQLiteTime(value string) time.Time {
 }
 
 // DownloadJobsByComic returns every chapter task for one work, including
-// completed and failed records, so a full refresh can clear them before
-// re-queuing the chapters from the source.
+// completed and failed records.
 func (s *Store) DownloadJobsByComic(ctx context.Context, sourceID, comicID string) ([]model.DownloadJob, error) {
 	rows, err := s.reader().QueryContext(ctx, jobSelect+` WHERE source_id = ? AND comic_id = ? ORDER BY chapter_order ASC, id ASC`, sourceID, comicID)
 	if err != nil {
@@ -1947,16 +1965,6 @@ func (s *Store) DownloadJobsByComic(ctx context.Context, sourceID, comicID strin
 		items = append(items, item)
 	}
 	return items, rows.Err()
-}
-
-// DeleteDownloadJobsForComic removes every chapter task for one work and
-// reports how many records were deleted.
-func (s *Store) DeleteDownloadJobsForComic(ctx context.Context, sourceID, comicID string) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM download_jobs WHERE source_id = ? AND comic_id = ?`, sourceID, comicID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 func (s *Store) Stats(ctx context.Context) (model.Stats, error) {

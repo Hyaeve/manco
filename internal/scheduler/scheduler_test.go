@@ -17,6 +17,8 @@ type stubSubscriptions struct {
 	items         []model.Subscription
 	updates       []model.Subscription
 	chapterCounts map[int64]int
+	downloads     *stubDownloads
+	commitErr     error
 }
 
 func (s *stubSubscriptions) ListSubscriptions(context.Context) ([]model.Subscription, error) {
@@ -32,12 +34,18 @@ func (s *stubSubscriptions) Subscription(_ context.Context, id int64) (model.Sub
 	return model.Subscription{}, errors.New("not found")
 }
 
-func (s *stubSubscriptions) UpdateSubscriptionChapterCount(_ context.Context, id int64, count int) error {
-	if s.chapterCounts == nil {
-		s.chapterCounts = make(map[int64]int)
+func (s *stubSubscriptions) CommitSubscriptionCheck(ctx context.Context, previous model.Subscription, chapter model.Chapter, chapterCount int, comicStatus string, newChapter bool, jobs []model.DownloadJob) error {
+	if s.commitErr != nil {
+		return s.commitErr
 	}
-	s.chapterCounts[id] = count
-	return nil
+	if chapterCount > 0 {
+		if s.chapterCounts == nil {
+			s.chapterCounts = make(map[int64]int)
+		}
+		s.chapterCounts[previous.ID] = chapterCount
+	}
+	s.downloads.jobs = append(s.downloads.jobs, jobs...)
+	return s.UpdateSubscriptionCheck(ctx, previous.ID, chapter.ID, chapter.Title, chapter.Order, comicStatus, completedStatus(comicStatus), newChapter)
 }
 
 func (s *stubSubscriptions) UpdateSubscriptionCheck(_ context.Context, id int64, chapterID, chapterTitle string, chapterOrder float64, comicStatus string, completed, newChapter bool) error {
@@ -126,6 +134,7 @@ func (s *stubChapters) Pages(context.Context, source.Account, string, model.Chap
 func newTestScheduler(chapters []model.Chapter, subscriptions *stubSubscriptions, downloads *stubDownloads) *Scheduler {
 	registry := sources.NewRegistry(nil, nil, nil)
 	registry.Register(&stubChapters{chapters: chapters})
+	subscriptions.downloads = downloads
 	return New(registry, subscriptions, downloads, 0, log.New(io.Discard, "", 0))
 }
 
@@ -307,6 +316,32 @@ func TestCheckOneDetailedReportsNewAndQueued(t *testing.T) {
 	}
 	if result.NewChapters != 2 || result.Queued != 2 {
 		t.Fatalf("check result = %+v, want 2 new and 2 queued", result)
+	}
+}
+
+func TestCheckOneDoesNotNotifyAfterFailedCommit(t *testing.T) {
+	commitErr := errors.New("cannot write job")
+	subscriptions := &stubSubscriptions{
+		items: []model.Subscription{{
+			ID:               1,
+			SourceID:         "stub",
+			ComicID:          "1",
+			AutoDownload:     true,
+			LastChapterID:    "1",
+			LastChapterOrder: 1,
+		}},
+		commitErr: commitErr,
+	}
+	downloads := &stubDownloads{}
+	scheduler := newTestScheduler(testChapters(), subscriptions, downloads)
+	result, err := scheduler.CheckOneDetailed(context.Background(), 1)
+	if !errors.Is(err, commitErr) || result.NewChapters != 2 || result.Queued != 0 || downloads.notified != 0 {
+		t.Fatalf("failed check result = %+v, err = %v, notifications = %d", result, err, downloads.notified)
+	}
+	subscriptions.commitErr = nil
+	result, err = scheduler.CheckOneDetailed(context.Background(), 1)
+	if err != nil || result.Queued != 2 || downloads.notified != 1 {
+		t.Fatalf("retried check result = %+v, err = %v, notifications = %d", result, err, downloads.notified)
 	}
 }
 
